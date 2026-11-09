@@ -97,6 +97,18 @@ import Testing
     }
 }
 
+@Suite struct TimeFormatTests {
+    @Test func formatsMillisecondsWithoutTruncation() {
+        let utc = TimeZone(identifier: "UTC")!
+        #expect(LogcatTime.format(1794248132.663, includeDate: false, timeZone: utc).hasSuffix(":32.663"))
+        #expect(LogcatTime.format(1794248132.9996, includeDate: false, timeZone: utc).hasSuffix(":33.000"))
+        for millis in 0..<1000 {
+            let text = LogcatTime.format(1_000_000 + Double(millis) / 1000, includeDate: false, timeZone: utc)
+            #expect(text.hasSuffix(String(format: ".%03d", millis)))
+        }
+    }
+}
+
 @Suite struct ThreadtimeParserTests {
     @Test func parsesThreadtimeLine() throws {
         let entry = try #require(LogcatThreadtimeFormat.parseLine("11-09 13:11:17.123  1234  5678 I ActivityManager: Start proc 4321:com.example/u0a123"))

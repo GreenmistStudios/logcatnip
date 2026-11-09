@@ -48,8 +48,8 @@ struct LogTableView: NSViewRepresentable {
         private var session: LogSession?
         private let tableView = LogNSTableView()
         private let scrollView = NSScrollView()
-        private var font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        private var italicFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        private var font: NSFont?
+        private var italicFont: NSFont?
         private var showDate = false
         private var isProgrammaticScroll = false
 
@@ -117,9 +117,10 @@ struct LogTableView: NSViewRepresentable {
                 session.onRowsChanged = { [weak self] change in self?.apply(change) }
                 needsReload = true
             }
-            if font.pointSize != fontSize {
-                font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-                italicFont = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+            if font.map({ Double($0.pointSize) }) != fontSize {
+                let regular = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+                font = regular
+                italicFont = NSFontManager.shared.convert(regular, toHaveTrait: .italicFontMask)
                 tableView.rowHeight = ceil(fontSize * 1.5)
                 needsReload = true
             }
@@ -226,7 +227,7 @@ struct LogTableView: NSViewRepresentable {
                 let label = makeLabel(column.identifier)
                 if column == .message {
                     label.stringValue = "——— \(entry.message) ———"
-                    label.font = italicFont
+                    label.font = italicFont ?? label.font
                     label.textColor = .secondaryLabelColor
                 } else {
                     label.stringValue = column == .time ? LogcatTime.format(entry.timestamp, includeDate: showDate) : ""
@@ -300,7 +301,7 @@ struct LogTableView: NSViewRepresentable {
                 label.cell?.truncatesLastVisibleLine = true
                 label.isSelectable = false
             }
-            label.font = font
+            if let font { label.font = font }
             return label
         }
 
@@ -318,7 +319,7 @@ struct LogTableView: NSViewRepresentable {
                 badge.wantsLayer = true
                 badge.layer?.cornerRadius = 3
             }
-            badge.font = NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .bold)
+            badge.font = NSFont.monospacedSystemFont(ofSize: (font?.pointSize ?? 12) - 1, weight: .bold)
             return badge
         }
 

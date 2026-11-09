@@ -44,11 +44,14 @@ public enum LogcatTime {
 
     /// Formats a timestamp the way Android Studio's logcat does by default: `yyyy-MM-dd HH:mm:ss.SSS`.
     public static func format(_ timestamp: Double, includeDate: Bool = true, timeZone: TimeZone = .current) -> String {
-        let date = Date(timeIntervalSince1970: timestamp)
+        // Round to whole milliseconds first: 1794248132.663 is stored as ...132.66299, which truncates to 662.
+        let totalMillis = (timestamp * 1000).rounded()
+        let seconds = floor(totalMillis / 1000)
+        let millis = Int(totalMillis - seconds * 1000)
+        let date = Date(timeIntervalSince1970: seconds)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let c = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
-        let millis = Int((timestamp - floor(timestamp)) * 1000)
         let time = String(
             format: "%02d:%02d:%02d.%03d",
             c.hour ?? 0, c.minute ?? 0, c.second ?? 0, millis
