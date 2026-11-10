@@ -139,10 +139,21 @@ enum FilterToken: Equatable {
     case text(value: String, negated: Bool, quoted: Bool, offset: Int)
 }
 
+/// A token and the characters it came from, so edits can splice the original query.
+struct LocatedToken: Equatable {
+    let token: FilterToken
+    /// Character offsets into the query, in the same units as `FilterToken` offsets and `FilterError.offset`.
+    let range: Range<Int>
+}
+
 enum FilterLexer {
     static func tokenize(_ query: String) throws(FilterError) -> [FilterToken] {
+        try locatedTokens(query).map(\.token)
+    }
+
+    static func locatedTokens(_ query: String) throws(FilterError) -> [LocatedToken] {
         let chars = Array(query)
-        var tokens: [FilterToken] = []
+        var tokens: [LocatedToken] = []
         var i = 0
         var openParens = 0
 
@@ -154,22 +165,24 @@ enum FilterLexer {
             }
             switch c {
             case "(":
-                tokens.append(.leftParen)
+                tokens.append(LocatedToken(token: .leftParen, range: i..<i + 1))
                 openParens += 1
                 i += 1
                 continue
             case ")":
-                tokens.append(.rightParen)
+                tokens.append(LocatedToken(token: .rightParen, range: i..<i + 1))
                 openParens -= 1
                 i += 1
                 continue
             case "&":
-                tokens.append(.and)
-                i += (i + 1 < chars.count && chars[i + 1] == "&") ? 2 : 1
+                let length = (i + 1 < chars.count && chars[i + 1] == "&") ? 2 : 1
+                tokens.append(LocatedToken(token: .and, range: i..<i + length))
+                i += length
                 continue
             case "|":
-                tokens.append(.or)
-                i += (i + 1 < chars.count && chars[i + 1] == "|") ? 2 : 1
+                let length = (i + 1 < chars.count && chars[i + 1] == "|") ? 2 : 1
+                tokens.append(LocatedToken(token: .or, range: i..<i + length))
+                i += length
                 continue
             default:
                 break
@@ -196,24 +209,28 @@ enum FilterLexer {
                 if value.isEmpty, key != .name {
                     throw FilterError("Missing value for \(key.rawValue)", offset: start)
                 }
-                tokens.append(.term(key: key, op: op, value: value, negated: negated, offset: start))
-                appendRightParens(trailingParens, to: &tokens, openParens: &openParens)
+                let term = FilterToken.term(key: key, op: op, value: value, negated: negated, offset: start)
+                tokens.append(LocatedToken(token: term, range: start..<i - trailingParens))
+                appendRightParens(trailingParens, endingAt: i, to: &tokens, openParens: &openParens)
                 continue
             }
 
             if i < chars.count, chars[i] == "\"" || chars[i] == "'" {
                 let value = try readQuoted(chars, at: &i)
-                tokens.append(.text(value: value, negated: negated, quoted: true, offset: start))
+                let text = FilterToken.text(value: value, negated: negated, quoted: true, offset: start)
+                tokens.append(LocatedToken(token: text, range: start..<i))
                 continue
             }
             let raw = readBare(chars, at: &i, stopAtOperators: true)
             let (value, trailingParens) = splitTrailingParens(raw, openParens: openParens)
             if !value.isEmpty {
-                tokens.append(.text(value: value, negated: negated, quoted: false, offset: start))
+                let text = FilterToken.text(value: value, negated: negated, quoted: false, offset: start)
+                tokens.append(LocatedToken(token: text, range: start..<i - trailingParens))
             } else if negated {
-                tokens.append(.text(value: "-", negated: false, quoted: false, offset: start))
+                let text = FilterToken.text(value: "-", negated: false, quoted: false, offset: start)
+                tokens.append(LocatedToken(token: text, range: start..<start + 1))
             }
-            appendRightParens(trailingParens, to: &tokens, openParens: &openParens)
+            appendRightParens(trailingParens, endingAt: i, to: &tokens, openParens: &openParens)
         }
         return tokens
     }
@@ -291,9 +308,12 @@ enum FilterLexer {
         return (String(value), count)
     }
 
-    private static func appendRightParens(_ count: Int, to tokens: inout [FilterToken], openParens: inout Int) {
-        for _ in 0..<count {
-            tokens.append(.rightParen)
+    /// The peeled `)` are the last `count` characters before `end`. An escaped `\)` makes the value one
+    /// character shorter than its source, so the spans can be off by one there, but they still end at `end`.
+    private static func appendRightParens(_ count: Int, endingAt end: Int, to tokens: inout [LocatedToken], openParens: inout Int) {
+        for index in 0..<count {
+            let position = end - count + index
+            tokens.append(LocatedToken(token: .rightParen, range: position..<position + 1))
             openParens -= 1
         }
     }
@@ -602,7 +622,7 @@ struct FilterParser {
     // MARK: Android Studio grammar
 
     /// One parsed element or operand, with what the top level needs to combine it.
-    private struct Element {
+    struct Element {
         var node: FilterNode
         /// A lone unquoted, non-negated free-text word. Consecutive ones join into one phrase.
         var phraseWord: String?
@@ -617,6 +637,27 @@ struct FilterParser {
             self.orGroup = orGroup
             self.isName = isName
         }
+    }
+
+    /// One whitespace-separated element at the top level of a query, which is what `FilterQueryEditor` replaces
+    /// or keeps.
+    struct TopLevelElement {
+        let element: Element
+        /// Indexes into the token array.
+        let tokens: Range<Int>
+    }
+
+    /// Parses like `parse()` with the Android Studio grammar, but returns the top-level elements uncombined.
+    /// An editor has to see them one by one to replace some and keep the rest in the user's own words.
+    mutating func parseTopLevelElements() throws(FilterError) -> [TopLevelElement] {
+        var result: [TopLevelElement] = []
+        while let token = current, token != .rightParen {
+            let start = position
+            let element = try parseOrExpression()
+            result.append(TopLevelElement(element: element, tokens: start..<position))
+        }
+        if position < tokens.count { throw FilterError("Unbalanced )") }
+        return result
     }
 
     /// Whitespace-separated elements up to a `)` or the end. Whitespace has the lowest precedence, so each
@@ -684,7 +725,7 @@ struct FilterParser {
     /// ANDs the top-level elements the way Android Studio does: lone terms with the same key are ORed (at the
     /// position of the first), adjacent free-text words join into one phrase, and everything else is its own
     /// operand.
-    private func combine(_ elements: [Element]) -> FilterNode? {
+    func combine(_ elements: [Element]) -> FilterNode? {
         var slots: [[FilterNode]] = []
         var slotForGroup: [ImplicitOrGroup: Int] = [:]
         var pendingWords: [String] = []

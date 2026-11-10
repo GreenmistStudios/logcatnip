@@ -297,6 +297,34 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
         }
     }
 
+    @Test func tokenRangesCoverTheirSourceText() throws {
+        let expected: [(String, [String])] = [
+            ("(tag:a | -tag=:\"b c\") && level:W", ["(", "tag:a", "|", "-tag=:\"b c\"", ")", "&&", "level:W"]),
+            ("(tag:Zed | tag:Tag)", ["(", "tag:Zed", "|", "tag:Tag", ")"]),
+            ("foo - bar", ["foo", "-", "bar"]),
+            ("(foo bar) -baz", ["(", "foo", "bar", ")", "-baz"]),
+            ("tag:a&tag:b", ["tag:a", "&", "tag:b"]),
+        ]
+        for (query, texts) in expected {
+            let located = try FilterLexer.locatedTokens(query)
+            let chars = Array(query)
+            #expect(located.map { String(chars[$0.range]) } == texts, "\(query)")
+            #expect(try FilterLexer.tokenize(query) == located.map(\.token), "\(query)")
+        }
+    }
+
+    @Test func topLevelElementsKeepTheirSourceText() throws {
+        let query = "foo tag:a | tag:b (x y) level:W & pid:1"
+        let tokens = try FilterLexer.locatedTokens(query)
+        var parser = FilterParser(tokens: tokens.map(\.token), caseSensitive: false)
+        let elements = try parser.parseTopLevelElements()
+        let chars = Array(query)
+        let texts = elements.map { element in
+            String(chars[tokens[element.tokens.lowerBound].range.lowerBound..<tokens[element.tokens.upperBound - 1].range.upperBound])
+        }
+        #expect(texts == ["foo", "tag:a | tag:b", "(x y)", "level:W & pid:1"])
+    }
+
     @Test func markersAlwaysMatch() throws {
         #expect(try LogFilter("tag:nothing").matches(.marker("Device disconnected"), context: FilterContext()))
     }
