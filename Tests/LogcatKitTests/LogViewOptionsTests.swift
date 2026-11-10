@@ -134,4 +134,84 @@ import Testing
         #expect(custom.summary.hasPrefix("preset=custom "))
         #expect(custom.summary.contains("hide=tag/-/-"))
     }
+
+    // MARK: Layout
+
+    @Test func layoutDefaultsToTable() {
+        #expect(LogViewOptions.standard.layout == .table)
+        #expect(LogViewOptions.compact.layout == .table)
+        #expect(LogViewOptions(visibleColumns: [.message], timestampStyle: .time).layout == .table)
+    }
+
+    @Test func layoutIsNotPartOfAPreset() {
+        var standard = LogViewOptions.standard
+        standard.layout = .cards
+        #expect(standard.preset == .standard)
+        var compact = LogViewOptions.compact
+        compact.layout = .cards
+        #expect(compact.preset == .compact)
+        standard.hideRepeatedTags = true
+        #expect(standard.preset == nil)
+    }
+
+    @Test func applyingPresetKeepsLayout() {
+        var options = LogViewOptions.standard
+        options.layout = .cards
+        options.timestampStyle = .epoch
+        options.apply(.compact)
+        #expect(options.layout == .cards)
+        #expect(options.preset == .compact)
+        #expect(options.timestampStyle == .time)
+
+        var table = LogViewOptions.compact
+        table.apply(.standard)
+        #expect(table.layout == .table)
+        #expect(table.preset == .standard)
+    }
+
+    @Test func layoutChangeIsNotWidthsOnly() {
+        var cards = LogViewOptions.standard
+        cards.layout = .cards
+        #expect(!LogViewOptions.standard.differsOnlyInWidths(from: cards))
+        #expect(!cards.differsOnlyInWidths(from: .standard))
+    }
+
+    @Test func cardSections() {
+        #expect(LogViewOptions.standard.cardHasHeader)
+        #expect(LogViewOptions.standard.cardHasFooter)
+        #expect(LogViewOptions.compact.cardHasHeader)
+        #expect(!LogViewOptions.compact.cardHasFooter)
+
+        var bare = LogViewOptions.standard
+        for column in [LogColumn.level, .tag, .time] { bare.setVisible(column, false) }
+        #expect(!bare.cardHasHeader)
+        #expect(bare.cardHasFooter)
+
+        let processOnly = LogViewOptions(visibleColumns: [.message, .process], timestampStyle: .time)
+        #expect(!processOnly.cardHasHeader)
+        #expect(processOnly.cardHasFooter)
+    }
+
+    @Test func codableLayout() throws {
+        var options = LogViewOptions.standard
+        options.layout = .cards
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(options)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""layout":"cards""#))
+        #expect(try JSONDecoder().decode(LogViewOptions.self, from: data) == options)
+
+        #expect(try JSONDecoder().decode(LogViewOptions.self, from: Data("{}".utf8)).layout == .table)
+        let bogus = try JSONDecoder().decode(LogViewOptions.self, from: Data(#"{"layout":"bogus"}"#.utf8))
+        #expect(bogus.layout == .table)
+        #expect(bogus.preset == .standard)
+    }
+
+    @Test func summaryShowsLayout() {
+        #expect(LogViewOptions.standard.summary.hasSuffix(" layout=table"))
+        var cards = LogViewOptions.standard
+        cards.layout = .cards
+        #expect(cards.summary.hasSuffix(" layout=cards"))
+        #expect(cards.summary.hasPrefix("preset=standard "))
+    }
 }
