@@ -60,6 +60,8 @@ final class LogSession: Identifiable {
     private(set) var fileInfo: LogFileInfo?
     /// Observed, so the status bar follows a load's progress.
     private(set) var fileLoader: FileLoader?
+    /// The latest save, observed for the status bar.
+    private(set) var fileSaver: FileSaver?
     private(set) var baseTitle = ""
     var title = ""
     private(set) var status: Status = .starting
@@ -83,6 +85,9 @@ final class LogSession: Identifiable {
     @ObservationIgnored private(set) var entries: [LogEntry] = []
     @ObservationIgnored private(set) var rows: [Row] = []
     @ObservationIgnored private(set) var processNames: [Int32: String] = [:]
+    /// The device a `.logcat` was saved with, or the live device once it was described, so saving again after the
+    /// device is gone still names it.
+    @ObservationIgnored private(set) var fileDevice: LogcatFileDevice?
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
@@ -285,6 +290,7 @@ final class LogSession: Identifiable {
 
     /// A `.logcat` file carries the filter it was saved with, and Android Studio applies it on open; so do we.
     func applyFileMetadata(_ metadata: LogcatFileMetadata) {
+        fileDevice = metadata.device
         if let device = metadata.device { fileInfo = LogFileInfo(device: device) }
         let query = metadata.filter(forMyPackages: Defaults.myPackages).trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return }
@@ -647,22 +653,43 @@ final class LogSession: Identifiable {
         return lines.joined(separator: "\n")
     }
 
-    /// The buffer in `logcat -v long` format, which Logcatnip and Android Studio can both read back.
-    func exportText(visibleOnly: Bool) -> String {
-        var output = ""
-        if visibleOnly {
-            var last = -1
-            for row in rows where row.entryID != last {
-                last = row.entryID
-                if let entry = entry(for: row), entry.kind == .log {
-                    output += LogcatLongFormat.format(entry)
-                }
-            }
-        } else {
-            for entry in entries where entry.kind == .log {
-                output += LogcatLongFormat.format(entry)
-            }
+    // MARK: Saving
+
+    var isSaving: Bool { fileSaver?.state == .running }
+
+    /// Saves what the table shows (`visibleOnly`) or the whole buffer, in the background. Taking the snapshot is
+    /// cheap: the buffer is copy-on-write, and only the row ids are copied.
+    func save(to url: URL, format: LogSaveFormat, visibleOnly: Bool) {
+        guard !isSaving else { return }
+        let request = LogSaveRequest(
+            format: format, entries: entries, onlyEntryIDs: visibleOnly ? rows.map(\.entryID) : nil,
+            processNames: processNames, metadata: saveMetadata()
+        )
+        let saver = FileSaver(url: url, format: format, visibleOnly: visibleOnly)
+        fileSaver = saver
+        saver.start(request)
+    }
+
+    /// What a `.logcat` records besides the messages, as Android Studio's Save does: the device, the filter as typed,
+    /// and My packages (its "project application ids").
+    func saveMetadata() -> LogcatFileMetadata {
+        // Follow-up for the ignore lists: pass them as ignoredTags and ignoredPackages once they exist here.
+        LogcatFileMetadata(device: saveDevice(), filter: filterQuery, projectApplicationIds: Defaults.myPackages.sorted())
+    }
+
+    private func saveDevice() -> LogcatFileDevice? {
+        guard case let .device(serial, _) = source else {
+            return fileDevice ?? fileInfo.flatMap(LogcatFileDevice.init(info:))
         }
-        return output
+        guard let device = model?.device(serial: serial), let properties = device.properties else { return fileDevice }
+        let avdPath = properties.avdName.flatMap {
+            AvdLocator.path(
+                forAvdName: $0, environment: ProcessInfo.processInfo.environment,
+                home: FileManager.default.homeDirectoryForCurrentUser
+            )
+        }
+        let described = LogcatFileDevice(properties: properties, serial: serial, isOnline: device.isOnline, avdPath: avdPath)
+        fileDevice = described
+        return described
     }
 }

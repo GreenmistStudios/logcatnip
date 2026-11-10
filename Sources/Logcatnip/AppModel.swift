@@ -133,6 +133,35 @@ final class AppModel {
                 openFile(URL(fileURLWithPath: String(path)))
             }
         }
+        // Debug helper: save the selected session once, `LOGCATNIP_SAVE=/path/out.logcat`, optionally with
+        // LOGCATNIP_SAVE_FORMAT=logcat|long|threadtime|plainText, LOGCATNIP_SAVE_SCOPE=all|visible and
+        // LOGCATNIP_SAVE_DELAY=<seconds before saving, default 5>. It waits for a file to finish loading first.
+        if let path = ProcessInfo.processInfo.environment["LOGCATNIP_SAVE"] {
+            runSaveHook(path: path, environment: ProcessInfo.processInfo.environment)
+        }
+    }
+
+    private func runSaveHook(path: String, environment: [String: String]) {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Double(environment["LOGCATNIP_SAVE_DELAY"] ?? "") ?? 5))
+            // A live session may not exist yet, and a file may still be loading; wait for both (for up to a minute).
+            let clock = ContinuousClock()
+            let deadline = clock.now + .seconds(60)
+            while let self, clock.now < deadline {
+                let session = self.selectedSession ?? self.sessions.first
+                if session != nil, session?.fileLoader?.state != .running { break }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            guard let self, let session = self.selectedSession ?? self.sessions.first else {
+                FileHandle.standardError.write(Data("[logcatnip] save: no session\n".utf8))
+                return
+            }
+            // Unlike the Save panel, this never writes the `saveFormat` default.
+            let format = LogSaveFormat(rawValue: environment["LOGCATNIP_SAVE_FORMAT"] ?? "") ?? .logcat
+            session.save(
+                to: URL(fileURLWithPath: path), format: format, visibleOnly: environment["LOGCATNIP_SAVE_SCOPE"] == "visible"
+            )
+        }
     }
 
     /// Stops every adb child process. Called on quit, when tasks no longer get a chance to run.
@@ -189,6 +218,10 @@ final class AppModel {
                     guard let load = Self.fileLoadLine(for: session) else { continue }
                     FileHandle.standardError.write(Data(load.utf8))
                 }
+                for session in self.sessions {
+                    guard let save = Self.fileSaveLine(for: session) else { continue }
+                    FileHandle.standardError.write(Data(save.utf8))
+                }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
@@ -223,6 +256,23 @@ final class AppModel {
             + "section=\(session.fileSection.rawValue) load=\(loadText) "
             + "delivered=\(loader.delivered[session.fileSection] ?? 0) firstProcess=\(firstProcess ?? "-") "
             + "info=\"\(session.fileInfo?.summary ?? "-")\"\n"
+    }
+
+    /// How a session's latest save is going, to check a save from a terminal: the format and scope, the progress or
+    /// outcome, and what was written.
+    private static func fileSaveLine(for session: LogSession) -> String? {
+        guard let saver = session.fileSaver else { return nil }
+        let stateText: String
+        switch saver.state {
+        case .running: stateText = "running \(Int(saver.fraction * 100))%"
+        case .finished: stateText = "done " + String(format: "%.1fs", saver.elapsed ?? 0)
+        case .cancelled: stateText = "cancelled"
+        case let .failed(message): stateText = "failed \(message)"
+        }
+        return "[logcatnip]   \(session.title) save: format=\(saver.format.rawValue) "
+            + "scope=\(saver.visibleOnly ? "visible" : "all") state=\(stateText) "
+            + "entries=\(saver.result?.entries ?? 0) bytes=\(saver.result?.bytes ?? 0) "
+            + "progressUI=\(saver.showsProgress ? "yes" : "no") path=\(saver.url.path)\n"
     }
 
     private struct EntryKey: Hashable {

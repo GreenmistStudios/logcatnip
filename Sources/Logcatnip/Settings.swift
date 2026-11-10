@@ -12,6 +12,8 @@ enum SettingsKey {
     static let autoOpenSessions = "autoOpenSessions"
     static let wrapLines = "wrapLines"
     static let recentWifiHosts = "recentWifiHosts"
+    /// The `LogSaveFormat` the Save panel last used. It has no settings UI: the panel remembers it.
+    static let saveFormat = "saveFormat"
 }
 
 enum Defaults {
@@ -26,6 +28,7 @@ enum Defaults {
             SettingsKey.wrapLines: false,
             SettingsKey.logcatBuffers: "",
             SettingsKey.recentWifiHosts: [String](),
+            SettingsKey.saveFormat: LogSaveFormat.logcat.rawValue,
         ])
     }
 
