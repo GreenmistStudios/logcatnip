@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.fontSize) private var fontSize = Defaults.fontSize
     @AppStorage(SettingsKey.logcatBuffers) private var logcatBuffers = ""
     @AppStorage(SettingsKey.autoOpenSessions) private var autoOpenSessions = true
+    @AppStorage(SettingsKey.filterHistoryAutocomplete) private var filterHistoryAutocomplete = false
 
     var body: some View {
         Form {
@@ -29,6 +30,10 @@ struct SettingsView: View {
             Section("Filtering") {
                 TextField("My packages", text: $myPackages, prompt: Text("com.example.app, com.example.debug"))
                 Text("Used by the package:mine filter. Separate with commas or spaces. When empty, package:mine shows everything.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Include filter history in autocomplete", isOn: $filterHistoryAutocomplete)
+                Text("Suggests favorite and recent filters while you type, like Android Studio's \"Add filters from history to autocomplete\".")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

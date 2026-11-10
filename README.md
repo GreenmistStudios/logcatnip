@@ -19,7 +19,8 @@ Android Studio's Logcat window.
   `is:` types, ages, and pids with their process names. Suggestions appear as you type, or press ⌃Space or ⌥Esc
   anywhere (⌃Space only if macOS is not using it to switch input sources). ↑/↓ choose, Tab or Return accept, Esc
   closes. Values that need quotes are quoted. Keys, operators, quoted values and regular expressions are colored,
-  and an invalid query underlines the failing part in red with the error as its tooltip.
+  and an invalid query underlines the failing part in red with the error as its tooltip. Turn on Settings ›
+  Filtering › Include filter history in autocomplete to also suggest favorite and recent filters.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long

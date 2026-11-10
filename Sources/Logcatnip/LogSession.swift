@@ -606,7 +606,8 @@ final class LogSession: Identifiable {
             runningProcesses: runningProcessNames,
             pids: pids,
             myPackages: Defaults.myPackages.sorted(),
-            history: []
+            history: UserDefaults.standard.bool(forKey: SettingsKey.filterHistoryAutocomplete)
+                ? FilterLibrary.favorites + FilterLibrary.history : []
         )
     }
 
