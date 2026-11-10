@@ -9,6 +9,8 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.fontSize) private var fontSize = Defaults.fontSize
     @AppStorage(SettingsKey.logcatBuffers) private var logcatBuffers = ""
     @AppStorage(SettingsKey.autoOpenSessions) private var autoOpenSessions = true
+    @AppStorage(SettingsKey.defaultViewOptions) private var viewOptionsJSON = ""
+    @State private var customizingView = false
 
     var body: some View {
         Form {
@@ -50,9 +52,39 @@ struct SettingsView: View {
                     Text("Font size: \(Int(fontSize)) pt")
                 }
             }
+
+            Section("Log View") {
+                PresetPicker(title: "New sessions", options: defaultViewOptions)
+                    .pickerStyle(.menu)
+                Button("Customize…") { customizingView = true }
+                Text("The view a session starts with. Each session can change its own with View › Modify View….")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 520)
         .padding(.vertical)
+        .sheet(isPresented: $customizingView) {
+            VStack(spacing: 0) {
+                ViewOptionsForm(options: defaultViewOptions)
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Done") { customizingView = false }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(12)
+            }
+            .frame(width: 460, height: 620)
+        }
+    }
+
+    /// The saved default, as options. Standard is stored as nothing, which is also the registered default.
+    private var defaultViewOptions: Binding<LogViewOptions> {
+        Binding(
+            get: { LogViewOptions(json: viewOptionsJSON) ?? .standard },
+            set: { viewOptionsJSON = $0 == .standard ? "" : $0.json }
+        )
     }
 }

@@ -102,6 +102,12 @@ struct LogcatCommands: Commands {
             Toggle("Soft Wrap", isOn: Binding(get: { session?.softWrap ?? false }, set: { session?.setSoftWrap($0) }))
                 .keyboardShortcut("l", modifiers: [.command, .control])
                 .disabled(session == nil)
+            Menu("Presets") {
+                ViewPresetMenuItems(session: session)
+            }
+            .disabled(session == nil)
+            Button("Modify View…") { session?.isModifyingView = true }
+                .disabled(session == nil)
         }
         CommandMenu("Logcat") {
             Button(session?.isPaused == true ? "Resume" : "Pause") { session?.isPaused.toggle() }

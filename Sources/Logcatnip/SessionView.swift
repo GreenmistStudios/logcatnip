@@ -2,7 +2,7 @@ import LogcatKit
 import SwiftUI
 
 struct SessionView: View {
-    let session: LogSession
+    @Bindable var session: LogSession
     @AppStorage(SettingsKey.fontSize) private var fontSize = Defaults.fontSize
 
     var body: some View {
@@ -19,6 +19,7 @@ struct SessionView: View {
         }
         .focusedSceneValue(\.session, session)
         .toolbar { SessionToolbar(session: session) }
+        .sheet(isPresented: $session.isModifyingView) { ModifyViewSheet(session: session) }
     }
 }
 
@@ -68,6 +69,11 @@ private struct SessionToolbar: ToolbarContent {
             }
 
             Menu {
+                Section("View") {
+                    ViewPresetMenuItems(session: session)
+                    Button("Modify View…") { session.isModifyingView = true }
+                }
+                Divider()
                 Button("Export Visible Logs…") { FilePanels.export(session, visibleOnly: true) }
                 Button("Export All Logs…") { FilePanels.export(session, visibleOnly: false) }
             } label: {

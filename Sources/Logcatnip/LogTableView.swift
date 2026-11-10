@@ -1026,15 +1026,6 @@ private extension TimestampStyle {
     }
 }
 
-extension LogViewOptions.Preset {
-    var menuTitle: String {
-        switch self {
-        case .standard: "Standard"
-        case .compact: "Compact"
-        }
-    }
-}
-
 /// Holds the level badge at the top of its row, one line tall, so wrapped rows don't stretch it.
 final class BadgeCellView: NSView {
     let badge: NSTextField = {
