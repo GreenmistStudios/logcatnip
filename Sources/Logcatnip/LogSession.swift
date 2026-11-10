@@ -191,6 +191,8 @@ final class LogSession: Identifiable {
         resumeAfter = nil
         lastTimestamp = nil
         start()
+        // stop() ended the age: refresh along with the stream; the filter is unchanged, so start it again.
+        scheduleAgeRefresh()
     }
 
     func deviceWentOffline() {
