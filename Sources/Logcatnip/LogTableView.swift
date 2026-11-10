@@ -52,6 +52,10 @@ struct LogTableView: NSViewRepresentable {
         private var italicFont: NSFont?
         private var showDate = false
         private var isProgrammaticScroll = false
+        /// Width of the widest message line rendered so far; the Message column grows to fit it so long
+        /// lines scroll horizontally instead of truncating.
+        private var widestMessage: CGFloat = 0
+        private var messageWidthUpdatePending = false
 
         func makeScrollView() -> NSScrollView {
             for column in Column.allCases {
@@ -67,7 +71,10 @@ struct LogTableView: NSViewRepresentable {
                     tableColumn.width = 20
                     tableColumn.minWidth = 20
                     tableColumn.maxWidth = 20
-                case .message: tableColumn.width = 800
+                case .message:
+                    tableColumn.width = 800
+                    // Sized to its content (see updateMessageColumnWidth), so dragging it would be undone.
+                    tableColumn.resizingMask = []
                 }
                 tableColumn.minWidth = min(tableColumn.minWidth, 20)
                 tableView.addTableColumn(tableColumn)
@@ -77,7 +84,7 @@ struct LogTableView: NSViewRepresentable {
             tableView.allowsMultipleSelection = true
             tableView.allowsColumnReordering = true
             tableView.allowsColumnResizing = true
-            tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+            tableView.columnAutoresizingStyle = .noColumnAutoresizing
             tableView.intercellSpacing = NSSize(width: 6, height: 0)
             tableView.gridStyleMask = []
             tableView.dataSource = self
@@ -96,7 +103,7 @@ struct LogTableView: NSViewRepresentable {
 
             scrollView.documentView = tableView
             scrollView.hasVerticalScroller = true
-            scrollView.hasHorizontalScroller = false
+            scrollView.hasHorizontalScroller = true
             scrollView.autohidesScrollers = true
             scrollView.borderType = .noBorder
             scrollView.contentView.postsBoundsChangedNotifications = true
@@ -104,6 +111,13 @@ struct LogTableView: NSViewRepresentable {
                 self,
                 selector: #selector(boundsDidChange(_:)),
                 name: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView
+            )
+            scrollView.contentView.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(viewportDidResize(_:)),
+                name: NSView.frameDidChangeNotification,
                 object: scrollView.contentView
             )
             return scrollView
@@ -127,9 +141,11 @@ struct LogTableView: NSViewRepresentable {
             if self.showDate != showDate {
                 self.showDate = showDate
                 tableView.tableColumn(withIdentifier: Column.time.identifier)?.width = showDate ? 175 : 96
+                updateMessageColumnWidth()
                 needsReload = true
             }
             if needsReload {
+                resetMessageWidth()
                 tableView.reloadData()
                 if session.autoScroll { scrollToEnd() }
             }
@@ -151,6 +167,9 @@ struct LogTableView: NSViewRepresentable {
             case let .reloaded(removedFront):
                 let selectedIDs = selectedEntryIDs()
                 let firstVisible = tableView.rows(in: tableView.visibleRect).location
+                // Trimming the front of the buffer keeps the width so the view doesn't jump; a new filter
+                // or a clear measures again.
+                if removedFront == 0 { resetMessageWidth() }
                 tableView.reloadData()
                 restoreSelection(selectedIDs)
                 if session.autoScroll {
@@ -194,10 +213,64 @@ struct LogTableView: NSViewRepresentable {
             scroll(toRow: count - 1)
         }
 
+        /// Scrolls vertically only, keeping the horizontal offset the user chose.
         private func scroll(toRow row: Int) {
             isProgrammaticScroll = true
+            let clipView = scrollView.contentView
+            let x = clipView.bounds.origin.x
             tableView.scrollRowToVisible(row)
+            if clipView.bounds.origin.x != x {
+                clipView.scroll(to: NSPoint(x: x, y: clipView.bounds.origin.y))
+                scrollView.reflectScrolledClipView(clipView)
+            }
             isProgrammaticScroll = false
+        }
+
+        // MARK: Message column width
+
+        private func resetMessageWidth() {
+            widestMessage = 0
+            updateMessageColumnWidth()
+        }
+
+        private func noteMessageWidth(of label: NSTextField) {
+            let width = ceil(label.attributedStringValue.size().width)
+            guard width > widestMessage else { return }
+            widestMessage = width
+            // Resizing a column while the table is asking for cell views would re-enter layout.
+            guard !messageWidthUpdatePending else { return }
+            messageWidthUpdatePending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                messageWidthUpdatePending = false
+                updateMessageColumnWidth()
+            }
+        }
+
+        /// Makes the Message column as wide as its widest line, and at least wide enough to fill the view.
+        private func updateMessageColumnWidth() {
+            guard let message = tableView.tableColumn(withIdentifier: Column.message.identifier) else { return }
+            let spacing = tableView.intercellSpacing.width
+            let others = tableView.tableColumns.reduce(CGFloat(0)) { sum, column in
+                column === message || column.isHidden ? sum : sum + column.width + spacing
+            }
+            let fill = scrollView.contentView.bounds.width - others - spacing
+            // Text fields inset their text by a few points on each side.
+            let width = max(widestMessage + 8, fill, 100)
+            if abs(message.width - width) >= 0.5 {
+                message.width = width
+            }
+        }
+
+        @objc private func viewportDidResize(_ notification: Notification) {
+            updateMessageColumnWidth()
+        }
+
+        func tableViewColumnDidResize(_ notification: Notification) {
+            guard let column = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
+                  column.identifier != Column.message.identifier
+            else { return }
+            updateMessageColumnWidth()
         }
 
         /// Scrolling away from the bottom stops following new logs; scrolling back to it resumes.
@@ -229,6 +302,7 @@ struct LogTableView: NSViewRepresentable {
                     label.stringValue = "——— \(entry.message) ———"
                     label.font = italicFont ?? label.font
                     label.textColor = .secondaryLabelColor
+                    noteMessageWidth(of: label)
                 } else {
                     label.stringValue = column == .time ? LogcatTime.format(entry.timestamp, includeDate: showDate) : ""
                     label.textColor = .tertiaryLabelColor
@@ -273,6 +347,7 @@ struct LogTableView: NSViewRepresentable {
                 label.stringValue = text
                 label.textColor = LogColors.text(for: entry.level)
                 if text.count > 120 { label.toolTip = text }
+                noteMessageWidth(of: label)
             case .level:
                 break
             }
@@ -358,6 +433,7 @@ struct LogTableView: NSViewRepresentable {
                   let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(raw))
             else { return }
             column.isHidden.toggle()
+            updateMessageColumnWidth()
         }
 
         private func buildRowMenu(_ menu: NSMenu) {
