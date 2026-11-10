@@ -228,7 +228,9 @@ final class AppModel {
         sessions.append(session)
         selectedSessionID = session.id
         refreshTitles()
-        if let initialFilter = ProcessInfo.processInfo.environment["LOGCATNIP_FILTER"] {
+        // The environment variable still wins, so scripted runs and tests do not depend on the saved default.
+        let initialFilter = ProcessInfo.processInfo.environment["LOGCATNIP_FILTER"] ?? Defaults.newSessionFilter
+        if !initialFilter.isEmpty {
             session.filterQuery = initialFilter
             session.applyFilterNow()
         }

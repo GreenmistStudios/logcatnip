@@ -451,6 +451,8 @@ final class LogSession: Identifiable {
             filterError = error
             return
         }
+        // Only valid queries, so a session opened from the most recently used filter never starts with an error.
+        FilterLibrary.noteMostRecentlyUsed(filterQuery)
         refilter()
         scheduleAgeRefresh()
     }
