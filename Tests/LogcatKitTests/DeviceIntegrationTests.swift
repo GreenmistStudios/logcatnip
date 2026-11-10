@@ -49,4 +49,28 @@ struct DeviceIntegrationTests {
         #expect(matched.allSatisfy { $0.level >= .info })
         print("streamed \(entries.count) entries; \(matched.count) at INFO+; resolved \(entries.filter { processes[$0.pid] != nil }.count) process names")
     }
+
+    @Test func reportsUnknownBuffer() async throws {
+        let adb = try #require(ADB.locate())
+        let serial = try await firstOnlineSerial(adb)
+        var entries: [LogEntry] = []
+        var exit: LogcatExit?
+        for await event in adb.logcat(serial: serial, options: .init(buffers: ["logcatnip-bogus"])) {
+            switch event {
+            case let .entries(batch): entries += batch
+            case let .ended(ended): exit = ended
+            }
+        }
+        let ended = try #require(exit)
+        #expect(entries.isEmpty)
+        guard case let .invalidOption(line) = ended.failure else {
+            Issue.record("expected an invalid option, got \(ended.failure) (stderr: \(ended.stderr))")
+            return
+        }
+        #expect(line.contains("logcatnip-bogus"))
+        guard case .fail = ended.recovery(restartAttempts: 0, deviceOnline: true) else {
+            Issue.record("expected the session to fail without restarting")
+            return
+        }
+    }
 }

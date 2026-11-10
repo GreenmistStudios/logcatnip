@@ -149,7 +149,7 @@ final class AppModel {
                 FileHandle.standardError.write(Data("[logcatnip] \(self.wireless.debugSummary)\n".utf8))
                 for session in self.sessions {
                     let markers = session.entries.filter { $0.kind == .marker }
-                    let line = "[logcatnip]   \(session.title): status=\(session.status.label) paused=\(session.isPaused) "
+                    let line = "[logcatnip]   \(session.title): status=\(session.status.label) format=\(session.streamsModernFormat ? "modern" : "legacy") paused=\(session.isPaused) "
                         + "follow=\(session.autoScroll) total=\(session.totalCount) visible=\(session.visibleCount) "
                         + "rows=\(session.rows.count) processes=\(session.processNames.count) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-") "

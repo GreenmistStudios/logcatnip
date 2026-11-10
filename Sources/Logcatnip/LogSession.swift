@@ -95,7 +95,10 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var streamToken: UUID?
     @ObservationIgnored private var lastTimestamp: Double?
     @ObservationIgnored private var resumeAfter: Double?
-    @ObservationIgnored private var useLegacyFormat = false
+    /// Set when logcat itself reported that it has no `-v epoch` / `-v uid`; a transient failure never sets it.
+    @ObservationIgnored private var legacyFormatDetected = false
+    /// Whether the current stream passes `-v epoch -v uid`; read by the debug report.
+    @ObservationIgnored private(set) var streamsModernFormat = true
     @ObservationIgnored private var restartAttempts = 0
 
     @ObservationIgnored private var processRefreshInFlight = false
@@ -152,7 +155,8 @@ final class LogSession: Identifiable {
         streamTask?.cancel()
         status = .starting
         let api = model?.device(serial: serial)?.properties?.apiLevel
-        let modern = !useLegacyFormat && (api ?? 99) >= 24
+        let modern = !legacyFormatDetected && ADB.LogcatOptions.modernFormatSupported(apiLevel: api)
+        streamsModernFormat = modern
         let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
         let token = UUID()
         streamToken = token
@@ -170,8 +174,8 @@ final class LogSession: Identifiable {
                         self.restartAttempts = 0
                     }
                     self.ingest(batch)
-                case let .ended(status, error):
-                    self.logcatEnded(status: status, error: error, receivedAny: receivedAny, modernFormat: modern)
+                case let .ended(exit):
+                    self.logcatEnded(exit)
                 }
             }
         }
@@ -191,6 +195,8 @@ final class LogSession: Identifiable {
         clear()
         resumeAfter = nil
         lastTimestamp = nil
+        legacyFormatDetected = false
+        restartAttempts = 0
         start()
     }
 
@@ -225,32 +231,29 @@ final class LogSession: Identifiable {
         start()
     }
 
-    private func logcatEnded(status exitStatus: Int32, error: String, receivedAny: Bool, modernFormat: Bool) {
+    private func logcatEnded(_ exit: LogcatExit) {
         streamToken = nil
-        let message = error.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !receivedAny, modernFormat, exitStatus != 0, !useLegacyFormat {
-            // Pre-Nougat logcat rejects -v epoch / -v uid.
-            useLegacyFormat = true
-            start()
-            return
-        }
         let online = serial.flatMap { model?.device(serial: $0)?.isOnline } ?? false
-        if online, restartAttempts < 3 {
+        switch exit.recovery(restartAttempts: restartAttempts, deviceOnline: online) {
+        case .useLegacyFormat:
+            legacyFormatDetected = true
+            appendMarker("logcat doesn't support -v epoch or -v uid; using the legacy format")
+            start()
+        case .restart:
             restartAttempts += 1
-            appendMarker("logcat exited\(message.isEmpty ? "" : ": \(message)"); restarting")
+            appendMarker("logcat exited\(exit.detail.map { ": \($0)" } ?? " (\(exit.status))"); restarting")
             resumeAfter = lastTimestamp
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, self.streamToken == nil, self.isLive else { return }
                 self.start()
             }
-            return
-        }
-        if online {
-            status = .failed(message.isEmpty ? "logcat exited (\(exitStatus))" : message)
-        } else {
+        case .waitForDevice:
             status = .disconnected
             appendMarker("Device disconnected")
+        case let .fail(message):
+            status = .failed(message)
+            appendMarker("logcat failed: \(message)")
         }
     }
 
