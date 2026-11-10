@@ -14,6 +14,13 @@ Android Studio's Logcat window.
   supports contains (`key:`), exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with
   `&`, `|` and parentheses. Spaces have the lowest precedence, and same-key terms are ORed, as in Android
   Studio.
+- **Autocomplete and highlighting.** The filter field suggests keys, with a description of each, and values for the
+  key at the cursor: this session's tags by frequency, `mine` and seen and running packages, process names, levels,
+  `is:` types, ages, and pids with their process names. Suggestions appear as you type, or press ⌃Space or ⌥Esc
+  anywhere (⌃Space only if macOS is not using it to switch input sources). ↑/↓ choose, Tab or Return accept, Esc
+  closes. Values that need quotes are quoted. Keys, operators, quoted values and regular expressions are colored,
+  and an invalid query underlines the failing part in red with the error as its tooltip. Turn on Settings ›
+  Filtering › Include filter history in autocomplete to also suggest favorite and recent filters.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
@@ -53,6 +60,7 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_COMPLETE='tag:Net'` (with `LOGCATNIP_DEBUG=1`) also prints the suggestions for that query.
 
 ## Filter reference
 
