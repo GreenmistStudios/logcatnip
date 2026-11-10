@@ -114,13 +114,21 @@ final class AppModel {
     /// row (`LOGCATNIP_WRAP_SELECT`: `middle`, the default, `end`, `none` or a row number), then toggles soft wrap four times,
     /// `<seconds>` apart, printing the table's state after each. `LOGCATNIP_SCROLL_BENCH=<pages>` adds a scroll
     /// timing for each mode, and `LOGCATNIP_WRAP_RESIZE=<points>` ends with a window resize,
-    /// and `LOGCATNIP_WRAP_KEYS=1` sends the arrow keys to the table in each mode. It bypasses `setSoftWrap`, so it never changes the saved default.
+    /// `LOGCATNIP_WINDOW_WIDTH=<points>` sets the window's width first, `LOGCATNIP_FIND_JUMP=1` jumps to the
+    /// first find match,
+    /// and `LOGCATNIP_WRAP_KEYS=1` sends the arrow keys, and sideways scroll gestures, to the table in each
+    /// mode (`arrow-keys` and `message-scroll` lines that end in `pinned=ok` while the other columns stay
+    /// put). It bypasses `setSoftWrap`, so it never changes the saved default.
     private func startDebugWrapToggle(period: Double) {
         let environment = ProcessInfo.processInfo.environment
         let pages = environment["LOGCATNIP_SCROLL_BENCH"].flatMap(Int.init)
         Task { [weak self] in
             func say(_ text: String) {
                 FileHandle.standardError.write(Data("[logcatnip] \(text)\n".utf8))
+            }
+            @MainActor func sayKeys(_ table: any LogTableDebugging) {
+                say(table.debugPressArrowKeys())
+                say(table.debugMessageScroll())
             }
             while true {
                 try? await Task.sleep(for: .milliseconds(500))
@@ -129,11 +137,28 @@ final class AppModel {
                     break
                 }
             }
+            // `LOGCATNIP_WINDOW_WIDTH=<points>` sets the window's width first (the Message column needs room
+            // beside the other columns to be pinned), and the helper puts it back when it is done.
+            let window = NSApp.windows.first(where: \.isVisible)
+            let originalWidth = window?.frame.width
+            if let width = environment["LOGCATNIP_WINDOW_WIDTH"].flatMap(Double.init), let window {
+                var frame = window.frame
+                frame.size.width = width
+                window.setFrame(frame, display: true)
+            }
             try? await Task.sleep(for: .seconds(2))
             guard let self, let session = self.selectedSession, let table = session.tableDebug else { return }
+            // `LOGCATNIP_FIND_JUMP=1` goes to the first find match, as Find Next does, and prints where the
+            // message text ended up (with `LOGCATNIP_FIND` for the query).
+            if environment["LOGCATNIP_FIND_JUMP"] == "1" {
+                session.find.navigate(.next)
+                try? await Task.sleep(for: .seconds(1))
+                say("find-jump: \(session.find.debugSummary())")
+                say("find-jump: \(table.debugSummary()) \(table.debugPinned())")
+            }
             if let pages { say(table.debugScrollBenchmark(pages: pages)) }
             let pressKeys = environment["LOGCATNIP_WRAP_KEYS"] == "1"
-            if pressKeys { say(table.debugPressArrowKeys()) }
+            if pressKeys { sayKeys(table) }
             let last = session.rows.count - 1
             let select = environment["LOGCATNIP_WRAP_SELECT"] ?? "middle"
             switch select {
@@ -146,7 +171,7 @@ final class AppModel {
                 session.softWrap.toggle()
                 try? await Task.sleep(for: .seconds(1))
                 say("wrap-toggle: \(table.debugSummary())")
-                if pressKeys { say(table.debugPressArrowKeys()) }
+                if pressKeys { sayKeys(table) }
                 if let pages { say(table.debugScrollBenchmark(pages: pages)) }
             }
             // `LOGCATNIP_WRAP_RESIZE=<points>` then narrows the window by that much and widens it again, which
@@ -160,7 +185,13 @@ final class AppModel {
                     window.setFrame(frame, display: true)
                     try? await Task.sleep(for: .seconds(1))
                     say("wrap-resize: \(table.debugSummary())")
+                    if pressKeys { sayKeys(table) }
                 }
+            }
+            if let window, let originalWidth, window.frame.width != originalWidth {
+                var frame = window.frame
+                frame.size.width = originalWidth
+                window.setFrame(frame, display: true)
             }
         }
     }
