@@ -400,7 +400,8 @@ struct LogTableView: NSViewRepresentable {
                     setWrapping(label)
                     label.stringValue = "——— \(entry.message) ———"
                     label.font = italicFont ?? label.font
-                    label.textColor = .secondaryLabelColor
+                    label.textColor = entry.kind == .process(.ended(.crashed))
+                        ? LogColors.text(for: .error) : .secondaryLabelColor
                     noteMessageWidth(of: label)
                 } else {
                     label.stringValue = column == .time ? LogcatTime.format(entry.timestamp, includeDate: showDate) : ""

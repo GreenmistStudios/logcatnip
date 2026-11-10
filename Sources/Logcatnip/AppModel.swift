@@ -84,7 +84,7 @@ final class AppModel {
                         + "rows=\(session.rows.count) processes=\(stats.running) pending=\(stats.pending) "
                         + "unresolved=\(stats.unresolvable) "
                         + "ps=\(session.processLookupCount) pm=\(session.packageLookupCount) "
-                        + "packages=\(session.packageOwnerCount) "
+                        + "packages=\(session.packageOwnerCount) markers=\(session.processMarkerCount) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
                     FileHandle.standardError.write(Data(line.utf8))
                 }

@@ -11,6 +11,7 @@ enum SettingsKey {
     static let favoriteFilters = "favoriteFilters"
     static let autoOpenSessions = "autoOpenSessions"
     static let wrapLines = "wrapLines"
+    static let processMarkers = "processMarkers"
 }
 
 enum Defaults {
@@ -24,12 +25,17 @@ enum Defaults {
             SettingsKey.autoOpenSessions: true,
             SettingsKey.wrapLines: false,
             SettingsKey.logcatBuffers: "",
+            SettingsKey.processMarkers: ProcessMarkerScope.mine.rawValue,
         ])
     }
 
     static var myPackages: Set<String> {
         let raw = UserDefaults.standard.string(forKey: SettingsKey.myPackages) ?? ""
         return Set(raw.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init))
+    }
+
+    static var processMarkerScope: ProcessMarkerScope {
+        ProcessMarkerScope(rawValue: UserDefaults.standard.string(forKey: SettingsKey.processMarkers) ?? "") ?? .mine
     }
 
     static var logcatBuffers: [String] {

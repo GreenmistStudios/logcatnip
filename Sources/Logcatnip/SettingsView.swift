@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.fontSize) private var fontSize = Defaults.fontSize
     @AppStorage(SettingsKey.logcatBuffers) private var logcatBuffers = ""
     @AppStorage(SettingsKey.autoOpenSessions) private var autoOpenSessions = true
+    @AppStorage(SettingsKey.processMarkers) private var processMarkers = ProcessMarkerScope.mine.rawValue
 
     var body: some View {
         Form {
@@ -29,6 +30,13 @@ struct SettingsView: View {
             Section("Filtering") {
                 TextField("My packages", text: $myPackages, prompt: Text("com.example.app, com.example.debug"))
                 Text("Used by the package:mine filter. Separate with commas or spaces. When empty, package:mine shows everything.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Process markers", selection: $processMarkers) {
+                    Text("My packages only").tag(ProcessMarkerScope.mine.rawValue)
+                    Text("All apps").tag(ProcessMarkerScope.all.rawValue)
+                }
+                Text("PROCESS STARTED and PROCESS ENDED rows. My packages only shows none until you list your packages.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -52,6 +60,9 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onChange(of: processMarkers) {
+            for session in model.sessions { session.refilter() }
+        }
         .frame(width: 520)
         .padding(.vertical)
     }
