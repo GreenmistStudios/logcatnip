@@ -18,6 +18,10 @@ Android Studio's Logcat window.
   lines as they stream, then from `ps`, and, for a process that exited before either, from the app that owns
   the entry's uid (`pm list packages -U`, Android 8.0+). Apps that crash at startup, broadcast receivers and
   `:remote` processes still match `package:`. A package found only through the uid is shown dimmed in italics.
+- **Process markers.** `PROCESS STARTED (pid) for package …` and `PROCESS ENDED (pid) for package …` rows show
+  where each run of an app starts and ends, with `(crashed)` or `(force stopped)` when the log says. They come
+  from ActivityManager's lines in the system buffer (one of logcat's default buffers) and, for your packages,
+  from `ps` when those lines are missing. Settings shows them for your packages (the default) or for all apps.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header; the Process and UID columns start hidden, and the Package
   column shows the base package of a `:remote` process), and follow mode that stops when you scroll up. Long
@@ -76,6 +80,9 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 
 Unquoted values end at whitespace, `&` or `|` (regex values only at whitespace). Quote values that contain
 them.
+
+Process markers match `package:` (including `package:mine`), `process:` and `pid:` terms; other terms neither
+show nor hide them. Other markers, such as Device disconnected, always show.
 
 ## Layout
 

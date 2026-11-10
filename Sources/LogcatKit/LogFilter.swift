@@ -49,10 +49,26 @@ public struct LogFilter: Sendable {
     public static let everything = try! LogFilter("")
 
     public func matches(_ entry: LogEntry, context: FilterContext) -> Bool {
-        if entry.kind == .marker { return true }
+        switch entry.kind {
+        case .log: break
+        case .marker: return true
+        case .process: return matchesProcessMarker(entry, context: context)
+        }
         guard let root else { return true }
         var subject = FilterSubject(entry: entry, context: context)
         return root.evaluate(&subject)
+    }
+
+    /// A process marker answers only to `package:`, `process:` and `pid:` terms, so `-tag:Noisy` or `level:E`
+    /// never hides one. The scope setting decides first whether other apps' markers show at all.
+    private func matchesProcessMarker(_ entry: LogEntry, context: FilterContext) -> Bool {
+        if context.processMarkers == .mine,
+           !context.myPackages.contains(LogEntry.packageName(forProcess: entry.processName ?? "")) {
+            return false
+        }
+        guard let root else { return true }
+        var subject = FilterSubject(entry: entry, context: context)
+        return root.evaluateForProcessMarker(&subject) ?? true
     }
 }
 
@@ -66,17 +82,21 @@ public struct FilterContext: Sendable {
     public var now: Double
     /// Owners of app uids, for entries whose process was never named.
     public var packages: PackageUIDMap
+    /// Which apps' process markers pass. `.mine` with no packages hides them all.
+    public var processMarkers: ProcessMarkerScope
 
     public init(
         processNames: [Int32: String] = [:],
         myPackages: Set<String> = [],
         now: Double = Date().timeIntervalSince1970,
-        packages: PackageUIDMap = PackageUIDMap()
+        packages: PackageUIDMap = PackageUIDMap(),
+        processMarkers: ProcessMarkerScope = .all
     ) {
         self.processNames = processNames
         self.myPackages = myPackages
         self.now = now
         self.packages = packages
+        self.processMarkers = processMarkers
     }
 }
 
@@ -630,5 +650,32 @@ struct FilterParser {
     private func simplify(_ node: FilterNode) -> FilterNode? {
         if case .predicate(.always) = node { return nil }
         return node
+    }
+}
+
+// MARK: - Process markers
+
+extension FilterNode {
+    /// Evaluates a query against a process marker, which has no tag, message or level: only `package:`,
+    /// `process:` and `pid:` terms (and `package:mine`) give an answer, and every other term is neutral (nil).
+    /// `not` keeps neutral, `and` / `or` ignore neutral children, and a neutral query shows the marker.
+    func evaluateForProcessMarker(_ subject: inout FilterSubject) -> Bool? {
+        switch self {
+        case let .predicate(predicate):
+            switch predicate {
+            case .text(.package, _), .text(.process, _), .myPackages, .pid:
+                return subject.matches(predicate)
+            default:
+                return nil
+            }
+        case let .not(node):
+            return node.evaluateForProcessMarker(&subject).map { !$0 }
+        case let .and(nodes):
+            let results = nodes.compactMap { $0.evaluateForProcessMarker(&subject) }
+            return results.isEmpty ? nil : results.allSatisfy { $0 }
+        case let .or(nodes):
+            let results = nodes.compactMap { $0.evaluateForProcessMarker(&subject) }
+            return results.isEmpty ? nil : results.contains(true)
+        }
     }
 }

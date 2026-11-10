@@ -110,6 +110,11 @@ final class LogSession: Identifiable {
     /// How many `pm list packages` reads this session ran. For debug output.
     @ObservationIgnored private(set) var packageLookupCount = 0
 
+    @ObservationIgnored private var markerTracker = ProcessMarkerTracker()
+    /// How many process markers this session inserted. For debug output.
+    @ObservationIgnored private(set) var processMarkerCount = 0
+    private static let debugMarkers = ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1"
+
     /// How long a new pid waits for ActivityManager's `Start proc` line before `ps` is asked about it, so
     /// processes announced in the stream never cost a `ps`.
     private static let processStartGrace = 0.3
@@ -213,6 +218,9 @@ final class LogSession: Identifiable {
         clear()
         resumeAfter = nil
         lastTimestamp = nil
+        // The buffer is replayed from the start, so the tracker must not remember the previous replay.
+        markerTracker = ProcessMarkerTracker()
+        processMarkerCount = 0
         start()
     }
 
@@ -288,12 +296,23 @@ final class LogSession: Identifiable {
     private func ingest(_ batch: [LogEntry]) {
         let now = ProcessInfo.processInfo.systemUptime
         var named = ProcessNameResolver.Update()
+        var events: [Int: ProcessEvent] = [:]
+        for index in batch.indices {
+            if let event = ProcessEvent(batch[index]) { events[index] = event }
+        }
+        let hoisted = events.isEmpty ? [:] : ProcessMarkerTracker.hoistedStarts(in: batch, events: events)
         entries.reserveCapacity(entries.count + batch.count)
-        for var entry in batch {
+        for index in batch.indices {
+            var entry = batch[index]
             if let resumeAfter {
                 if entry.timestamp < resumeAfter { continue }
                 if entry.timestamp == resumeAfter, alreadyHave(entry) { continue }
                 if entry.timestamp > resumeAfter { self.resumeAfter = nil }
+            }
+            // The child logs before system_server writes its `Start proc` line; the marker goes above them.
+            if let startIndex = hoisted[index], case let .started(pid, process, uid)? = events[startIndex] {
+                appendProcessMarkers(
+                    markerTracker.started(pid: pid, process: process, uid: uid, seq: nextID), at: entry.timestamp)
             }
             entry.id = nextID
             nextID += 1
@@ -303,7 +322,8 @@ final class LogSession: Identifiable {
             }
             lastTimestamp = entry.timestamp
             entries.append(entry)
-            if let event = ProcessEvent(entry) { apply(event, seq: entry.id, to: &named) }
+            markerTracker.note(entry)
+            if let event = events[index] { apply(event, entry: entry, to: &named) }
         }
         if !named.isEmpty { applyNameUpdate(named) }
         trimIfNeeded()
@@ -312,14 +332,48 @@ final class LogSession: Identifiable {
         scheduleFlush()
     }
 
-    /// Binds pids named by ActivityManager. The update fills in entries the pid logged before its start line
-    /// (the child logs a few lines before system_server writes the event).
-    private func apply(_ event: ProcessEvent, seq: Int, to update: inout ProcessNameResolver.Update) {
+    /// Binds pids named by ActivityManager and inserts the process markers they call for. The update fills in
+    /// entries the pid logged before its start line (the child logs a few lines before system_server writes the
+    /// event). Markers follow the line that reported them, after any crash entry that came first.
+    private func apply(_ event: ProcessEvent, entry: LogEntry, to update: inout ProcessNameResolver.Update) {
         switch event {
         case let .started(pid, process, uid):
-            update.merge(processResolver.processStarted(pid: pid, name: process, seq: seq))
+            update.merge(processResolver.processStarted(pid: pid, name: process, seq: entry.id))
             if let uid { packageTracker.note(uid: uid) }
+            // Empty when the marker was already placed above the pid's first lines.
+            appendProcessMarkers(
+                markerTracker.started(pid: pid, process: process, uid: uid, seq: entry.id), at: entry.timestamp)
+        case let .ended(pid, process, reason):
+            processResolver.processEnded(pid: pid, seq: entry.id)
+            if let marker = markerTracker.ended(pid: pid, process: process, reason: reason, seq: entry.id) {
+                appendProcessMarkers([marker], at: entry.timestamp)
+            }
         }
+    }
+
+    /// Appends marker rows. They are generated for every process; the scope setting only decides which show.
+    private func appendProcessMarkers(_ markers: [ProcessMarkerTracker.Marker], at timestamp: Double) {
+        guard !markers.isEmpty else { return }
+        let context = Self.debugMarkers ? filterContext() : nil
+        for marker in markers {
+            var entry = marker.entry(at: timestamp)
+            entry.id = nextID
+            nextID += 1
+            entries.append(entry)
+            processMarkerCount += 1
+            if let context { debugPrint(marker: entry, context: context) }
+        }
+        scheduleFlush()
+    }
+
+    /// Debug output for `LOGCATNIP_DEBUG=1`: the marker, whether the current filter shows it, and the newest
+    /// earlier entry of the same pid, so ordering against crash entries can be read from a terminal.
+    private func debugPrint(marker: LogEntry, context: FilterContext) {
+        let visible = filter.matches(marker, context: context)
+        let after = entries.suffix(2000).last { $0.kind == .log && $0.pid == marker.pid }
+        let anchor = after.map { "#\($0.id) \($0.tag)/\($0.level.letter)" } ?? "-"
+        let line = "[logcatnip]   \(title): marker #\(marker.id) \"\(marker.message)\" visible=\(visible) after=\(anchor)\n"
+        FileHandle.standardError.write(Data(line.utf8))
     }
 
     private func alreadyHave(_ entry: LogEntry) -> Bool {
@@ -413,7 +467,9 @@ final class LogSession: Identifiable {
     // MARK: Filtering
 
     private func filterContext() -> FilterContext {
-        FilterContext(myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970, packages: packageTracker.map)
+        FilterContext(
+            myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970, packages: packageTracker.map,
+            processMarkers: Defaults.processMarkerScope)
     }
 
     private func scheduleFilterUpdate() {
@@ -561,6 +617,11 @@ final class LogSession: Identifiable {
 
     private func applyProcessNames(_ names: [Int32: String], from lookup: ProcessNameResolver.Lookup) {
         applyNameUpdate(processResolver.applySnapshot(names, from: lookup, now: ProcessInfo.processInfo.systemUptime))
+        // `ps` also lists daemons, so only the user's packages get markers from it.
+        let mine = Defaults.myPackages
+        appendProcessMarkers(
+            markerTracker.applySnapshot(names, lookupStartSeq: lookup.startSeq) { mine.contains($0) },
+            at: lastTimestamp ?? Date().timeIntervalSince1970)
     }
 
     /// Stamps names from a snapshot or an event on the entries that waited for them, and refreshes what the
@@ -681,7 +742,7 @@ final class LogSession: Identifiable {
     // MARK: Text output
 
     func formattedLine(for entry: LogEntry) -> String {
-        if entry.kind == .marker {
+        if entry.isMarker {
             return "--------- \(entry.message)"
         }
         let time = LogcatTime.format(entry.timestamp)

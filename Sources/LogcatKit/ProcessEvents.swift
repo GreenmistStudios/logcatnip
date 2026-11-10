@@ -1,30 +1,72 @@
 import Foundation
 
 /// A process lifecycle line that ActivityManager writes to the system buffer. Seen in the stream, it names a
-/// pid before any `ps` can, which is the only way to name a process that exits within a poll interval.
+/// pid before any `ps` can, which is the only way to name a process that exits within a poll interval, and it
+/// says when a process ended.
 public enum ProcessEvent: Sendable, Equatable {
     /// `Start proc <pid>:<process>/<uid> …` (Android 5.1+) or `Start proc <process> … pid=<pid> uid=<uid> …`
     /// (Android 5.0). `uid` is the full uid (user × 100000 + appId), nil when it cannot be read.
     case started(pid: Int32, process: String, uid: Int?)
+    /// `Killing <pid>:<process>/<uid> (adj <n>): <reason>` (Android 5.0+) or `Process <process> (pid <pid>)
+    /// has died…` (5.0+; 9.0+ appends the oom adj and process state, 5.0 also logs `has died and restarted
+    /// (pid <new>).`). `reason` is set only for the kinds a marker names.
+    case ended(pid: Int32, process: String, reason: ProcessEndReason?)
 
-    /// Parses an ActivityManager entry. Cheap for everything else: kind, tag and a message prefix are checked
-    /// before any parsing, because this runs for every ingested entry.
+    /// Parses an ActivityManager entry. Cheap for everything else: kind, tag and the first message byte are
+    /// checked before any parsing, because this runs for every ingested entry.
     public init?(_ entry: LogEntry) {
-        guard entry.kind == .log, entry.tag == "ActivityManager", entry.message.hasPrefix(Self.startPrefix) else {
-            return nil
-        }
+        guard entry.kind == .log, entry.tag == "ActivityManager",
+              let first = entry.message.utf8.first, first == UInt8(ascii: "S") || first == UInt8(ascii: "K")
+              || first == UInt8(ascii: "P")
+        else { return nil }
         self.init(activityManagerMessage: entry.message)
     }
 
     /// Parses the message of an ActivityManager entry.
     public init?(activityManagerMessage message: String) {
-        guard message.hasPrefix(Self.startPrefix) else { return nil }
-        let body = message.dropFirst(Self.startPrefix.count)
-        guard let event = Self.parseStart(body) else { return nil }
+        let event: ProcessEvent?
+        if message.hasPrefix(Self.startPrefix) {
+            event = Self.parseStart(message.dropFirst(Self.startPrefix.count))
+        } else if message.hasPrefix(Self.killingPrefix) {
+            event = Self.parseKilling(message.dropFirst(Self.killingPrefix.count))
+        } else if message.hasPrefix(Self.processPrefix) {
+            event = Self.parseDeath(message.dropFirst(Self.processPrefix.count))
+        } else {
+            event = nil
+        }
+        guard let event else { return nil }
         self = event
     }
 
     private static let startPrefix = "Start proc "
+    private static let killingPrefix = "Killing "
+    private static let processPrefix = "Process "
+
+    /// `<pid>:<process>/<uid> (adj <n>): <reason>`. `Killing processes <reason>` has no pid and is skipped.
+    private static func parseKilling(_ body: Substring) -> ProcessEvent? {
+        guard let colon = body.firstIndex(of: ":"), let pid = positiveInt(body[..<colon]) else { return nil }
+        let rest = body[body.index(after: colon)...]
+        guard let slash = rest.firstIndex(of: "/") else { return nil }
+        let process = rest[..<slash]
+        guard !process.isEmpty, !process.contains(" ") else { return nil }
+        // The uid (`u0a233`, `1000`, `u0a57i3`) is not needed: Start proc already carries it.
+        let afterUID = rest[slash...].drop { $0 != " " }
+        guard afterUID.hasPrefix(" (adj "), let close = afterUID.range(of: "): ") else { return nil }
+        let reason = afterUID[close.upperBound...]
+        return .ended(pid: pid, process: String(process), reason: ProcessEndReason(killReason: reason))
+    }
+
+    /// `<process> (pid <pid>) has died…`. Other `Process …` lines (`early provider death`, `failed to attach`,
+    /// `has crashed too many times`) are not process ends.
+    private static func parseDeath(_ body: Substring) -> ProcessEvent? {
+        guard let marker = body.range(of: " (pid ") else { return nil }
+        let process = body[..<marker.lowerBound]
+        guard !process.isEmpty, !process.contains(" ") else { return nil }
+        let afterMarker = body[marker.upperBound...]
+        guard let close = afterMarker.firstIndex(of: ")"), let pid = positiveInt(afterMarker[..<close]) else { return nil }
+        guard afterMarker[afterMarker.index(after: close)...].hasPrefix(" has died") else { return nil }
+        return .ended(pid: pid, process: String(process), reason: nil)
+    }
 
     private static func parseStart(_ body: Substring) -> ProcessEvent? {
         guard let colon = body.firstIndex(of: ":"), let pid = positiveInt(body[..<colon]) else {

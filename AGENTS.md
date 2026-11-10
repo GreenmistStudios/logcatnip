@@ -35,7 +35,10 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
   - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
     events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
-  - `ProcessEvents.swift`: ActivityManager `Start proc` lines, which name a pid before `ps` can.
+  - `ProcessEvents.swift`: ActivityManager `Start proc`, `Killing` and `has died` lines, which name a pid
+    before `ps` can and mark where processes end.
+  - `ProcessMarkers.swift`: PROCESS STARTED / ENDED markers: which to insert from ActivityManager events,
+    crash lines and `ps` snapshot diffs, and the marker filter scope.
   - `PackageUIDs.swift`: `pm list packages -U` parsing, uid -> package map and when to refresh it.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.

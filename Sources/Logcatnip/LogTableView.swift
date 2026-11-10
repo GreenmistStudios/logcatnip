@@ -352,7 +352,7 @@ struct LogTableView: NSViewRepresentable {
             let logRow = session.rows[row]
             guard let entry = session.entry(for: logRow) else { return tableView.rowHeight }
             // Markers add six characters of decoration around the message.
-            let length = entry.kind == .marker
+            let length = entry.isMarker
                 ? Self.columns(entry.message) + 6
                 : Self.columns(Self.line(Int(logRow.line), of: entry.message))
             let lines = max(1, (length + wrapColumns - 1) / wrapColumns)
@@ -394,13 +394,14 @@ struct LogTableView: NSViewRepresentable {
             let logRow = session.rows[row]
             guard let entry = session.entry(for: logRow) else { return nil }
 
-            if entry.kind == .marker {
+            if entry.isMarker {
                 let label = makeLabel(column.identifier)
                 if column == .message {
                     setWrapping(label)
                     label.stringValue = "——— \(entry.message) ———"
                     label.font = italicFont ?? label.font
-                    label.textColor = .secondaryLabelColor
+                    label.textColor = entry.kind == .process(.ended(.crashed))
+                        ? LogColors.text(for: .error) : .secondaryLabelColor
                     noteMessageWidth(of: label)
                 } else {
                     label.stringValue = column == .time ? LogcatTime.format(entry.timestamp, includeDate: showDate) : ""
