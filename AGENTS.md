@@ -59,6 +59,10 @@ record; nothing is committed back. The commit type you choose therefore decides 
     events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
+  - `LogFinder.swift`: find-in-results queries (plain, regex, whole word) and the rows they match.
+  - `FindResults.swift`: matching row indexes kept across appends, front trims and resets, and the
+    next/previous jump targets.
+  - `ScrollMarkerLayout.swift`: pixel runs for scroller tick marks (find now, the crash navigator later).
   - `SoftwareUpdate.swift`: `SemanticVersion`, the GitHub Releases feed, and the updater's download, SHA-256 and
     bundle checks, and the shell that swaps the app after it quits.
   - `UpdateController.swift`: the update flow (check, skip, daily schedule, download, install) as a
@@ -68,6 +72,9 @@ record; nothing is committed back. The commit type you choose therefore decides 
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
+  - `FindController.swift`, `FindBar.swift`: the find bar, its state, and incremental off-main scans.
+  - `ScrollMarkers.swift`: the tick marks drawn over the table's vertical scroller, one layer per kind of
+    mark.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
   - `Updater.swift`: wires `UpdateController` to the bundle and the `LOGCATNIP_UPDATE_*` hooks, the Software Update
