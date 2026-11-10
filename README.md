@@ -30,7 +30,9 @@ Android Studio's Logcat window.
   minimum level.
 - **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker.
 - **Import and export.** Export in `logcat -v long` format. Open long or threadtime (`adb logcat` default,
-  bug report) files, or drop them on the window.
+  bug report) files, or drop them on the window. Threadtime and old `-v long` lines have no year, so
+  Logcatnip takes it from the file's modification date, and a time more than a day after that date
+  belongs to the year before. Lines that carry a year (`-v year`) keep it.
 - Pause, clear the view, clear the device buffer (`logcat -c`), and restart logcat.
 - Android 6.0 and older: their logcat has no `-v epoch` or `-v uid`, so Logcatnip reads device-local times
   (in the Mac's time zone) and shows no uid. It switches automatically when getprop or logcat reports an old
