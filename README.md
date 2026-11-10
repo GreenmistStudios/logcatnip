@@ -17,6 +17,11 @@ Android Studio's Logcat window.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
   lines scroll horizontally, or turn on Wrap Lines in the toolbar to wrap them to the window width.
+- **Find in results.** ⌘F opens a find bar that searches the tag and message of the rows shown (after the
+  filter), with match case, regex and whole word options. Every match is highlighted, the current one in
+  orange, with an "N of M" counter and tick marks on the scroller. Return or ⌘G goes to the next match,
+  ⇧Return or ⇧⌘G to the previous (both wrap), ⌘E searches for the selected text or line, and Esc closes the
+  bar. ⌘L focuses the filter.
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or set the
   minimum level.
 - **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker.
@@ -77,7 +82,7 @@ them.
 
 ## Layout
 
-- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime), the filter language, and adb
+- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime), the filter language, find, and adb
   (device tracking, logcat streaming, process names). No UI dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
