@@ -67,6 +67,9 @@ final class AppModel {
         if let raw = ProcessInfo.processInfo.environment["LOGCATNIP_VIEW_CYCLE"], let period = Double(raw) {
             startDebugViewCycle(period: period)
         }
+        if ProcessInfo.processInfo.environment["LOGCATNIP_CARD_KEYS"] == "1" {
+            startDebugCardKeys()
+        }
         // Debug helper: open log files at launch, `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt`.
         if let paths = ProcessInfo.processInfo.environment["LOGCATNIP_OPEN"] {
             for path in paths.split(separator: ":") {
@@ -169,6 +172,33 @@ final class AppModel {
                     try? await Task.sleep(for: .seconds(1))
                     say("wrap-resize: \(table.debugSummary())")
                 }
+            }
+        }
+    }
+
+    /// Debug helper: `LOGCATNIP_CARD_KEYS=1` waits for the selected session to have rows, then sends the arrow
+    /// keys to the table from a multi-row entry and prints a `card-keys` line (`check=ok` when the selection
+    /// moved as expected): in the session's layout, in the other one a second later, and in the first again.
+    /// It sets the session's options directly, so it never changes the saved default.
+    private func startDebugCardKeys() {
+        Task { [weak self] in
+            func say(_ text: String) {
+                FileHandle.standardError.write(Data("[logcatnip] \(text)\n".utf8))
+            }
+            while true {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self else { return }
+                if let session = self.selectedSession, !session.rows.isEmpty, session.status != .loading, session.status != .starting {
+                    break
+                }
+            }
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, let session = self.selectedSession, let table = session.tableDebug else { return }
+            say(table.debugPressCardKeys())
+            for _ in 0..<2 {
+                session.viewOptions.layout = session.viewOptions.layout == .cards ? .table : .cards
+                try? await Task.sleep(for: .seconds(1))
+                say(table.debugPressCardKeys())
             }
         }
     }

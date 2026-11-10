@@ -875,9 +875,11 @@ struct LogTableView: NSViewRepresentable {
 
         // MARK: Keyboard
 
-        /// ←/→ scroll sideways by eight characters, ⌘←/⌘→ to the left and right edges, when long lines scroll
-        /// instead of wrapping and the table has focus. Returns whether it handled the key.
+        /// In cards, ↑/↓ move by whole cards (`handleCardKey`). ←/→ scroll sideways by eight characters, ⌘←/⌘→ to
+        /// the left and right edges, when long lines scroll instead of wrapping and the table has focus. Returns
+        /// whether it handled the key.
         func handleKey(_ event: NSEvent) -> Bool {
+            if cardLayout != nil, handleCardKey(event) { return true }
             let clip = scrollView.contentView
             guard !wrapLines, tableView.frame.width > clip.bounds.width + 0.5, let key = event.specialKey else { return false }
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
@@ -1035,7 +1037,9 @@ extension LogTableView.Coordinator {
     private static let cardGap = 6.0
     private static let cardInset = 6.0
     private static let cardHorizontalPadding = 10.0
-    /// Selecting more rows than this is not widened to whole entries: it is a select-all, which already is.
+    /// Selecting more rows than this is not widened to whole entries: it is a select-all, which already is. A
+    /// shift-click range longer than this can start or end partway through a card; that is accepted, since it
+    /// only affects the drawn edge of a huge selection.
     private static let maxExpandedSelection = 5000
 
     /// Sets up the card geometry and fonts, and takes the column header, corner and column spacing off the
@@ -1208,9 +1212,40 @@ extension LogTableView.Coordinator {
         return view
     }
 
-    /// A card is selected whole, so a click or arrow key on one of its rows takes all of them.
+    /// A card is selected whole, so a click on one of its rows, or any key AppKit handles, takes all of them.
     func tableView(_ tableView: NSTableView, selectionIndexesForProposedSelection proposed: IndexSet) -> IndexSet {
         expandedToEntries(proposed)
+    }
+
+    /// ↑/↓ select the previous or next card whole (⇧ adds it). AppKit would move its selected row one row at a
+    /// time, and `expandedToEntries` would pull each step back into the same card. Other keys, and ↑/↓ with
+    /// ⌘, ⌥ or ⌃, stay AppKit's, whose proposals still go through `expandedToEntries`.
+    func handleCardKey(_ event: NSEvent) -> Bool {
+        guard cardLayout != nil, let session, let key = event.specialKey else { return false }
+        let direction: CardNavigation.Direction
+        switch key {
+        case .downArrow: direction = .down
+        case .upArrow: direction = .up
+        default: return false
+        }
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers.isEmpty || modifiers == .shift else { return false }
+        let rows = session.rows
+        let visible = tableView.rows(in: tableView.visibleRect)
+        guard let step = CardNavigation.step(
+            direction, extending: modifiers == .shift, selection: tableView.selectedRowIndexes,
+            visibleRows: visible.location..<(visible.location + visible.length),
+            rowCount: min(rows.count, tableView.numberOfRows), entryID: { rows[$0].entryID }
+        ) else { return true }
+        if step.selection != tableView.selectedRowIndexes {
+            tableView.selectRowIndexes(step.selection, byExtendingSelection: false)
+        }
+        // Not marked programmatic: like the table's own arrow keys, reaching the bottom resumes following new
+        // logs and leaving it stops (`boundsDidChange`). The last row goes first, so a card taller than the
+        // view ends with its top showing.
+        tableView.scrollRowToVisible(step.reveal.upperBound)
+        tableView.scrollRowToVisible(step.reveal.lowerBound)
+        return true
     }
 
     /// `selection` with every row of each entry it touches, in card layout; unchanged in the table.
@@ -1460,6 +1495,10 @@ protocol LogTableDebugging: AnyObject {
     func debugScrollBenchmark(pages: Int) -> String
     /// Sends ←, →, ⌘→ and ⌘← to the table and reports the horizontal offset after each.
     func debugPressArrowKeys() -> String
+    /// Sends ↓ ↓ ↑ ↑ ⇧↓ ⇧↑ to the table from the first row of a multi-line entry, then ↓ onto the last entry,
+    /// and checks that cards move by whole entries (the table by single rows) and that reaching the end resumes
+    /// following.
+    func debugPressCardKeys() -> String
     /// The view options, the column order, and the cells on screen, checked against the formatter.
     func debugViewSummary() -> String
     /// What Copy would put on the pasteboard for the last `entries` entries, one per line, with newlines
@@ -1555,6 +1594,105 @@ extension LogTableView.Coordinator: LogTableDebugging {
             steps.append("\(name):\(handled ? "scrolled" : "ignored")@\(Int(before))->\(Int(clip.bounds.origin.x))")
         }
         return "arrow-keys wrap=\(wrapLines ? "on" : "off") \(range) " + steps.joined(separator: " ")
+    }
+
+    /// Sends ↓ ↓ ↑ ↑ ⇧↓ ⇧↑ to the table from the first row of a multi-line entry, then ↓ onto the last entry,
+    /// and checks that cards move by whole entries (the table by single rows) and that reaching the end resumes
+    /// following.
+    func debugPressCardKeys() -> String {
+        guard let session else { return "card-keys no session" }
+        let rows = session.rows
+        let count = min(rows.count, tableView.numberOfRows)
+        guard count >= 4 else { return "card-keys too few rows" }
+        // A window nobody can see may not have laid out the table since its options changed.
+        scrollView.tile()
+        tableView.tile()
+        let cards = cardLayout != nil
+        // The expectations walk the rows on their own, not through `CardNavigation`, which would only test itself.
+        func card(_ row: Int) -> ClosedRange<Int> {
+            var last = row
+            while last + 1 < count, rows[last + 1].entryID == rows[row].entryID { last += 1 }
+            return max(0, row - Int(rows[row].line))...last
+        }
+        func next(_ c: ClosedRange<Int>) -> ClosedRange<Int> { c.upperBound + 1 < count ? card(c.upperBound + 1) : c }
+        func previous(_ c: ClosedRange<Int>) -> ClosedRange<Int> { c.lowerBound > 0 ? card(c.lowerBound - 1) : c }
+        func describe(_ set: IndexSet) -> String {
+            guard let first = set.first, let last = set.last else { return "-" }
+            return "\(first)-\(last)" + (set.count == last - first + 1 ? "" : "*")
+        }
+        func range(_ r: ClosedRange<Int>) -> IndexSet { IndexSet(integersIn: r) }
+        // The last multi-line entry with an entry before it and two after it, else the middle one.
+        var start = card(count / 2)
+        for row in stride(from: count - 1, through: 1, by: -1) where rows[row].line >= 1 && !rows[row].isMarker {
+            let c = card(row)
+            if c.lowerBound > 0, next(c) != c, next(next(c)) != next(c) {
+                start = c
+                break
+            }
+        }
+        let n1 = next(start)
+        let n2 = next(n1)
+        var steps: [String] = []
+        var mismatch: String?
+        func press(_ name: String, down: Bool, shift: Bool = false, expected: IndexSet?) {
+            let key = down ? NSDownArrowFunctionKey : NSUpArrowFunctionKey
+            let characters = String(Character(UnicodeScalar(UInt32(key))!))
+            let flags: NSEvent.ModifierFlags = shift ? [.numericPad, .function, .shift] : [.numericPad, .function]
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                windowNumber: tableView.window?.windowNumber ?? 0, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: down ? 125 : 126
+            ) else { return }
+            // The real path: `keyHandler` offers it to `handleKey`, and AppKit gets what that leaves.
+            tableView.keyDown(with: event)
+            let actual = tableView.selectedRowIndexes
+            steps.append("\(name):\(describe(actual))")
+            if let expected, actual != expected, mismatch == nil { mismatch = "\(name) \(describe(actual))!=\(describe(expected))" }
+        }
+
+        session.autoScroll = false
+        let s = start.lowerBound
+        // The first row only, as a click on it would select, so AppKit starts from the top of the card.
+        tableView.selectRowIndexes(IndexSet(integer: s), byExtendingSelection: false)
+        isProgrammaticScroll = true
+        tableView.scrollRowToVisible(start.upperBound)
+        tableView.scrollRowToVisible(start.lowerBound)
+        isProgrammaticScroll = false
+        if cards {
+            press("↓", down: true, expected: range(n1))
+            press("↓", down: true, expected: range(n2))
+            press("↑", down: false, expected: range(n1))
+            press("↑", down: false, expected: range(start))
+            press("⇧↓", down: true, shift: true, expected: range(start).union(range(n1)))
+            press("⇧↑", down: false, shift: true, expected: range(previous(start)).union(range(start)).union(range(n1)))
+        } else {
+            // AppKit's row-wise ⇧ selection is not checked: it depends on its own anchor.
+            press("↓", down: true, expected: IndexSet(integer: s + 1))
+            press("↓", down: true, expected: IndexSet(integer: s + 2))
+            press("↑", down: false, expected: IndexSet(integer: s + 1))
+            press("↑", down: false, expected: IndexSet(integer: s))
+            press("⇧↓", down: true, shift: true, expected: nil)
+            press("⇧↑", down: false, shift: true, expected: nil)
+        }
+
+        // ↓ onto the last entry reaches the bottom, which resumes following new logs (`boundsDidChange`). The
+        // table starts from the second-to-last row: AppKit moves one row, so that is the row before the last.
+        let last = card(count - 1)
+        let before = cards ? previous(last) : (count - 2)...(count - 2)
+        debugSelect(row: before.upperBound, at: 1, following: false)
+        press("end↓", down: true, expected: cards ? range(last) : IndexSet(integer: count - 1))
+        let clip = scrollView.contentView
+        let viewport = clip.bounds.height - clip.contentInsets.top - clip.contentInsets.bottom
+        let fits = tableView.frame.height <= viewport + 1
+        var follow = session.autoScroll ? "on" : "off"
+        if fits {
+            follow = "skipped(fits)"
+        } else if !session.autoScroll, mismatch == nil {
+            mismatch = "end↓ follow=off"
+        }
+        let check = mismatch.map { "MISMATCH(\($0))" } ?? "ok"
+        return "card-keys layout=\(cards ? "cards" : "table") start=\(start.lowerBound)-\(start.upperBound) rows=\(start.count) "
+            + steps.joined(separator: " ") + " follow=\(follow) check=\(check)"
     }
 
     /// Scrolls through the whole log one jump per page, so every step draws a fresh page of rows (the worst
