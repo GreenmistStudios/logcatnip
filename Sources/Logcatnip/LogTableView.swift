@@ -167,6 +167,13 @@ struct LogTableView: NSViewRepresentable {
 
         func update(session: LogSession, fontSize: Double, showDate: Bool, wrapLines: Bool) {
             var needsReload = false
+            // The viewport is captured before anything changes, while the old heights are still in place.
+            var anchor: ViewportAnchor?
+            var selection = IndexSet()
+            if self.session === session {
+                selection = tableView.selectedRowIndexes
+                if self.wrapLines != wrapLines { anchor = captureAnchor() }
+            }
             if self.session !== session {
                 unbindSession()
                 self.session = session
@@ -188,11 +195,10 @@ struct LogTableView: NSViewRepresentable {
                 self.wrapLines = wrapLines
                 scrollView.hasHorizontalScroller = !wrapLines
                 setHeightOfRowEnabled(wrapLines)
-                if wrapLines {
-                    let clipView = scrollView.contentView
-                    clipView.scroll(to: NSPoint(x: 0, y: clipView.bounds.origin.y))
-                    scrollView.reflectScrolledClipView(clipView)
-                }
+                // Wrapped text has no sideways extent, and the unwrapped column starts at its left edge.
+                let clipView = scrollView.contentView
+                clipView.scroll(to: NSPoint(x: 0, y: clipView.bounds.origin.y))
+                scrollView.reflectScrolledClipView(clipView)
                 needsReload = true
             }
             if self.showDate != showDate {
@@ -205,8 +211,18 @@ struct LogTableView: NSViewRepresentable {
                 resetMessageWidth()
                 wrapColumns = currentWrapColumns()
                 reloadAll()
+                // Reloading drops the selection; the rows are the same ones, so it can simply be put back.
+                if !selection.isEmpty { tableView.selectRowIndexes(selection, byExtendingSelection: false) }
                 updateFindMarkers()
-                if session.autoScroll { scrollToEnd() }
+                if let anchor {
+                    restore(anchor, settleFollow: false)
+                    // SwiftUI may still lay out after this update, so settle again once it is done.
+                    DispatchQueue.main.async { [weak self] in
+                        self?.restore(anchor, settleFollow: true)
+                    }
+                } else if session.autoScroll {
+                    scrollToEnd()
+                }
             }
         }
 

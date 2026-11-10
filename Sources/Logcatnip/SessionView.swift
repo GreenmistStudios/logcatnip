@@ -5,7 +5,6 @@ struct SessionView: View {
     let session: LogSession
     @AppStorage(SettingsKey.fontSize) private var fontSize = Defaults.fontSize
     @AppStorage("showDate") private var showDate = false
-    @AppStorage(SettingsKey.wrapLines) private var wrapLines = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,26 +14,25 @@ struct SessionView: View {
                 FindBar(find: session.find)
                 Divider()
             }
-            LogTableView(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
+            LogTableView(session: session, fontSize: fontSize, showDate: showDate, wrapLines: session.softWrap)
             Divider()
             StatusBar(session: session)
         }
         .focusedSceneValue(\.session, session)
-        .toolbar { SessionToolbar(session: session, showDate: $showDate, wrapLines: $wrapLines) }
+        .toolbar { SessionToolbar(session: session, showDate: $showDate) }
     }
 }
 
 private struct SessionToolbar: ToolbarContent {
     @Bindable var session: LogSession
     @Binding var showDate: Bool
-    @Binding var wrapLines: Bool
 
     var body: some ToolbarContent {
         ToolbarItemGroup {
-            Toggle(isOn: $wrapLines) {
-                Label("Wrap Lines", systemImage: "arrow.turn.down.left")
+            Toggle(isOn: Binding(get: { session.softWrap }, set: { session.setSoftWrap($0) })) {
+                Label("Soft Wrap", systemImage: "arrow.turn.down.left")
             }
-            .help(wrapLines ? "Stop wrapping long lines" : "Wrap long lines to the window width")
+            .help(session.softWrap ? "Stop wrapping long lines (⌃⌘L)" : "Wrap long lines in the Message column (⌃⌘L)")
 
             Button {
                 session.isPaused.toggle()

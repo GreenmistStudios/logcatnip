@@ -70,6 +70,9 @@ final class LogSession: Identifiable {
         didSet { if oldValue && !isPaused { flushRows() } }
     }
     var autoScroll = true
+    /// Wrap long lines inside the Message column instead of scrolling them sideways. Per session; a new
+    /// session starts with the last value chosen. Set it through `setSoftWrap` to remember the choice.
+    var softWrap = UserDefaults.standard.bool(forKey: SettingsKey.wrapLines)
     var filterQuery = "" {
         didSet { if filterQuery != oldValue { scheduleFilterUpdate() } }
     }
@@ -146,6 +149,12 @@ final class LogSession: Identifiable {
         let index = id - firstID
         guard index >= 0, index < entries.count else { return nil }
         return entries[index]
+    }
+
+    /// Turns soft wrap on or off for this session and remembers the choice for sessions opened later.
+    func setSoftWrap(_ on: Bool) {
+        softWrap = on
+        UserDefaults.standard.set(on, forKey: SettingsKey.wrapLines)
     }
 
     /// Id of the oldest entry still in the buffer. Entries are indexed by `id - firstEntryID`.
