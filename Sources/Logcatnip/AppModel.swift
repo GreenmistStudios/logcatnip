@@ -114,7 +114,9 @@ final class AppModel {
     /// row (`LOGCATNIP_WRAP_SELECT`: `middle`, the default, `end`, `none` or a row number), then toggles soft wrap four times,
     /// `<seconds>` apart, printing the table's state after each. `LOGCATNIP_SCROLL_BENCH=<pages>` adds a scroll
     /// timing for each mode, and `LOGCATNIP_WRAP_RESIZE=<points>` ends with a window resize,
-    /// and `LOGCATNIP_WRAP_KEYS=1` sends the arrow keys to the table in each mode. It bypasses `setSoftWrap`, so it never changes the saved default.
+    /// and `LOGCATNIP_WRAP_KEYS=1` sends the arrow keys to the table in each mode. `LOGCATNIP_LAYOUT_TOGGLE=1`
+    /// toggles the table and card layouts instead of soft wrap and prints `layout-toggle:` lines.
+    /// It bypasses `setSoftWrap` and the saved default, so it never changes what a new session starts with.
     private func startDebugWrapToggle(period: Double) {
         let environment = ProcessInfo.processInfo.environment
         let pages = environment["LOGCATNIP_SCROLL_BENCH"].flatMap(Int.init)
@@ -141,11 +143,17 @@ final class AppModel {
             case "end": table.debugSelect(row: last, at: 1, following: true)
             default: table.debugSelect(row: Int(select) ?? last / 2, at: 0.8, following: false)
             }
+            let toggleLayout = environment["LOGCATNIP_LAYOUT_TOGGLE"] == "1"
             for _ in 0..<4 {
                 try? await Task.sleep(for: .seconds(period))
-                session.softWrap.toggle()
+                if toggleLayout {
+                    session.viewOptions.layout = session.viewOptions.layout == .cards ? .table : .cards
+                } else {
+                    session.softWrap.toggle()
+                }
                 try? await Task.sleep(for: .seconds(1))
-                say("wrap-toggle: \(table.debugSummary())")
+                say("\(toggleLayout ? "layout-toggle" : "wrap-toggle"): \(table.debugSummary())")
+                if toggleLayout { say(table.debugViewSummary()) }
                 if pressKeys { say(table.debugPressArrowKeys()) }
                 if let pages { say(table.debugScrollBenchmark(pages: pages)) }
             }
@@ -168,7 +176,9 @@ final class AppModel {
     /// Debug helper: `LOGCATNIP_VIEW_CYCLE=<seconds>` waits for the selected session to have rows, then steps
     /// through the view options, `<seconds>` apart, each step building on the last: Standard, Compact,
     /// Standard with the time only, epoch, since start, delta, date and time in UTC, PID only, the Process
-    /// column, hide repeated, no tag colors, and Standard again (which must print `preset=standard`). After
+    /// column, hide repeated, no tag colors, and Standard again (which must print `preset=standard`), then the
+    /// card layout: cards, Compact in cards (`preset=compact`, still cards), cards with delta time and no PID,
+    /// cards with the Process column, and back to the table (`preset=standard layout=table header=yes`). After
     /// each step it prints the table's `view:` line and what Copy would paste for the last three entries.
     /// It sets the session's options directly, so it never changes the saved default.
     private func startDebugViewCycle(period: Double) {
@@ -199,6 +209,11 @@ final class AppModel {
                 ("hideRepeated", { $0.hideRepeatedTags = true; $0.hideRepeatedPackages = true; $0.hideRepeatedProcesses = true }),
                 ("noTagColors", { $0.colorTags = false }),
                 ("standard again", { $0 = .standard }),
+                ("cards", { $0.layout = .cards }),
+                ("cards+compact", { $0.apply(.compact) }),
+                ("cards+delta+noFooter", { $0.timestampStyle = .delta; $0.setVisible(.pid, false) }),
+                ("cards+process", { $0.apply(.standard); $0.setVisible(.process, true) }),
+                ("table", { $0 = .standard }),
             ]
             for (index, step) in steps.enumerated() {
                 step.1(&options)
@@ -210,13 +225,16 @@ final class AppModel {
         }
     }
 
-    /// Debug helper: `LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of new sessions, next
-    /// to `LOGCATNIP_FILTER`. It does not touch the saved default.
+    /// Debug helper: `LOGCATNIP_VIEW=standard|compact|cards|<json>` sets the view options of new sessions, next
+    /// to `LOGCATNIP_FILTER` (`cards` is Standard in the card layout). It does not touch the saved default.
     private func applyDebugView(to session: LogSession) {
         guard let raw = ProcessInfo.processInfo.environment["LOGCATNIP_VIEW"] else { return }
         switch raw.lowercased() {
         case "standard": session.viewOptions = .standard
         case "compact": session.viewOptions = .compact
+        case "cards":
+            session.viewOptions = .standard
+            session.viewOptions.layout = .cards
         default: if let options = LogViewOptions(json: raw) { session.viewOptions = options }
         }
     }
