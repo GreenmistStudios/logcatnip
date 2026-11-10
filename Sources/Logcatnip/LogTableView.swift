@@ -80,6 +80,13 @@ struct LogTableView: NSViewRepresentable {
         /// The wrap width every row's height was last computed for. Differs from `wrapColumns` while a resize
         /// is still being applied.
         private var heightsColumns = 0
+        /// How often AppKit asked for a row height since launch; stays 0 while lines do not wrap.
+        private var heightCalls = 0
+        /// `LOGCATNIP_DEBUG=1` times reloads and height passes for the table's debug summary.
+        static let debugEnabled = ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1"
+        private var lastReload: (rows: Int, milliseconds: Double)?
+        private var lastHeightPass: Duration?
+        private var lastAnchor: (row: Int, before: Double, after: Double)?
         /// Paragraph styles for highlighted (attributed) cells, matching the line breaking of plain cells.
         private let truncatingStyle: NSParagraphStyle = {
             let style = NSMutableParagraphStyle()
@@ -181,6 +188,7 @@ struct LogTableView: NSViewRepresentable {
                 session.onRowsChanged = { [weak self] change in self?.apply(change) }
                 session.find.table = self
                 session.find.onChange = { [weak self] change in self?.applyFind(change) }
+                session.tableDebug = self
                 needsReload = true
             }
             if font.map({ Double($0.pointSize) }) != fontSize {
@@ -236,6 +244,7 @@ struct LogTableView: NSViewRepresentable {
             session?.onRowsChanged = nil
             session?.find.onChange = nil
             session?.find.table = nil
+            session?.tableDebug = nil
             fullHeightPass?.cancel()
         }
 
@@ -314,11 +323,25 @@ struct LogTableView: NSViewRepresentable {
             isProgrammaticScroll = false
         }
 
-        /// Reloads every row. A reload makes any pending height pass redundant.
+        /// Reloads every row. With `LOGCATNIP_DEBUG=1` it also forces all row heights and times the reload,
+        /// because computing them is what wrapping costs.
         private func reloadAll() {
+            // The reload computes every height, so a pending pass would only repeat it.
             fullHeightPass?.cancel()
             heightsColumns = wrapColumns
+            guard Self.debugEnabled else {
+                tableView.reloadData()
+                return
+            }
+            let started = ContinuousClock.now
             tableView.reloadData()
+            let count = tableView.numberOfRows
+            if count > 0 { _ = tableView.rect(ofRow: count - 1) }
+            lastReload = (count, Self.milliseconds(ContinuousClock.now - started))
+        }
+
+        private static func milliseconds(_ duration: Duration) -> Double {
+            Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15
         }
 
         // MARK: Keeping the viewport
@@ -376,6 +399,7 @@ struct LogTableView: NSViewRepresentable {
                 if settleFollow, keepInView, session.autoScroll != isScrolledToBottom {
                     session.autoScroll = isScrolledToBottom
                 }
+                lastAnchor = (row, offset, Double(tableView.rect(ofRow: row).minY - viewportTop))
             }
         }
 
@@ -499,8 +523,13 @@ struct LogTableView: NSViewRepresentable {
             let count = tableView.numberOfRows
             guard wrapLines, count > 0, let session else { return }
             let anchor = captureAnchor()
+            let started = ContinuousClock.now
             heightsColumns = wrapColumns
             noteHeightsChanged(IndexSet(integersIn: 0..<count))
+            if Self.debugEnabled {
+                _ = tableView.rect(ofRow: count - 1)
+                lastHeightPass = ContinuousClock.now - started
+            }
             if let anchor {
                 restore(anchor, settleFollow: true)
             } else if session.autoScroll {
@@ -511,6 +540,7 @@ struct LogTableView: NSViewRepresentable {
         /// A wrapped row is as tall as its lines need. Spans were measured when the rows were built, so this
         /// is an array read and some arithmetic: AppKit may call it for every row of a 500,000-row table.
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+            heightCalls += 1
             guard wrapLines, let session, row < session.rows.count else { return tableView.rowHeight }
             let logRow = session.rows[row]
             // Markers are drawn with eight characters of dashes and spaces around the message.
@@ -954,5 +984,142 @@ extension LogTableView.Coordinator: FindTableNavigating {
 
     func focusTable() {
         tableView.window?.makeFirstResponder(tableView)
+    }
+}
+
+/// What the table reports for `LOGCATNIP_DEBUG` runs, so the soft wrap behavior can be checked from a
+/// terminal without looking at the screen.
+@MainActor
+protocol LogTableDebugging: AnyObject {
+    func debugSummary() -> String
+    /// Selects `row` alone and scrolls it to `fraction` of the way down the viewport (0 top, 1 bottom);
+    /// `following` keeps follow mode.
+    func debugSelect(row: Int, at fraction: Double, following: Bool)
+    func debugScrollBenchmark(pages: Int) -> String
+    /// Sends ←, →, ⌘→ and ⌘← to the table and reports the horizontal offset after each.
+    func debugPressArrowKeys() -> String
+}
+
+extension LogTableView.Coordinator: LogTableDebugging {
+    /// One line of table state: the mode, the Message column, the selection, and whether any visible message
+    /// is clipped (wrapped, taller than its row) or truncated (unwrapped, wider than its column).
+    func debugSummary() -> String {
+        guard let session else { return "no session" }
+        let visible = tableView.rows(in: tableView.visibleRect)
+        let range = visible.location..<(visible.location + visible.length)
+        let clip = scrollView.contentView
+        let insets = clip.contentInsets
+        let top = clip.bounds.minY + insets.top
+        let bottom = clip.bounds.maxY - insets.bottom
+        var selectedText = "-"
+        var selectedVisible = "-"
+        if let selected = tableView.selectedRowIndexes.first {
+            selectedText = String(selected)
+            let rect = tableView.rect(ofRow: selected)
+            let inView = rect.minY >= top - 0.5 && (rect.maxY <= bottom + 0.5 || rect.height > bottom - top)
+            selectedVisible = inView ? "yes" : "no"
+        }
+        let columnIndex = tableView.column(withIdentifier: Column.message.identifier)
+        var clipped = 0
+        var truncated = 0
+        if columnIndex >= 0 {
+            for row in range where row < session.rows.count {
+                guard let label = tableView.view(atColumn: columnIndex, row: row, makeIfNecessary: false) as? NSTextField,
+                      let cell = label.cell
+                else { continue }
+                if wrapLines {
+                    let needed = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: label.bounds.width, height: 1e7)).height
+                    if needed > label.bounds.height + 0.5 { clipped += 1 }
+                } else if session.rows[row].span.cells <= Self.maxMessageCells {
+                    let needed = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: 1e7, height: label.bounds.height)).width
+                    if needed > label.bounds.width + 0.5 { truncated += 1 }
+                }
+            }
+        }
+        let messageWidth = tableView.tableColumn(withIdentifier: Column.message.identifier)?.width ?? 0
+        let reload = lastReload.map { "\($0.rows)/\(String(format: "%.1f", $0.milliseconds))ms" } ?? "-"
+        let height = lastHeightPass.map { "\(String(format: "%.1f", Self.milliseconds($0)))ms" } ?? "-"
+        let anchor = lastAnchor.map { "\($0.row):\(String(format: "%.1f", $0.before))->\(String(format: "%.1f", $0.after))" } ?? "-"
+        return "calls=\(heightCalls) docH=\(Int(tableView.frame.height)) wrap=\(wrapLines ? "on" : "off") cols=\(wrapColumns) charWidth=\(String(format: "%.2f", charWidth)) "
+            + "msgWidth=\(String(format: "%.0f", messageWidth)) widestCells=\(session.widestLineCells) "
+            + "selected=\(selectedText) visible=\(range.lowerBound)-\(range.upperBound) selectedVisible=\(selectedVisible) "
+            + "clipped=\(clipped) truncated=\(truncated) reload=\(reload) height=\(height) anchor=\(anchor)"
+    }
+
+    func debugSelect(row: Int, at fraction: Double, following: Bool) {
+        guard row >= 0, row < tableView.numberOfRows else { return }
+        session?.autoScroll = following
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        let clip = scrollView.contentView
+        let insets = clip.contentInsets
+        let viewport = clip.bounds.height - insets.top - insets.bottom
+        let rect = tableView.rect(ofRow: row)
+        // 0 puts the row's top at the top of the viewport and 1 puts its bottom at the bottom of it.
+        let top = min(max(0, rect.minY - CGFloat(fraction) * max(0, viewport - rect.height)), max(0, tableView.frame.height - viewport))
+        isProgrammaticScroll = true
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: top - insets.top))
+        scrollView.reflectScrolledClipView(clip)
+        isProgrammaticScroll = false
+    }
+
+    func debugPressArrowKeys() -> String {
+        // A window nobody can see may not have laid out the table since its column was resized.
+        scrollView.tile()
+        tableView.tile()
+        let clip = scrollView.contentView
+        let range = "range=0..\(Int(max(0, tableView.frame.width - clip.bounds.width)))"
+        var steps: [String] = []
+        let presses: [(String, Int, NSEvent.ModifierFlags)] = [
+            ("→", NSRightArrowFunctionKey, []), ("→", NSRightArrowFunctionKey, []),
+            ("⌘→", NSRightArrowFunctionKey, .command), ("←", NSLeftArrowFunctionKey, []),
+            ("⌘←", NSLeftArrowFunctionKey, .command), ("⇧→", NSRightArrowFunctionKey, .shift),
+        ]
+        for (name, key, flags) in presses {
+            let characters = String(Character(UnicodeScalar(UInt32(key))!))
+            let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags.union(.numericPad).union(.function), timestamp: 0,
+                windowNumber: tableView.window?.windowNumber ?? 0, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: key == NSLeftArrowFunctionKey ? 123 : 124
+            )
+            guard let event else { continue }
+            let before = clip.bounds.origin.x
+            let handled = handleKey(event)
+            steps.append("\(name):\(handled ? "scrolled" : "ignored")@\(Int(before))->\(Int(clip.bounds.origin.x))")
+        }
+        return "arrow-keys wrap=\(wrapLines ? "on" : "off") \(range) " + steps.joined(separator: " ")
+    }
+
+    /// Scrolls through the whole log one jump per page, so every step draws a fresh page of rows (the worst
+    /// case; ordinary scrolling reuses most of what is on screen), and times each step to the end of drawing.
+    func debugScrollBenchmark(pages: Int) -> String {
+        let clip = scrollView.contentView
+        let origin = clip.bounds.origin
+        // Wrapped heights are only known for rows that have been on screen, so positions shift as the
+        // benchmark scrolls through them; the way back is a row and an offset, not a point.
+        let anchor = captureAnchor()
+        let follow = session?.autoScroll ?? true
+        let count = tableView.numberOfRows
+        let travel = max(0, tableView.frame.height - clip.bounds.height)
+        let clock = ContinuousClock()
+        var times: [Double] = []
+        isProgrammaticScroll = true
+        for page in 0..<max(1, pages) {
+            let started = clock.now
+            clip.scroll(to: NSPoint(x: origin.x, y: travel * Double(page) / Double(max(1, pages - 1))))
+            scrollView.reflectScrolledClipView(clip)
+            tableView.layoutSubtreeIfNeeded()
+            scrollView.displayIfNeeded()
+            times.append(Self.milliseconds(clock.now - started))
+        }
+        clip.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clip)
+        isProgrammaticScroll = false
+        if let anchor { restore(anchor, settleFollow: false) }
+        session?.autoScroll = follow
+        times.sort()
+        let average = times.reduce(0, +) / Double(max(1, times.count))
+        let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
+        return "scroll-bench wrap=\(wrapLines ? "on" : "off") rows=\(count) pages=\(times.count) "
+            + "avg=\(String(format: "%.2f", average))ms p95=\(String(format: "%.2f", p95))ms max=\(String(format: "%.2f", times.last ?? 0))ms"
     }
 }

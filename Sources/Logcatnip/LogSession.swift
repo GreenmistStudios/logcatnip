@@ -93,6 +93,8 @@ final class LogSession: Identifiable {
     /// Display cells of the widest line among the rows, so the table can size its Message column before a
     /// line is ever drawn. Trimming leaves it alone: a column that is a little too wide beats one that jumps.
     @ObservationIgnored private(set) var widestLineCells = 0
+    /// The table showing this session, for the debug summary.
+    @ObservationIgnored weak var tableDebug: (any LogTableDebugging)?
 
     @ObservationIgnored private let adb: ADB?
     @ObservationIgnored private weak var model: AppModel?
