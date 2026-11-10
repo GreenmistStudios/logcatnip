@@ -64,6 +64,9 @@ final class AppModel {
         if let raw = ProcessInfo.processInfo.environment["LOGCATNIP_WRAP_TOGGLE"], let period = Double(raw) {
             startDebugWrapToggle(period: period)
         }
+        if let raw = ProcessInfo.processInfo.environment["LOGCATNIP_VIEW_CYCLE"], let period = Double(raw) {
+            startDebugViewCycle(period: period)
+        }
         // Debug helper: open log files at launch, `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt`.
         if let paths = ProcessInfo.processInfo.environment["LOGCATNIP_OPEN"] {
             for path in paths.split(separator: ":") {
@@ -93,11 +96,13 @@ final class AppModel {
                         + "rows=\(session.rows.count) processes=\(session.processNames.count) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
                     FileHandle.standardError.write(Data(line.utf8))
+                    FileHandle.standardError.write(Data("[logcatnip]     options: \(session.viewOptions.summary)\n".utf8))
                     if session.find.isVisible {
                         FileHandle.standardError.write(Data("[logcatnip]     \(session.find.debugSummary())\n".utf8))
                     }
                     if let table = session.tableDebug {
                         FileHandle.standardError.write(Data("[logcatnip]     table: \(table.debugSummary())\n".utf8))
+                        FileHandle.standardError.write(Data("[logcatnip]     \(table.debugViewSummary())\n".utf8))
                     }
                 }
                 try? await Task.sleep(for: .seconds(3))
@@ -157,6 +162,62 @@ final class AppModel {
                     say("wrap-resize: \(table.debugSummary())")
                 }
             }
+        }
+    }
+
+    /// Debug helper: `LOGCATNIP_VIEW_CYCLE=<seconds>` waits for the selected session to have rows, then steps
+    /// through the view options, `<seconds>` apart, each step building on the last: Standard, Compact,
+    /// Standard with the time only, epoch, since start, delta, date and time in UTC, PID only, the Process
+    /// column, hide repeated, no tag colors, and Standard again (which must print `preset=standard`). After
+    /// each step it prints the table's `view:` line and what Copy would paste for the last three entries.
+    /// It sets the session's options directly, so it never changes the saved default.
+    private func startDebugViewCycle(period: Double) {
+        Task { [weak self] in
+            func say(_ text: String) {
+                FileHandle.standardError.write(Data("[logcatnip] \(text)\n".utf8))
+            }
+            while true {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self else { return }
+                if let session = self.selectedSession, !session.rows.isEmpty, session.status != .loading, session.status != .starting {
+                    break
+                }
+            }
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, let session = self.selectedSession, let table = session.tableDebug else { return }
+            var options = session.viewOptions
+            let steps: [(String, (inout LogViewOptions) -> Void)] = [
+                ("standard", { $0 = .standard }),
+                ("compact", { $0 = .compact }),
+                ("standard+time", { $0 = .standard; $0.timestampStyle = .time }),
+                ("epoch", { $0.timestampStyle = .epoch }),
+                ("sinceStart", { $0.timestampStyle = .sinceStart }),
+                ("delta", { $0.timestampStyle = .delta }),
+                ("dateTime+utc", { $0.timestampStyle = .dateTime; $0.timeZone = .utc }),
+                ("pid", { $0.pidStyle = .pid }),
+                ("process", { $0.setVisible(.process, true) }),
+                ("hideRepeated", { $0.hideRepeatedTags = true; $0.hideRepeatedPackages = true; $0.hideRepeatedProcesses = true }),
+                ("noTagColors", { $0.colorTags = false }),
+                ("standard again", { $0 = .standard }),
+            ]
+            for (index, step) in steps.enumerated() {
+                step.1(&options)
+                session.viewOptions = options
+                try? await Task.sleep(for: .seconds(period))
+                say("view-cycle \(index + 1) \(step.0): \(table.debugViewSummary())")
+                say("copy: \(table.debugCopyText(entries: 3))")
+            }
+        }
+    }
+
+    /// Debug helper: `LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of new sessions, next
+    /// to `LOGCATNIP_FILTER`. It does not touch the saved default.
+    private func applyDebugView(to session: LogSession) {
+        guard let raw = ProcessInfo.processInfo.environment["LOGCATNIP_VIEW"] else { return }
+        switch raw.lowercased() {
+        case "standard": session.viewOptions = .standard
+        case "compact": session.viewOptions = .compact
+        default: if let options = LogViewOptions(json: raw) { session.viewOptions = options }
         }
     }
 
@@ -257,6 +318,7 @@ final class AppModel {
             session.filterQuery = initialFilter
             session.applyFilterNow()
         }
+        applyDebugView(to: session)
         applyDebugFind(to: session)
         session.start()
         return session
@@ -288,6 +350,7 @@ final class AppModel {
             session.filterQuery = initialFilter
             session.applyFilterNow()
         }
+        applyDebugView(to: session)
         applyDebugFind(to: session)
         session.loadFile()
     }

@@ -8,7 +8,7 @@ import SwiftUI
 struct LogTableView: NSViewRepresentable {
     let session: LogSession
     var fontSize: Double
-    var showDate: Bool
+    var viewOptions: LogViewOptions
     var wrapLines: Bool
 
     func makeCoordinator() -> Coordinator {
@@ -20,7 +20,7 @@ struct LogTableView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.update(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
+        context.coordinator.update(session: session, fontSize: fontSize, viewOptions: viewOptions, wrapLines: wrapLines)
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
@@ -29,23 +29,7 @@ struct LogTableView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
-        enum Column: String, CaseIterable {
-            case time, pid, tag, package, level, message
-
-            var title: String {
-                switch self {
-                case .time: "Time"
-                case .pid: "PID-TID"
-                case .tag: "Tag"
-                case .package: "Package"
-                case .level: ""
-                case .message: "Message"
-                }
-            }
-
-            var menuTitle: String { self == .level ? "Level" : title }
-            var identifier: NSUserInterfaceItemIdentifier { NSUserInterfaceItemIdentifier(rawValue) }
-        }
+        typealias Column = LogColumn
 
         private var session: LogSession?
         private let tableView = LogNSTableView()
@@ -61,7 +45,14 @@ struct LogTableView: NSViewRepresentable {
         /// Characters that fit on one wrapped line of the Message column; heights are recomputed when it changes.
         private var wrapColumns = 0
         private var heightUpdatePending = false
-        private var showDate = false
+        /// The options the columns were last set up for; nil until the first update.
+        private var viewOptions: LogViewOptions?
+        /// Produces every cell's text, rebuilt whenever the options change.
+        private var formatter = LogLineFormatter(options: .standard)
+        /// True while the options are being applied to the columns, so the resizes that causes are not taken
+        /// for the user dragging a column edge.
+        private var isApplyingOptions = false
+        private var appliedSizes: SizeKey?
         private var isProgrammaticScroll = false
         /// Lines longer than this many cells are cut off with an ellipsis when not wrapping, so one huge line
         /// cannot make the column (and the view behind it) enormous. The tooltip still has the whole line.
@@ -93,6 +84,11 @@ struct LogTableView: NSViewRepresentable {
             style.lineBreakMode = .byTruncatingTail
             return style
         }()
+        private let middleTruncatingStyle: NSParagraphStyle = {
+            let style = NSMutableParagraphStyle()
+            style.lineBreakMode = .byTruncatingMiddle
+            return style
+        }()
         private let wrappingStyle: NSParagraphStyle = {
             let style = NSMutableParagraphStyle()
             style.lineBreakMode = .byCharWrapping
@@ -109,6 +105,7 @@ struct LogTableView: NSViewRepresentable {
                 case .pid: tableColumn.width = 90
                 case .tag: tableColumn.width = 150
                 case .package: tableColumn.width = 190
+                case .process: tableColumn.width = 190
                 case .level:
                     tableColumn.width = 20
                     tableColumn.minWidth = 20
@@ -135,6 +132,13 @@ struct LogTableView: NSViewRepresentable {
             tableView.delegate = self
             tableView.autosaveName = "LogTable"
             tableView.autosaveTableColumns = true
+            // A layout saved before the Process column existed restores it after Message, where it would sit
+            // off screen behind the widest column. Put it back after Package.
+            let processIndex = tableView.column(withIdentifier: Column.process.identifier)
+            let levelIndex = tableView.column(withIdentifier: Column.level.identifier)
+            if processIndex > tableView.column(withIdentifier: Column.message.identifier), levelIndex >= 0 {
+                tableView.moveColumn(processIndex, toColumn: levelIndex)
+            }
             tableView.copyHandler = { [weak self] in self?.copySelection() }
             tableView.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
             tableView.cancelHandler = { [weak self] in
@@ -173,8 +177,9 @@ struct LogTableView: NSViewRepresentable {
             return scrollView
         }
 
-        func update(session: LogSession, fontSize: Double, showDate: Bool, wrapLines: Bool) {
+        func update(session: LogSession, fontSize: Double, viewOptions: LogViewOptions, wrapLines: Bool) {
             var needsReload = false
+            var fontChanged = false
             // The viewport is captured before anything changes, while the old heights are still in place.
             var anchor: ViewportAnchor?
             var selection = IndexSet()
@@ -189,6 +194,8 @@ struct LogTableView: NSViewRepresentable {
                 session.find.table = self
                 session.find.onChange = { [weak self] change in self?.applyFind(change) }
                 session.tableDebug = self
+                // The new session's options may equal the old one's, but the columns were not set up for them.
+                self.viewOptions = nil
                 needsReload = true
             }
             if font.map({ Double($0.pointSize) }) != fontSize {
@@ -198,6 +205,7 @@ struct LogTableView: NSViewRepresentable {
                 tableView.rowHeight = ceil(fontSize * 1.5)
                 charWidth = ("M" as NSString).size(withAttributes: [.font: regular]).width
                 textLineHeight = Self.wrappedLineHeight(regular)
+                fontChanged = true
                 needsReload = true
             }
             if self.wrapLines != wrapLines {
@@ -210,11 +218,14 @@ struct LogTableView: NSViewRepresentable {
                 scrollView.reflectScrolledClipView(clipView)
                 needsReload = true
             }
-            if self.showDate != showDate {
-                self.showDate = showDate
-                tableView.tableColumn(withIdentifier: Column.time.identifier)?.width = showDate ? 175 : 96
-                updateMessageColumnWidth()
-                needsReload = true
+            if self.viewOptions != viewOptions || fontChanged {
+                // Column widths come from the options and the font, so a font change redoes them too. A change
+                // of widths alone (a drag, or choosing a preset with other widths) leaves every cell as it was.
+                let widthsOnly = !fontChanged && (self.viewOptions.map { viewOptions.differsOnlyInWidths(from: $0) } ?? false)
+                self.viewOptions = viewOptions
+                formatter = LogLineFormatter(options: viewOptions)
+                applyViewOptions()
+                if !widthsOnly { needsReload = true }
             }
             if needsReload {
                 resetMessageWidth()
@@ -458,6 +469,69 @@ struct LogTableView: NSViewRepresentable {
             if wrapLines { wrapWidthDidChange() }
         }
 
+        // MARK: View options
+
+        /// Points a text column needs beyond its characters: the cell's inset on both sides.
+        private static let columnPadding: CGFloat = 10
+
+        private func columnWidth(characters: Int) -> CGFloat {
+            ceil(CGFloat(characters) * charWidth) + Self.columnPadding
+        }
+
+        /// What the Time column's header says for a style, and for the zone of the clock styles.
+        private static func timeTitle(_ options: LogViewOptions) -> String {
+            switch options.timestampStyle {
+            case .dateTime, .time: options.timeZone == .utc ? "Time (UTC)" : "Time"
+            case .epoch: "Epoch"
+            case .sinceStart: "Since Start"
+            case .delta: "Δ Time"
+            }
+        }
+
+        /// Shows and hides the columns, titles them, and sizes them from the session's view options.
+        /// Tag, package and process widths are stored in characters, so they follow the font; Time and PID
+        /// are sized for the longest text their style prints.
+        private func applyViewOptions() {
+            guard let options = viewOptions else { return }
+            isApplyingOptions = true
+            defer { isApplyingOptions = false }
+            for column in Column.allCases where column != .message {
+                tableView.tableColumn(withIdentifier: column.identifier)?.isHidden = !options.isVisible(column)
+            }
+            // These two sizes are reset by a change of style or font only, so a width the user dragged to
+            // survives unrelated changes such as hiding repeats.
+            let sizeKey = SizeKey(time: options.timestampStyle, pid: options.pidStyle, charWidth: charWidth)
+            let resize = appliedSizes != sizeKey
+            appliedSizes = sizeKey
+            if let time = tableView.tableColumn(withIdentifier: Column.time.identifier) {
+                time.title = Self.timeTitle(options)
+                time.headerToolTip = options.timestampStyle.explanation
+                if resize { time.width = ceil(CGFloat(options.timestampStyle.sampleCells) * charWidth) + 12 }
+            }
+            if let pid = tableView.tableColumn(withIdentifier: Column.pid.identifier) {
+                pid.title = options.pidStyle == .pid ? "PID" : "PID-TID"
+                if resize { pid.width = ceil(CGFloat(options.pidStyle.sampleCells) * charWidth) + 12 }
+            }
+            for column in [Column.tag, .package, .process] {
+                guard let tableColumn = tableView.tableColumn(withIdentifier: column.identifier),
+                      let characters = options.width(of: column)
+                else { continue }
+                tableColumn.minWidth = columnWidth(characters: LogViewOptions.widthRange.lowerBound)
+                tableColumn.maxWidth = columnWidth(characters: LogViewOptions.widthRange.upperBound)
+                let target = columnWidth(characters: characters)
+                // A drag writes its width back as whole characters, up to half a character and a point from
+                // where the mouse is; do not snap the edge under it.
+                if abs(tableColumn.width - target) > charWidth / 2 + 1 { tableColumn.width = target }
+            }
+            updateMessageColumnWidth()
+        }
+
+        private struct SizeKey: Equatable {
+            let time: TimestampStyle
+            let pid: PidStyle
+            let charWidth: CGFloat
+        }
+
         // MARK: Wrapping
 
         /// Characters per wrapped line. Rounds down and leaves room for the text field's insets, so a
@@ -574,6 +648,14 @@ struct LogTableView: NSViewRepresentable {
             guard let column = notification.userInfo?["NSTableColumn"] as? NSTableColumn,
                   column.identifier != Column.message.identifier
             else { return }
+            // Dragging the edge of a Tag, Package or Process column is a change to the view, which makes it
+            // Custom; the width is stored in characters.
+            if !isApplyingOptions, let session, let kind = Column(rawValue: column.identifier.rawValue),
+               let stored = session.viewOptions.width(of: kind)
+            {
+                let characters = Int(((column.width - Self.columnPadding) / charWidth).rounded())
+                if characters != stored { session.viewOptions.setWidth(characters, of: kind) }
+            }
             updateMessageColumnWidth()
         }
 
@@ -609,7 +691,7 @@ struct LogTableView: NSViewRepresentable {
                     // The decoration around a marker's text is not in its span.
                     noteMessageWidth(of: label)
                 } else {
-                    label.stringValue = column == .time ? LogcatTime.format(entry.timestamp, includeDate: showDate) : ""
+                    label.stringValue = column == .time ? cellText(.time, for: entry, row: row, in: session) : ""
                     label.textColor = .tertiaryLabelColor
                 }
                 return label
@@ -634,28 +716,31 @@ struct LogTableView: NSViewRepresentable {
             label.toolTip = nil
             switch column {
             case .time:
-                label.stringValue = isFirstLine ? LogcatTime.format(entry.timestamp, includeDate: showDate) : ""
+                label.stringValue = isFirstLine ? cellText(.time, for: entry, row: row, in: session) : ""
                 label.textColor = .secondaryLabelColor
             case .pid:
-                label.stringValue = isFirstLine ? "\(entry.pid)-\(entry.tid)" : ""
+                label.stringValue = isFirstLine ? cellText(.pid, for: entry, row: row, in: session) : ""
                 label.textColor = .secondaryLabelColor
             case .tag:
-                label.stringValue = isFirstLine ? entry.tag : ""
-                label.textColor = LogColors.tag(entry.tag)
+                let text = isFirstLine ? cellText(.tag, for: entry, row: row, in: session) : ""
+                label.stringValue = text
+                label.textColor = viewOptions?.colorTags == false ? .secondaryLabelColor : LogColors.tag(entry.tag)
                 label.toolTip = isFirstLine ? entry.tag : nil
-                if isFirstLine { highlightMatches(in: label, text: entry.tag, row: row, wrapped: false) }
+                // A tag blanked as a repeat has nothing to highlight.
+                if !text.isEmpty { highlightMatches(in: label, text: text, row: row, style: middleTruncatingStyle) }
             case .package:
-                let process = session.processName(for: entry)
-                label.stringValue = isFirstLine ? (process ?? (entry.pid > 0 ? "pid-\(entry.pid)" : "")) : ""
-                label.textColor = process == nil ? .tertiaryLabelColor : .secondaryLabelColor
-                label.toolTip = isFirstLine ? process : nil
+                configurePackageCell(label, for: entry, row: row, in: session, isFirstLine: isFirstLine)
+            case .process:
+                label.stringValue = isFirstLine ? cellText(.process, for: entry, row: row, in: session) : ""
+                label.textColor = .secondaryLabelColor
+                label.toolTip = isFirstLine ? session.processName(for: entry) : nil
             case .message:
                 setWrapping(label)
                 let text = logRow.text(in: entry.message)
                 label.stringValue = text
                 label.textColor = LogColors.text(for: entry.level)
                 if !wrapLines, logRow.span.cells > 120 { label.toolTip = text }
-                highlightMatches(in: label, text: text, row: row, wrapped: wrapLines)
+                highlightMatches(in: label, text: text, row: row, style: wrapLines ? wrappingStyle : truncatingStyle)
                 if !logRow.span.isASCII { noteMessageWidth(of: label) }
             case .level:
                 break
@@ -663,6 +748,31 @@ struct LogTableView: NSViewRepresentable {
             return label
         }
 
+        /// The text of one cell, from the formatter that also produces copied lines. The entry above is only
+        /// looked up when the column needs it (delta time, or hiding repeats), and it is the entry of the row
+        /// above, so filtering and trimming are already accounted for.
+        private func cellText(_ column: Column, for entry: LogEntry, row: Int, in session: LogSession) -> String {
+            let previous = formatter.needsPrevious(column) ? session.previousEntry(beforeRow: row) : nil
+            return formatter.text(
+                column, for: entry, previous: previous, sessionStart: session.startTimestamp,
+                processName: { session.processName(for: $0) }
+            )
+        }
+
+        /// The Package cell: the package of the process, `pid-N` in a dimmer color until the process is known.
+        private func configurePackageCell(_ label: NSTextField, for entry: LogEntry, row: Int, in session: LogSession, isFirstLine: Bool) {
+            guard isFirstLine else {
+                label.stringValue = ""
+                return
+            }
+            let process = session.processName(for: entry)
+            label.stringValue = cellText(.package, for: entry, row: row, in: session)
+            label.textColor = process == nil ? .tertiaryLabelColor : .secondaryLabelColor
+            label.toolTip = process
+        }
+
+        /// Tags are cut in the middle and package and process names at the front, so the part that tells them
+        /// apart stays visible (Android Studio does the same).
         private func makeLabel(_ identifier: NSUserInterfaceItemIdentifier) -> NSTextField {
             let label: NSTextField
             if let reused = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTextField {
@@ -670,7 +780,11 @@ struct LogTableView: NSViewRepresentable {
             } else {
                 label = NSTextField(labelWithString: "")
                 label.identifier = identifier
-                label.lineBreakMode = .byTruncatingTail
+                switch identifier {
+                case Column.tag.identifier: label.lineBreakMode = .byTruncatingMiddle
+                case Column.package.identifier, Column.process.identifier: label.lineBreakMode = .byTruncatingHead
+                default: label.lineBreakMode = .byTruncatingTail
+                }
                 label.maximumNumberOfLines = 1
                 label.cell?.truncatesLastVisibleLine = true
                 label.isSelectable = false
@@ -703,14 +817,14 @@ struct LogTableView: NSViewRepresentable {
 
         /// Gives the label an attributed string with every match highlighted. Rows that do not match keep
         /// the plain string, so scrolling past them costs one binary search.
-        private func highlightMatches(in label: NSTextField, text: String, row: Int, wrapped: Bool) {
+        private func highlightMatches(in label: NSTextField, text: String, row: Int, style: NSParagraphStyle) {
             guard let isCurrent = session?.find.highlight(forRow: row),
                   let ranges = session?.find.ranges(in: text), !ranges.isEmpty
             else { return }
             let attributed = NSMutableAttributedString(string: text, attributes: [
                 .font: label.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
                 .foregroundColor: label.textColor ?? NSColor.labelColor,
-                .paragraphStyle: wrapped ? wrappingStyle : truncatingStyle,
+                .paragraphStyle: style,
             ])
             let background = isCurrent ? LogColors.currentFindMatch : LogColors.findMatch
             for range in ranges {
@@ -769,11 +883,17 @@ struct LogTableView: NSViewRepresentable {
         // MARK: Copy and menus
 
         func copySelection() {
-            guard let session else { return }
-            let indexes = tableView.selectedRowIndexes
-            guard !indexes.isEmpty else { return }
+            guard !tableView.selectedRowIndexes.isEmpty, let text = copyText(forRows: tableView.selectedRowIndexes) else { return }
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(session.text(forRows: indexes), forType: .string)
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+
+        /// The text Copy puts on the pasteboard: the visible columns in the order they are shown, so a pasted
+        /// line reads like the table.
+        fileprivate func copyText(forRows rows: IndexSet) -> String? {
+            guard let session else { return nil }
+            let columns = tableView.tableColumns.filter { !$0.isHidden }.compactMap { Column(rawValue: $0.identifier.rawValue) }
+            return session.text(forRows: rows, columns: columns, formatter: formatter)
         }
 
         func menuNeedsUpdate(_ menu: NSMenu) {
@@ -786,22 +906,39 @@ struct LogTableView: NSViewRepresentable {
         }
 
         private func buildHeaderMenu(_ menu: NSMenu) {
+            guard let options = session?.viewOptions else { return }
             for column in Column.allCases where column != .message {
-                guard let tableColumn = tableView.tableColumn(withIdentifier: column.identifier) else { continue }
                 let item = NSMenuItem(title: column.menuTitle, action: #selector(toggleColumn(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = column.rawValue
-                item.state = tableColumn.isHidden ? .off : .on
+                item.state = options.isVisible(column) ? .on : .off
                 menu.addItem(item)
             }
+            menu.addItem(.separator())
+            for preset in LogViewOptions.Preset.allCases {
+                let item = NSMenuItem(title: preset.menuTitle, action: #selector(choosePreset(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = preset.rawValue
+                item.state = options.preset == preset ? .on : .off
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+            menu.addItem(item("Modify View…", #selector(modifyView)))
         }
 
+        /// Columns are part of the session's view options, so hiding one makes the view Custom.
         @objc private func toggleColumn(_ sender: NSMenuItem) {
-            guard let raw = sender.representedObject as? String,
-                  let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(raw))
-            else { return }
-            column.isHidden.toggle()
-            updateMessageColumnWidth()
+            guard let session, let raw = sender.representedObject as? String, let column = Column(rawValue: raw) else { return }
+            session.viewOptions.setVisible(column, !session.viewOptions.isVisible(column))
+        }
+
+        @objc private func choosePreset(_ sender: NSMenuItem) {
+            guard let raw = sender.representedObject as? String, let preset = LogViewOptions.Preset(rawValue: raw) else { return }
+            session?.viewOptions = preset.options
+        }
+
+        @objc private func modifyView() {
+            session?.isModifyingView = true
         }
 
         private func buildRowMenu(_ menu: NSMenu) {
@@ -857,6 +994,43 @@ struct LogTableView: NSViewRepresentable {
         @objc private func setLevel(_ sender: NSMenuItem) {
             guard let raw = sender.representedObject as? Int, let level = LogLevel(rawValue: raw) else { return }
             session?.setMinimumLevel(level)
+        }
+    }
+}
+
+private extension LogColumn {
+    var title: String {
+        switch self {
+        case .time: "Time"
+        case .pid: "PID-TID"
+        case .tag: "Tag"
+        case .package: "Package"
+        case .process: "Process"
+        case .level: ""
+        case .message: "Message"
+        }
+    }
+
+    var menuTitle: String {
+        switch self {
+        case .pid: "PID"
+        case .level: "Level"
+        default: title
+        }
+    }
+
+    var identifier: NSUserInterfaceItemIdentifier { NSUserInterfaceItemIdentifier(rawValue) }
+}
+
+private extension TimestampStyle {
+    /// The header's tooltip: what the column's text counts from.
+    var explanation: String {
+        switch self {
+        case .dateTime: "Date and time of the log line (device clock)"
+        case .time: "Time of the log line (device clock)"
+        case .epoch: "Seconds since 1970 (device clock)"
+        case .sinceStart: "Seconds since the first line of this session"
+        case .delta: "Time since the previous visible line"
         }
     }
 }
@@ -998,6 +1172,11 @@ protocol LogTableDebugging: AnyObject {
     func debugScrollBenchmark(pages: Int) -> String
     /// Sends ←, →, ⌘→ and ⌘← to the table and reports the horizontal offset after each.
     func debugPressArrowKeys() -> String
+    /// The view options, the column order, and the cells on screen, checked against the formatter.
+    func debugViewSummary() -> String
+    /// What Copy would put on the pasteboard for the last `entries` entries, one per line, with newlines
+    /// inside a message written as `\n`.
+    func debugCopyText(entries: Int) -> String
 }
 
 extension LogTableView.Coordinator: LogTableDebugging {
@@ -1121,5 +1300,68 @@ extension LogTableView.Coordinator: LogTableDebugging {
         let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
         return "scroll-bench wrap=\(wrapLines ? "on" : "off") rows=\(count) pages=\(times.count) "
             + "avg=\(String(format: "%.2f", average))ms p95=\(String(format: "%.2f", p95))ms max=\(String(format: "%.2f", times.last ?? 0))ms"
+    }
+
+    /// One line: the options, the column order (hidden columns included, which shows where an autosaved
+    /// layout put the Process column), the tag of row 0 and the last few visible rows as they are on screen
+    /// (`time|pid|tag|package|process|level|message`, `~` for a hidden column), and a check that every
+    /// visible cell equals what the formatter gives now. A cell that was not reloaded after an option change,
+    /// a filter or a trim would show as MISMATCH.
+    func debugViewSummary() -> String {
+        guard let session, let options = viewOptions else { return "no session" }
+        let order = tableView.tableColumns.map { ($0.isHidden ? "-" : "") + $0.identifier.rawValue }.joined(separator: ",")
+        var row0 = "-"
+        if let first = session.rows.first, let entry = session.entry(for: first) {
+            row0 = "\"\(cellText(.tag, for: entry, row: 0, in: session))\""
+        }
+        let visible = tableView.rows(in: tableView.visibleRect)
+        let range = visible.location..<(visible.location + visible.length)
+        func label(_ column: Column, _ row: Int) -> NSTextField? {
+            let index = tableView.column(withIdentifier: column.identifier)
+            guard index >= 0, !tableView.tableColumns[index].isHidden else { return nil }
+            return tableView.view(atColumn: index, row: row, makeIfNecessary: false) as? NSTextField
+        }
+        var shown: [String] = []
+        var mismatch: String?
+        for row in range where row < session.rows.count {
+            let logRow = session.rows[row]
+            guard let entry = session.entry(for: logRow) else { continue }
+            var fields: [String] = []
+            for column in [Column.time, .pid, .tag, .package, .process] {
+                guard options.isVisible(column) else {
+                    fields.append("~")
+                    continue
+                }
+                let actual = label(column, row)?.stringValue
+                let expected = logRow.line == 0 ? cellText(column, for: entry, row: row, in: session) : ""
+                // Markers show a time and the message only.
+                let wanted = entry.kind == .marker && column != .time ? "" : expected
+                if let actual, actual != wanted, mismatch == nil { mismatch = "\(row):\(column.rawValue) \"\(actual)\"!=\"\(wanted)\"" }
+                fields.append(actual ?? "?")
+            }
+            let level = options.isVisible(.level) ? ((tableView.view(atColumn: tableView.column(withIdentifier: Column.level.identifier), row: row, makeIfNecessary: false) as? BadgeCellView)?.badge.stringValue ?? "?") : "~"
+            let message = label(.message, row)?.stringValue ?? "?"
+            if logRow.line == 0 {
+                shown.append((fields + [level, String(message.prefix(14))]).joined(separator: "|"))
+            }
+        }
+        let cells = shown.suffix(8).joined(separator: " ; ")
+        return "view: \(options.summary) trims=\(session.trimCount) order=\(order) row0=\(row0) cells=[\(cells)] check=\(mismatch.map { "MISMATCH(\($0))" } ?? "ok")"
+    }
+
+    func debugCopyText(entries: Int) -> String {
+        guard let session else { return "" }
+        var lines: [String] = []
+        var seen = Set<Int>()
+        for index in session.rows.indices.reversed() {
+            let row = session.rows[index]
+            guard seen.insert(row.entryID).inserted else { continue }
+            guard seen.count <= entries else { break }
+            let first = index - Int(row.line)
+            if let text = copyText(forRows: IndexSet(integer: first)) {
+                lines.append(text.replacingOccurrences(of: "\n", with: "\\n"))
+            }
+        }
+        return lines.reversed().joined(separator: " ⏎ ")
     }
 }
