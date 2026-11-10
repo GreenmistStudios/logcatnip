@@ -237,6 +237,12 @@ struct StatusBar: View {
             } else if let name = session.filter.name {
                 Label(name, systemImage: "line.3.horizontal.decrease")
                     .foregroundStyle(.secondary)
+            } else if let info = session.fileInfo, !info.summary.isEmpty {
+                Text(info.summary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(info.details)
             }
             Spacer()
             if session.isPaused {
@@ -246,8 +252,7 @@ struct StatusBar: View {
                 Text("Not following")
                     .foregroundStyle(.secondary)
             }
-            Text(session.status.label)
-                .foregroundStyle(statusColor)
+            statusText
             Text(countText)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -255,6 +260,33 @@ struct StatusBar: View {
         .font(.caption)
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
+    }
+
+    /// The status, or while a file loads, how far it has got, with a progress bar and Cancel for big files.
+    @ViewBuilder
+    private var statusText: some View {
+        if let loader = session.fileLoader, loader.state == .running {
+            if loader.showsProgress {
+                ProgressView(value: loader.progress?.fraction)
+                    .progressViewStyle(.linear)
+                    .controlSize(.small)
+                    .frame(width: 120)
+                Button("Cancel") { loader.cancel() }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+            Text(loadingText(loader.progress))
+                .foregroundStyle(.secondary)
+        } else {
+            Text(session.status.label)
+                .foregroundStyle(statusColor)
+        }
+    }
+
+    private func loadingText(_ progress: LogFileProgress?) -> String {
+        if progress?.phase == .extracting { return "Extracting…" }
+        guard let fraction = progress?.fraction else { return "Loading…" }
+        return "Loading… \(Int(fraction * 100))%"
     }
 
     private var countText: String {

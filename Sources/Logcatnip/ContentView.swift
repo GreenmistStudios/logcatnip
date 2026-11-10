@@ -294,6 +294,7 @@ private struct SessionRow: View {
 
     private var subtitle: String {
         var parts = [session.isPaused ? "Paused" : session.status.label]
+        if let device = session.fileInfo?.deviceName { parts.append(device) }
         if !session.filterQuery.isEmpty { parts.append(session.filterQuery) }
         return parts.joined(separator: " · ")
     }
