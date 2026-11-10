@@ -187,17 +187,18 @@ struct FilterBar: View {
         let _ = libraryVersion
         let favorites = FilterLibrary.favorites
         let history = FilterLibrary.history
+        let flagged = FilterLibrary.precedenceChanged
         if !favorites.isEmpty {
             Section("Favorites") {
                 ForEach(favorites, id: \.self) { query in
-                    Button(query) { use(query) }
+                    Button(flagged.contains(query) ? "⚠︎ \(query)" : query) { use(query) }
                 }
             }
         }
         if !history.isEmpty {
             Section("Recent") {
                 ForEach(history, id: \.self) { query in
-                    Button(query) { use(query) }
+                    Button(flagged.contains(query) ? "⚠︎ \(query)" : query) { use(query) }
                 }
             }
             Divider()
@@ -208,6 +209,14 @@ struct FilterBar: View {
         }
         if favorites.isEmpty && history.isEmpty {
             Text("No saved filters")
+        }
+        if !flagged.isEmpty {
+            Divider()
+            Text("⚠︎ Meaning changed: spaces now bind looser than & and |")
+            Button("Dismiss ⚠︎ Warnings") {
+                FilterLibrary.dismissPrecedenceWarnings()
+                libraryVersion += 1
+            }
         }
         Divider()
         Section("Examples") {

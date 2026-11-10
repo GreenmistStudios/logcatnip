@@ -83,6 +83,9 @@ ORed and the rest are ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & leve
 are always ANDed. `package:mine` is never ORed, so `package:mine package:foo` needs both. Parentheses may
 hold a whole sequence, and `()` matches everything.
 
+Before 0.2, spaces bound tighter than `&` and `|`. Saved favorites and recent filters whose meaning changed
+are marked ⚠︎ in the filter menu once, until you remove them or choose Dismiss ⚠︎ Warnings.
+
 ## Layout
 
 - `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime), the filter language, and adb

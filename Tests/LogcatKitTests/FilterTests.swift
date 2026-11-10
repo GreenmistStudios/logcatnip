@@ -270,6 +270,33 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
         }
     }
 
+    @Test func detectsQueriesWhosePrecedenceChanged() {
+        let changed = [
+            "foo bar tag:bar1 | tag:bar2",
+            "tag:Net | tag:Http level:WARN",
+            "tag:a tag:b & level:E",
+            "foo bar | baz",
+            "package:mine package:foo",
+        ]
+        for query in changed {
+            #expect(LogFilter.meaningChangedByPrecedence(query), "\(query)")
+        }
+        let unchanged = [
+            "",
+            "tag:a tag:b level:W",
+            "tag:A & level:ERROR | tag:B",
+            "(tag:a | tag:b) & level:E",
+            "tag:a level:E & pid:1",
+            "is:crash",
+            "is:error",
+            "tag:",
+            "name:x tag:a",
+        ]
+        for query in unchanged {
+            #expect(!LogFilter.meaningChangedByPrecedence(query), "\(query)")
+        }
+    }
+
     @Test func markersAlwaysMatch() throws {
         #expect(try LogFilter("tag:nothing").matches(.marker("Device disconnected"), context: FilterContext()))
     }

@@ -54,6 +54,18 @@ public struct LogFilter: Sendable {
 
     public static let everything = try! LogFilter("")
 
+    /// Whether `query` filters differently now that whitespace has the lowest precedence. Logcatnip before 0.2
+    /// bound whitespace tighter than `&` and `|`, so saved queries that mix them can change meaning.
+    /// False for queries that do not parse under the old grammar.
+    public static func meaningChangedByPrecedence(_ query: String) -> Bool {
+        guard let tokens = try? FilterLexer.tokenize(query) else { return false }
+        var legacy = FilterParser(tokens: tokens, caseSensitive: false, grammar: .legacy)
+        guard let before = try? legacy.parse() else { return false }
+        var current = FilterParser(tokens: tokens, caseSensitive: false, grammar: .androidStudio)
+        guard let after = try? current.parse() else { return true }
+        return before.root?.canonical != after.root?.canonical
+    }
+
     public func matches(_ entry: LogEntry, context: FilterContext) -> Bool {
         if entry.kind == .marker { return true }
         guard let root else { return true }
