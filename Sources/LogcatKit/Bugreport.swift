@@ -233,3 +233,114 @@ struct BugreportParser {
         }
     }
 }
+
+/// Bug report zips from `adb bugreport`. The logs are in a `bugreport-*.txt` entry, which `main_entry.txt` names.
+/// Uses `/usr/bin/unzip`, which ships with macOS, so there is no zip code to maintain here.
+enum BugreportArchive {
+    static let unzip = URL(fileURLWithPath: "/usr/bin/unzip")
+
+    /// Extracts the report text into `directory` and returns its URL. Throws `CancellationError` when the task is
+    /// cancelled, after stopping `unzip`.
+    static func extractReport(from zip: URL, to directory: URL) async throws -> URL {
+        let entry = try await reportEntry(in: zip)
+        // A zip chooses its own entry names. Only the last component goes on disk, so a hostile `main_entry.txt`
+        // can't write outside `directory`.
+        let destination = directory.appendingPathComponent((entry as NSString).lastPathComponent)
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw LogFileError.unzipFailed("couldn't create \(destination.lastPathComponent)")
+        }
+        let file = try FileHandle(forWritingTo: destination)
+        defer { try? file.close() }
+        let sink = OutputSink(file: file)
+        let result = try await run(["-p", zip.path, escapedAsPattern(entry)], sink: sink)
+        if let error = sink.writeError { throw LogFileError.unzipFailed(error.localizedDescription) }
+        guard result.status == 0 else { throw LogFileError.unzipFailed(failureText(result)) }
+        return destination
+    }
+
+    /// The entry holding the report: the one `main_entry.txt` names, else the first top-level `bugreport-*.txt`,
+    /// which is Android Studio's rule.
+    private static func reportEntry(in zip: URL) async throws -> String {
+        let probe = OutputSink()
+        let named = try await run(["-p", zip.path, "main_entry.txt"], sink: probe)
+        // Exit 11 is "no matching entry"; any other failure shows up again when the entries are listed.
+        if named.status == 0 {
+            let name = String(decoding: probe.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            // A leading "-" would read as an option.
+            if !name.isEmpty, !name.hasPrefix("-") { return name }
+        }
+        let listing = OutputSink()
+        let listed = try await run(["-Z1", zip.path], sink: listing)
+        guard listed.status == 0 else { throw LogFileError.unzipFailed(failureText(listed)) }
+        let found = String(decoding: listing.data, as: UTF8.self).split(whereSeparator: \.isNewline).first {
+            !$0.contains("/") && $0.hasPrefix("bugreport-") && $0.hasSuffix(".txt")
+        }
+        guard let found else { throw LogFileError.noBugreport(zip.lastPathComponent) }
+        return String(found)
+    }
+
+    /// unzip reads its file arguments as patterns; `[`, `*` and `?` in an entry name must match themselves.
+    private static func escapedAsPattern(_ name: String) -> String {
+        name.map { character -> String in
+            switch character {
+            case "[": "[[]"
+            case "*": "[*]"
+            case "?": "[?]"
+            default: String(character)
+            }
+        }.joined()
+    }
+
+    private static func failureText(_ result: (status: Int32, stderr: String)) -> String {
+        let text = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? "unzip exited with status \(result.status)" : text
+    }
+
+    private static func run(_ arguments: [String], sink: OutputSink) async throws -> (status: Int32, stderr: String) {
+        try Task.checkCancellation()
+        let process = StreamingProcess(executable: unzip, arguments: arguments, stopsWithParent: true)
+        let result: (status: Int32, stderr: String) = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                do {
+                    try process.start(
+                        onData: { sink.write($0) },
+                        onExit: { status, stderr in continuation.resume(returning: (status, stderr)) }
+                    )
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        } onCancel: {
+            process.terminate()
+        }
+        try Task.checkCancellation()
+        return result
+    }
+
+    /// Where `unzip`'s stdout goes: a file for the report, memory for the small probes. `StreamingProcess` calls
+    /// `onData` on a background queue, so the lock orders those writes against the read after the process exits.
+    private final class OutputSink: @unchecked Sendable {
+        private let lock = NSLock()
+        private let file: FileHandle?
+        private var buffer = Data()
+        private var failure: Error?
+
+        init(file: FileHandle? = nil) {
+            self.file = file
+        }
+
+        func write(_ data: Data) {
+            lock.withLock {
+                guard let file else {
+                    buffer.append(data)
+                    return
+                }
+                guard failure == nil else { return }
+                do { try file.write(contentsOf: data) } catch { failure = error }
+            }
+        }
+
+        var data: Data { lock.withLock { buffer } }
+        var writeError: Error? { lock.withLock { failure } }
+    }
+}

@@ -595,3 +595,226 @@ enum LogFileFixtures {
         #expect(main.filter { $0.tag == "WM-GreedyScheduler" }.count == 1)
     }
 }
+
+// MARK: Chunked reading
+
+/// Collects what a read hands over. An actor, because the handler is `@Sendable` and may run on any thread.
+private actor EventBox {
+    private(set) var events: [LogFileEvent] = []
+
+    func append(_ event: LogFileEvent) { events.append(event) }
+
+    var entryCount: Int {
+        events.reduce(0) { total, event in
+            if case let .entries(batch, _) = event { total + batch.count } else { total }
+        }
+    }
+}
+
+private func entries(in events: [LogFileEvent], section: LogFileSection = .main) -> [LogEntry] {
+    events.flatMap { event -> [LogEntry] in
+        if case let .entries(batch, eventSection) = event, eventSection == section { batch } else { [] }
+    }
+}
+
+private func progressFractions(in events: [LogFileEvent]) -> [Double?] {
+    events.compactMap { event in
+        if case let .progress(progress) = event, progress.phase == .reading { progress.fraction } else { nil }
+    }
+}
+
+@Suite(.serialized) struct LogFileReaderTests {
+    /// A scratch directory that goes away with the test.
+    private final class Scratch {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("logcatnip-tests-\(UUID().uuidString)")
+
+        init() throws {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+
+        deinit { try? FileManager.default.removeItem(at: url) }
+
+        func write(_ name: String, _ text: String) throws -> URL {
+            let file = url.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: file)
+            return file
+        }
+    }
+
+    private func collect(_ url: URL, reader: LogFileReader = LogFileReader()) async throws -> [LogFileEvent] {
+        let box = EventBox()
+        try await reader.read(url) { await box.append($0) }
+        return await box.events
+    }
+
+    /// One distinct pid per line, so that no two lines merge into one record.
+    private func threadtimeLines(_ count: Int) -> String {
+        (0..<count).map { index in
+            String(
+                format: "11-09 13:%02ld:%02ld.%03ld  %5ld  %5ld I Tag: line %ld",
+                (index / 60_000) % 60, (index / 1000) % 60, index % 1000, index + 1000, index + 1000, index
+            )
+        }.joined(separator: "\n") + "\n"
+    }
+
+    @Test func streamsInBatchesWithProgress() async throws {
+        let scratch = try Scratch()
+        let file = try scratch.write("big.txt", threadtimeLines(30_000))
+        let modified = Date(timeIntervalSince1970: LogcatTime.parse(date: "2027-01-05", time: "12:00:00.000")!)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+
+        var reader = LogFileReader()
+        reader.chunkSize = 64 * 1024
+        reader.batchSize = 1_000
+        let events = try await collect(file, reader: reader)
+
+        guard case .format(.threadtime) = try #require(events.first) else {
+            Issue.record("the first event should be the format")
+            return
+        }
+        let batches = events.compactMap { event -> Int? in
+            if case let .entries(batch, _) = event { batch.count } else { nil }
+        }
+        #expect(batches.reduce(0, +) == 30_000)
+        #expect(batches.count >= 30)
+        #expect(batches.allSatisfy { $0 <= 1_000 })
+
+        let fractions = progressFractions(in: events).compactMap { $0 }
+        #expect(fractions == fractions.sorted())
+        #expect(try #require(fractions.first) < 0.1)
+        #expect(fractions.last == 1.0)
+
+        let first = try #require(entries(in: events).first)
+        #expect(first.timestamp == LogcatTime.parse(date: "2026-11-09", time: "13:00:00.000"))
+    }
+
+    @Test func joinsLinesSplitAcrossChunks() async throws {
+        let scratch = try Scratch()
+        let text = "11-09 13:11:17.123  1234  1234 E AndroidRuntime: FATAL é 日本\r\n"
+            + "11-09 13:11:17.123  1234  1234 E AndroidRuntime: \tat a.B.c(B.kt:1)\r\n"
+            + "11-09 13:11:17.124  1  1 I Other: next"
+        let file = try scratch.write("crash.txt", text)
+        var reader = LogFileReader()
+        reader.chunkSize = 7
+        let found = entries(in: try await collect(file, reader: reader))
+        #expect(found.count == 2)
+        #expect(found.first?.message == "FATAL é 日本\n\tat a.B.c(B.kt:1)")
+        #expect(found.last?.message == "next")
+    }
+
+    @Test func cancellationStopsReading() async throws {
+        let scratch = try Scratch()
+        let file = try scratch.write("huge.txt", threadtimeLines(200_000))
+        var reader = LogFileReader()
+        reader.chunkSize = 4096
+        reader.batchSize = 100
+        let box = EventBox()
+        let task = Task {
+            try await reader.read(file) { event in
+                await box.append(event)
+                if case .entries = event { withUnsafeCurrentTask { $0?.cancel() } }
+            }
+        }
+        let result = await task.result
+        #expect(throws: CancellationError.self) { try result.get() }
+        #expect(await box.entryCount < 200_000)
+    }
+
+    @Test func readsStudioJSONFile() async throws {
+        let scratch = try Scratch()
+        let file = try scratch.write("x.logcat", LogFileFixtures.studioCurrent)
+        let events = try await collect(file)
+        guard case .format(.logcatJSON) = try #require(events.first) else {
+            Issue.record("the first event should be the format")
+            return
+        }
+        let metadataIndex = try #require(events.firstIndex { if case .metadata = $0 { true } else { false } })
+        let firstEntries = try #require(events.firstIndex { if case .entries = $0 { true } else { false } })
+        #expect(metadataIndex < firstEntries)
+        #expect(entries(in: events).count == 3)
+        #expect(progressFractions(in: events).last == 1.0)
+    }
+
+    @Test func readsBugreportText() async throws {
+        let scratch = try Scratch()
+        let file = try scratch.write("bugreport-x.txt", LogFileFixtures.bugreport)
+        let events = try await collect(file)
+        expectBugreport(events)
+    }
+
+    private func expectBugreport(_ events: [LogFileEvent]) {
+        #expect(entries(in: events, section: .main).count == 5)
+        #expect(entries(in: events, section: .events).count == 2)
+        #expect(entries(in: events, section: .radio).count == 2)
+        let lastEntries = events.lastIndex { if case .entries = $0 { true } else { false } }
+        let info = events.firstIndex { if case .info = $0 { true } else { false } }
+        let names = events.firstIndex { if case .processNames = $0 { true } else { false } }
+        #expect((info ?? -1) > (lastEntries ?? .max))
+        #expect((names ?? -1) > (lastEntries ?? .max))
+        if let info, case let .info(value) = events[info] {
+            #expect(value.deviceName == "Medium Phone API 37.0")
+        }
+    }
+
+    private func makeZip(_ scratch: Scratch, report: String? = LogFileFixtures.bugreport, mainEntry: String? = "bugreport-sdk-2026-11-10.txt") throws -> URL {
+        var names = ["version.txt", "FS"]
+        _ = try scratch.write("version.txt", "2.0")
+        _ = try scratch.write("FS/proc/1/mountinfo", "x")
+        if let report {
+            _ = try scratch.write("bugreport-sdk-2026-11-10.txt", report)
+            names.append("bugreport-sdk-2026-11-10.txt")
+        }
+        if let mainEntry {
+            _ = try scratch.write("main_entry.txt", mainEntry)
+            names.append("main_entry.txt")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.arguments = ["-q", "-r", "report.zip"] + names
+        process.currentDirectoryURL = scratch.url
+        try process.run()
+        process.waitUntilExit()
+        return scratch.url.appendingPathComponent("report.zip")
+    }
+
+    private func extractionDirectories() -> Int {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path)) ?? []
+        return names.filter { $0.hasPrefix("Logcatnip-") }.count
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/usr/bin/zip")))
+    func readsBugreportZip() async throws {
+        let scratch = try Scratch()
+        let archive = try makeZip(scratch)
+        let before = extractionDirectories()
+        let events = try await collect(archive)
+        guard case .format(.bugreportZip) = try #require(events.first) else {
+            Issue.record("the first event should be the format")
+            return
+        }
+        #expect(events.contains { if case let .progress(p) = $0 { p.phase == .extracting } else { false } })
+        expectBugreport(events)
+        #expect(extractionDirectories() == before)
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/usr/bin/zip")))
+    func zipWithoutMainEntryUsesBugreportName() async throws {
+        let scratch = try Scratch()
+        let archive = try makeZip(scratch, mainEntry: nil)
+        expectBugreport(try await collect(archive))
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: "/usr/bin/zip")))
+    func zipWithoutBugreportThrows() async throws {
+        let scratch = try Scratch()
+        let archive = try makeZip(scratch, report: nil, mainEntry: nil)
+        await #expect(throws: LogFileError.noBugreport("report.zip")) { try await collect(archive) }
+    }
+
+    @Test func unrecognizedFileThrows() async throws {
+        let scratch = try Scratch()
+        let file = try scratch.write("x.txt", "hello\nworld\n")
+        await #expect(throws: LogFileError.unrecognized("x.txt")) { try await collect(file) }
+    }
+}
