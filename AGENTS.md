@@ -24,7 +24,11 @@ column, the selection, `clipped` and `truncated` counts); `LOGCATNIP_WRAP_TOGGLE
 four times and prints it after each (`LOGCATNIP_WRAP_SELECT=middle|end|none|<row>`, `LOGCATNIP_WRAP_RESIZE=<points>`
 and `LOGCATNIP_WRAP_KEYS=1` add a selection, a window resize and the arrow keys), and
 `LOGCATNIP_SCROLL_BENCH=<pages>` times scrolling in each mode. Use them to check wrapping from a terminal,
-since screenshots of the Mac are off limits.
+since screenshots of the Mac are off limits. `LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of
+new sessions and `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every style; with
+`LOGCATNIP_DEBUG=1` each session prints its options and the table a `view:` line (column order, on-screen
+cells, and `check=ok`, a recount of every visible cell against the formatter). JSON launch arguments must be
+quoted as plist strings: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`. Run all three before you call a change done.
@@ -51,6 +55,11 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `MessageLines.swift`: per-line spans and display widths of a message, computed once per row so the
     table sizes wrapped rows and the Message column without touching the text.
   - `ViewportAnchor.swift`: which row to hold still, and where to scroll, when row heights change.
+  - `LogViewOptions.swift`: a session's view (columns, timestamp and PID style, widths, hide repeated, tag
+    colors), the Standard and Compact presets, and lenient JSON for the saved default. `LogcatTime` formats
+    the timestamp styles.
+  - `LogLineFormatter.swift`: the text of every cell and of a copied line for a set of view options, so the
+    table, Copy and any future layout agree.
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
@@ -61,6 +70,7 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
     mark.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
+  - `ViewOptionsView.swift`: the Modify View form and sheet, the preset picker and menu items.
 - `Tests/LogcatKitTests/`: Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`). Device tests
   are gated on `LOGCATNIP_DEVICE_TESTS=1`.
 - `scripts/build-app.sh`: assembles the `.app` bundle and writes `Info.plist` inline (bundle id

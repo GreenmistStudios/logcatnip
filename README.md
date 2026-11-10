@@ -15,11 +15,24 @@ Android Studio's Logcat window.
   Without operators, same-key terms are ORed and everything else is ANDed, as in Android Studio.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
-  traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
-  lines scroll horizontally (trackpad, or ←/→ with the table focused; ⌘←/⌘→ jump to either edge), or turn
-  on View > Soft Wrap (⌃⌘L, also in the toolbar) to wrap them inside the Message column. Soft wrap is per
-  session, and a new session starts with the last choice. Lines over 10,000 characters are cut off with an
-  ellipsis when not wrapping; hover for the whole line.
+  traces, column hiding (right-click the header, or View > Modify View…), and follow mode that stops when you
+  scroll up. The Package column shows the package; the optional Process column shows the full process name
+  (`com.example.app:remote`). Long lines scroll horizontally (trackpad, or ←/→ with the table focused;
+  ⌘←/⌘→ jump to either edge), or turn on View > Soft Wrap (⌃⌘L, also in the toolbar) to wrap them inside
+  the Message column. Soft wrap is per session, and a new session starts with the last choice. Lines over
+  10,000 characters are cut off with an ellipsis when not wrapping; hover for the whole line.
+- **View presets.** View > Presets switches a session between **Standard** (date and time, PID-TID, tag,
+  package, level, message) and **Compact** (time, tag, level, message). View > Modify View… changes the
+  session's view as you watch: the timestamp as date and time, time, epoch seconds, seconds since the
+  session's first line (`+12.345s`) or the delta from the previous visible line (`Δ 3 ms`), in local time or
+  UTC; PID or PID-TID; a Process column; the width of the Tag, Package and Process columns (dragging a column
+  edge changes it too); **Hide repeated**, which blanks a tag, package or process equal to the one in the row
+  above (what is visible, so it stays right after filtering and trimming); and tag colors on or off. Any
+  change makes the view Custom, and choosing a preset again restores it. Each session has its own view. New
+  sessions start with the default in Settings > Log View, or "Use as Default for New Sessions" in the sheet.
+  Copy (⌘C, or Copy in the row menu) uses the format you see: the visible columns in their order, with the
+  chosen timestamp style, one line per entry, every value in full and nothing blanked as repeated. Export
+  stays in `logcat -v long` format.
 - **Find in results.** ⌘F opens a find bar that searches the tag and message of the rows shown (after the
   filter), with match case, regex and whole word options. Every match is highlighted, the current one in
   orange, with an "N of M" counter and tick marks on the scroller. Return or ⌘G goes to the next match,
@@ -68,6 +81,13 @@ times scrolling page by page in each mode. With `LOGCATNIP_DEBUG=1` every sessio
 where `clipped` counts visible wrapped lines taller than their row and `truncated` counts visible unwrapped
 lines wider than the Message column; both should stay 0.
 `LOGCATNIP_PERF_TESTS=1 swift test --filter WrapPerformance` times the line spans on 500,000 rows.
+`LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of new sessions, and
+`LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every timestamp style, the Process
+column, hide repeated and tag colors, printing after each step what Copy would paste for the last three
+entries. With `LOGCATNIP_DEBUG=1` every session prints its options, and its table a `view:` line with the
+column order, the cells on screen and `check=ok`, a comparison of every visible cell with a fresh run of the
+formatter (`MISMATCH` means a cell was not reloaded after an option change, a filter or a trim). To pass JSON
+as a launch argument, quote it as a property-list string: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
 
 ## Filter reference
 
