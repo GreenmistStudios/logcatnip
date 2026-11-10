@@ -18,6 +18,8 @@ Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr eve
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions. `LOGCATNIP_WIFI_SHEET=qr|code|ip`,
 `LOGCATNIP_WIFI_CONNECT=host:port|discovered` and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` drive the
 Connect over Wi-Fi flows without clicking; the debug report has a `wireless:` line.
+`LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch; the debug report then prints each file's
+first and last times, as displayed and as exported.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`. Run all three before you call a change done.

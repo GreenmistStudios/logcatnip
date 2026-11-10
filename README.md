@@ -70,6 +70,8 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
 `LOGCATNIP_WIFI_SHEET=qr|code|ip` opens the Connect over Wi-Fi sheet, `LOGCATNIP_WIFI_CONNECT=host:port|discovered`
 connects, and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` pairs, without clicking.
+`LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch; with `LOGCATNIP_DEBUG=1` the report shows a
+file's first and last times as the table shows them and as Export writes them.
 
 ## Filter reference
 
