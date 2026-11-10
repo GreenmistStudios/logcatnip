@@ -8,6 +8,7 @@ struct LogTableView: NSViewRepresentable {
     let session: LogSession
     var fontSize: Double
     var showDate: Bool
+    var wrapLines: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -18,7 +19,7 @@ struct LogTableView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.update(session: session, fontSize: fontSize, showDate: showDate)
+        context.coordinator.update(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
@@ -50,6 +51,15 @@ struct LogTableView: NSViewRepresentable {
         private let scrollView = NSScrollView()
         private var font: NSFont?
         private var italicFont: NSFont?
+        /// Advance of one character in the monospaced font, used to work out wrapped row heights without
+        /// laying out text.
+        private var charWidth: CGFloat = 7
+        /// Height of one line of text in the font.
+        private var textLineHeight: CGFloat = 15
+        private var wrapLines = false
+        /// Characters that fit on one wrapped line of the Message column; heights are recomputed when it changes.
+        private var wrapColumns = 0
+        private var heightUpdatePending = false
         private var showDate = false
         private var isProgrammaticScroll = false
         /// Width of the widest message line rendered so far; the Message column grows to fit it so long
@@ -123,7 +133,7 @@ struct LogTableView: NSViewRepresentable {
             return scrollView
         }
 
-        func update(session: LogSession, fontSize: Double, showDate: Bool) {
+        func update(session: LogSession, fontSize: Double, showDate: Bool, wrapLines: Bool) {
             var needsReload = false
             if self.session !== session {
                 self.session?.onRowsChanged = nil
@@ -136,6 +146,18 @@ struct LogTableView: NSViewRepresentable {
                 font = regular
                 italicFont = NSFontManager.shared.convert(regular, toHaveTrait: .italicFontMask)
                 tableView.rowHeight = ceil(fontSize * 1.5)
+                charWidth = ("M" as NSString).size(withAttributes: [.font: regular]).width
+                textLineHeight = Self.wrappedLineHeight(regular)
+                needsReload = true
+            }
+            if self.wrapLines != wrapLines {
+                self.wrapLines = wrapLines
+                scrollView.hasHorizontalScroller = !wrapLines
+                if wrapLines {
+                    let clipView = scrollView.contentView
+                    clipView.scroll(to: NSPoint(x: 0, y: clipView.bounds.origin.y))
+                    scrollView.reflectScrolledClipView(clipView)
+                }
                 needsReload = true
             }
             if self.showDate != showDate {
@@ -146,6 +168,7 @@ struct LogTableView: NSViewRepresentable {
             }
             if needsReload {
                 resetMessageWidth()
+                wrapColumns = currentWrapColumns()
                 tableView.reloadData()
                 if session.autoScroll { scrollToEnd() }
             }
@@ -234,6 +257,7 @@ struct LogTableView: NSViewRepresentable {
         }
 
         private func noteMessageWidth(of label: NSTextField) {
+            guard !wrapLines else { return }
             let width = ceil(label.attributedStringValue.size().width)
             guard width > widestMessage else { return }
             widestMessage = width
@@ -256,10 +280,76 @@ struct LogTableView: NSViewRepresentable {
             }
             let fill = scrollView.contentView.bounds.width - others - spacing
             // Text fields inset their text by a few points on each side.
-            let width = max(widestMessage + 8, fill, 100)
+            let width = wrapLines ? max(fill, 100) : max(widestMessage + 8, fill, 100)
             if abs(message.width - width) >= 0.5 {
                 message.width = width
             }
+            if wrapLines { wrapWidthDidChange() }
+        }
+
+        // MARK: Wrapping
+
+        /// Characters per wrapped line. Rounds down and leaves room for the text field's insets, so a
+        /// row may get a little spare space but its text is never clipped.
+        private func currentWrapColumns() -> Int {
+            guard let message = tableView.tableColumn(withIdentifier: Column.message.identifier) else { return 1 }
+            return max(1, Int((message.width - 8) / charWidth))
+        }
+
+        /// Character cells the text takes. Scalars from Hangul Jamo up (CJK, emoji) render about twice as
+        /// wide as Latin text, so they count as two; overestimating only leaves a little spare space.
+        private static func columns(_ text: String) -> Int {
+            var count = 0
+            for scalar in text.unicodeScalars {
+                count += scalar.value < 0x1100 ? 1 : 2
+            }
+            return count
+        }
+
+        /// Measures what one more line adds to a wrapping label, which can differ from the font's line height
+        /// by a point after rounding.
+        private static func wrappedLineHeight(_ font: NSFont) -> CGFloat {
+            let label = NSTextField(wrappingLabelWithString: "")
+            label.font = font
+            let bounds = NSRect(x: 0, y: 0, width: 1000, height: 100_000)
+            label.stringValue = "a"
+            let one = label.cell?.cellSize(forBounds: bounds).height ?? 0
+            label.stringValue = Array(repeating: "a", count: 11).joined(separator: "\n")
+            let eleven = label.cell?.cellSize(forBounds: bounds).height ?? 0
+            return max(1, ceil((eleven - one) / 10))
+        }
+
+        private func wrapWidthDidChange() {
+            let columns = currentWrapColumns()
+            guard columns != wrapColumns else { return }
+            wrapColumns = columns
+            // Coalesce: a live window resize changes the width many times per frame.
+            guard !heightUpdatePending else { return }
+            heightUpdatePending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                heightUpdatePending = false
+                let count = tableView.numberOfRows
+                guard wrapLines, count > 0 else { return }
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0
+                    tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<count))
+                }
+                if session?.autoScroll == true { scrollToEnd() }
+            }
+        }
+
+        func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+            guard wrapLines, let session, row < session.rows.count else { return tableView.rowHeight }
+            let logRow = session.rows[row]
+            guard let entry = session.entry(for: logRow) else { return tableView.rowHeight }
+            // Markers add six characters of decoration around the message.
+            let length = entry.kind == .marker
+                ? Self.columns(entry.message) + 6
+                : Self.columns(Self.line(Int(logRow.line), of: entry.message))
+            let lines = max(1, (length + wrapColumns - 1) / wrapColumns)
+            guard lines > 1 else { return tableView.rowHeight }
+            return tableView.rowHeight + CGFloat(lines - 1) * textLineHeight
         }
 
         @objc private func viewportDidResize(_ notification: Notification) {
@@ -299,6 +389,7 @@ struct LogTableView: NSViewRepresentable {
             if entry.kind == .marker {
                 let label = makeLabel(column.identifier)
                 if column == .message {
+                    setWrapping(label)
                     label.stringValue = "——— \(entry.message) ———"
                     label.font = italicFont ?? label.font
                     label.textColor = .secondaryLabelColor
@@ -312,7 +403,8 @@ struct LogTableView: NSViewRepresentable {
 
             let isFirstLine = logRow.line == 0
             if column == .level {
-                let badge = makeBadge()
+                let cell = makeBadge()
+                let badge = cell.badge
                 if isFirstLine {
                     badge.isHidden = false
                     badge.stringValue = entry.level.letter
@@ -321,7 +413,7 @@ struct LogTableView: NSViewRepresentable {
                 } else {
                     badge.isHidden = true
                 }
-                return badge
+                return cell
             }
 
             let label = makeLabel(column.identifier)
@@ -343,10 +435,11 @@ struct LogTableView: NSViewRepresentable {
                 label.textColor = process == nil ? .tertiaryLabelColor : .secondaryLabelColor
                 label.toolTip = isFirstLine ? process : nil
             case .message:
+                setWrapping(label)
                 let text = Self.line(Int(logRow.line), of: entry.message)
                 label.stringValue = text
                 label.textColor = LogColors.text(for: entry.level)
-                if text.count > 120 { label.toolTip = text }
+                if !wrapLines, text.count > 120 { label.toolTip = text }
                 noteMessageWidth(of: label)
             case .level:
                 break
@@ -380,22 +473,24 @@ struct LogTableView: NSViewRepresentable {
             return label
         }
 
-        private func makeBadge() -> NSTextField {
-            let identifier = Column.level.identifier
-            let badge: NSTextField
-            if let reused = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTextField {
-                badge = reused
+        /// Message labels wrap by character in wrap mode, matching the heights from heightOfRow.
+        private func setWrapping(_ label: NSTextField) {
+            label.maximumNumberOfLines = wrapLines ? 0 : 1
+            label.cell?.wraps = wrapLines
+            label.lineBreakMode = wrapLines ? .byCharWrapping : .byTruncatingTail
+        }
+
+        private func makeBadge() -> BadgeCellView {
+            let cell: BadgeCellView
+            if let reused = tableView.makeView(withIdentifier: Column.level.identifier, owner: nil) as? BadgeCellView {
+                cell = reused
             } else {
-                badge = NSTextField(labelWithString: "")
-                badge.identifier = identifier
-                badge.alignment = .center
-                badge.drawsBackground = true
-                badge.isBezeled = false
-                badge.wantsLayer = true
-                badge.layer?.cornerRadius = 3
+                cell = BadgeCellView()
+                cell.identifier = Column.level.identifier
             }
-            badge.font = NSFont.monospacedSystemFont(ofSize: (font?.pointSize ?? 12) - 1, weight: .bold)
-            return badge
+            cell.badgeHeight = tableView.rowHeight
+            cell.badge.font = NSFont.monospacedSystemFont(ofSize: (font?.pointSize ?? 12) - 1, weight: .bold)
+            return cell
         }
 
         // MARK: Copy and menus
@@ -490,6 +585,40 @@ struct LogTableView: NSViewRepresentable {
             guard let raw = sender.representedObject as? Int, let level = LogLevel(rawValue: raw) else { return }
             session?.setMinimumLevel(level)
         }
+    }
+}
+
+/// Holds the level badge at the top of its row, one line tall, so wrapped rows don't stretch it.
+final class BadgeCellView: NSView {
+    let badge: NSTextField = {
+        let badge = NSTextField(labelWithString: "")
+        badge.alignment = .center
+        badge.drawsBackground = true
+        badge.isBezeled = false
+        badge.wantsLayer = true
+        badge.layer?.cornerRadius = 3
+        return badge
+    }()
+
+    var badgeHeight: CGFloat = 18 {
+        didSet { if badgeHeight != oldValue { needsLayout = true } }
+    }
+
+    override var isFlipped: Bool { true }
+
+    init() {
+        super.init(frame: .zero)
+        addSubview(badge)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        badge.frame = NSRect(x: 0, y: 0, width: bounds.width, height: min(badgeHeight, bounds.height))
     }
 }
 

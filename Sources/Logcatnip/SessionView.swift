@@ -5,26 +5,33 @@ struct SessionView: View {
     let session: LogSession
     @AppStorage(SettingsKey.fontSize) private var fontSize = Defaults.fontSize
     @AppStorage("showDate") private var showDate = false
+    @AppStorage(SettingsKey.wrapLines) private var wrapLines = false
 
     var body: some View {
         VStack(spacing: 0) {
             FilterBar(session: session)
             Divider()
-            LogTableView(session: session, fontSize: fontSize, showDate: showDate)
+            LogTableView(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
             Divider()
             StatusBar(session: session)
         }
         .focusedSceneValue(\.session, session)
-        .toolbar { SessionToolbar(session: session, showDate: $showDate) }
+        .toolbar { SessionToolbar(session: session, showDate: $showDate, wrapLines: $wrapLines) }
     }
 }
 
 private struct SessionToolbar: ToolbarContent {
     @Bindable var session: LogSession
     @Binding var showDate: Bool
+    @Binding var wrapLines: Bool
 
     var body: some ToolbarContent {
         ToolbarItemGroup {
+            Toggle(isOn: $wrapLines) {
+                Label("Wrap Lines", systemImage: "arrow.turn.down.left")
+            }
+            .help(wrapLines ? "Stop wrapping long lines" : "Wrap long lines to the window width")
+
             Button {
                 session.isPaused.toggle()
             } label: {
