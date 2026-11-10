@@ -9,7 +9,9 @@ import Observation
 @Observable
 final class LogSession: Identifiable {
     enum Source: Equatable {
-        case device(serial: String)
+        /// `serial` is the adb transport now in use; it changes when the device reconnects on a new port or
+        /// switches between USB and Wi-Fi. `identity` stays with the session.
+        case device(serial: String, identity: DeviceIdentity)
         case file(URL)
     }
 
@@ -52,7 +54,7 @@ final class LogSession: Identifiable {
     }
 
     let id = UUID()
-    let source: Source
+    private(set) var source: Source
     private(set) var baseTitle = ""
     var title = ""
     private(set) var status: Status = .starting
@@ -108,15 +110,24 @@ final class LogSession: Identifiable {
     }
 
     var serial: String? {
-        if case let .device(serial) = source { serial } else { nil }
+        if case let .device(serial, _) = source { serial } else { nil }
+    }
+
+    var identity: DeviceIdentity? {
+        if case let .device(_, identity) = source { identity } else { nil }
     }
 
     var isLive: Bool { status == .streaming || status == .starting }
 
     func refreshBaseTitle() {
         switch source {
-        case let .device(serial):
-            baseTitle = model?.device(serial: serial)?.displayName ?? serial
+        case let .device(serial, _):
+            // A device that went away keeps its name while the session waits for it to come back.
+            if let device = model?.device(serial: serial) {
+                baseTitle = device.displayName
+            } else if baseTitle.isEmpty {
+                baseTitle = serial
+            }
         case let .file(url):
             baseTitle = url.lastPathComponent
         }
@@ -137,7 +148,7 @@ final class LogSession: Identifiable {
     // MARK: Streaming
 
     func start() {
-        guard case let .device(serial) = source, let adb else { return }
+        guard case let .device(serial, _) = source, let adb else { return }
         streamTask?.cancel()
         status = .starting
         let api = model?.device(serial: serial)?.properties?.apiLevel
@@ -191,10 +202,26 @@ final class LogSession: Identifiable {
         appendMarker("Device disconnected")
     }
 
-    func deviceCameOnline() {
-        guard status == .disconnected else { return }
-        appendMarker("Device reconnected")
+    /// Replaces the identity once it is known, for a session opened before getprop answered.
+    func adopt(identity: DeviceIdentity) {
+        guard case let .device(serial, _) = source else { return }
+        source = .device(serial: serial, identity: identity)
+    }
+
+    /// Streams from `newSerial` from now on: the device came back, maybe on a new port or transport, or a
+    /// better transport of the same device appeared. Resumes after the last entry, so nothing repeats or
+    /// goes missing beyond what the device's buffer has already dropped.
+    func reattach(serial newSerial: String, transport: DeviceTransport) {
+        guard case let .device(_, identity) = source, status != .stopped else { return }
+        let reconnected = status == .disconnected
+        streamToken = nil
+        streamTask?.cancel()
+        streamTask = nil
+        source = .device(serial: newSerial, identity: identity)
+        let via = transport == .emulator ? newSerial : transport.label
+        appendMarker(reconnected ? "Device reconnected (\(via))" : "Switched to \(via)")
         resumeAfter = lastTimestamp
+        restartAttempts = 0
         start()
     }
 
@@ -214,7 +241,7 @@ final class LogSession: Identifiable {
             resumeAfter = lastTimestamp
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(1))
-                guard let self, self.streamToken == nil, self.status != .stopped else { return }
+                guard let self, self.streamToken == nil, self.isLive else { return }
                 self.start()
             }
             return

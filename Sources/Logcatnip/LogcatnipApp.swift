@@ -71,10 +71,11 @@ struct LogcatCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Menu("New Session") {
-                ForEach(model.devices.filter(\.isOnline)) { device in
-                    Button(device.displayName) { model.openSession(serial: device.serial) }
+                let online = model.deviceGroups.filter(\.isOnline)
+                ForEach(online) { group in
+                    Button(group.displayName) { model.openSession(serial: group.primary.serial) }
                 }
-                if model.devices.filter(\.isOnline).isEmpty {
+                if online.isEmpty {
                     Text("No devices connected")
                 }
             }
