@@ -303,6 +303,7 @@ struct FilterHelpView: View {
         ("level:WARN", "WARN and above (V, D, I, W, E, A also work)"),
         ("age:30s age:5m age:2h age:1d", "Recent entries only"),
         ("is:crash  is:stacktrace", "Crashes / entries containing stack traces"),
+        ("is:error  is:firebase", "Exactly one level / Firebase SDK tags"),
         ("pid:123  tid:456", "Process or thread id"),
         ("name:\"My filter\"", "Names the filter"),
         ("foo bar  \"foo bar\"", "Free text anywhere in the line"),

@@ -90,6 +90,36 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
         #expect(throws: FilterError.self) { try LogFilter("is:bad") }
     }
 
+    @Test func isLevelMatchesExactlyThatLevel() throws {
+        for level in LogLevel.allCases {
+            let query = "is:\(level.name.lowercased())"
+            for other in LogLevel.allCases {
+                #expect(try matches(query, entry(level: other)) == (other == level), "\(query) vs \(other)")
+            }
+        }
+        #expect(try matches("is:error", entry(level: .error)))
+        #expect(try !matches("is:error", entry(level: .warn)))
+        #expect(try !matches("is:error", entry(level: .assert)))
+        // `level:` is a minimum, `is:` is exact.
+        #expect(try matches("level:error", entry(level: .assert)))
+        // The same spellings as `level:`.
+        #expect(try matches("is:ERROR", entry(level: .error)))
+        #expect(try matches("is:e", entry(level: .error)))
+        #expect(try !matches("is:e", entry(level: .assert)))
+    }
+
+    @Test func isFirebaseMatchesOnlyFirebaseTags() throws {
+        for caseSensitive in [false, true] {
+            for tag in ["FA", "FirebaseMessaging", "PersistentConnection"] {
+                #expect(try matches("is:firebase", entry(tag: tag), caseSensitive: caseSensitive), "\(tag)")
+            }
+            for tag in ["FAQ", "fa", "MyFirebaseMessaging", "Tag"] {
+                #expect(try !matches("is:firebase", entry(tag: tag), caseSensitive: caseSensitive), "\(tag)")
+            }
+        }
+        #expect(FilterPredicate.firebaseTags.count == 25)
+    }
+
     @Test func freeTextMatchesWholeLine() throws {
         let e = entry(tag: "Network", message: "request finished in 20ms")
         #expect(try matches("finished", e))
@@ -202,12 +232,15 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
 
     @Test func implicitOrGroupsFollowAndroidStudio() throws {
         // Non-negated terms with the same key are ORed.
+        #expect(try sameMeaning("level:ERROR is:debug", "level:ERROR | is:debug"))
+        #expect(try sameMeaning("is:firebase tag:Foo", "is:firebase | tag:Foo"))
         #expect(try sameMeaning("is:crash is:stacktrace", "is:crash | is:stacktrace"))
         #expect(try sameMeaning("tag:a tag=:b tag~:c", "tag:a | tag=:b | tag~:c"))
         #expect(try sameMeaning("line:x line:y", "line:x | line:y"))
         #expect(try sameMeaning("age:1m age:5m", "age:1m | age:5m"))
         #expect(try sameMeaning("pid:1 pid:2", "pid:1 | pid:2"))
         // Everything else is ANDed.
+        #expect(try sameMeaning("is:crash is:error", "is:crash & is:error"))
         #expect(try sameMeaning("package:mine package:foo", "package:mine & package:foo"))
         #expect(try sameMeaning("-tag:a -tag:b", "-tag:a & -tag:b"))
         #expect(try sameMeaning("foo \"bar\"", "foo & \"bar\""))
