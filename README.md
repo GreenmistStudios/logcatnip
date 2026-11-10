@@ -14,8 +14,13 @@ Android Studio's Logcat window.
   exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with `&`, `|` and parentheses.
   Without operators, same-key terms are ORed and everything else is ANDed, as in Android Studio.
 - **package:mine.** List your app's packages in Settings.
+- **Package names for short-lived processes.** Logcatnip names processes from ActivityManager's `Start proc`
+  lines as they stream, then from `ps`, and, for a process that exited before either, from the app that owns
+  the entry's uid (`pm list packages -U`, Android 8.0+). Apps that crash at startup, broadcast receivers and
+  `:remote` processes still match `package:`. A package found only through the uid is shown dimmed in italics.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
-  traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
+  traces, column hiding (right-click the header; the Process and UID columns start hidden, and the Package
+  column shows the base package of a `:remote` process), and follow mode that stops when you scroll up. Long
   lines scroll horizontally, or turn on Wrap Lines in the toolbar to wrap them to the window width.
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or set the
   minimum level.
@@ -57,7 +62,7 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 | --- | --- |
 | `tag:foo` / `tag=:foo` / `tag~:fo+` | tag contains / equals / matches regex |
 | `-tag:foo` | negation; works with every key and with free text |
-| `package:com.example` | package (process name before `:`) |
+| `package:com.example` | package (process name before `:`; for a process that was never seen, the packages that own the entry's uid) |
 | `process:com.example:remote` | full process name |
 | `message:timeout` | message text |
 | `line:foo`, `foo`, `"foo bar"` | anywhere in the line |
@@ -75,7 +80,7 @@ them.
 ## Layout
 
 - `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime), the filter language, and adb
-  (device tracking, logcat streaming, process names). No UI dependencies.
+  (device tracking, logcat streaming, process names and packages). No UI dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
 

@@ -157,6 +157,11 @@ final class LogSession: Identifiable {
         packageTracker.map.resolvedPackage(for: entry)
     }
 
+    /// The owners of the entry's uid, without building a `ResolvedPackage`, for the table's per-row path.
+    func packageOwner(for entry: LogEntry) -> PackageUIDMap.Owner? {
+        packageTracker.map.owner(forUID: entry.uid)
+    }
+
     /// How many app ids have a known owner. For debug output.
     var packageOwnerCount: Int { packageTracker.map.count }
 
