@@ -316,6 +316,10 @@ public struct ADB: Sendable {
             self.since = since
             self.modernFormat = modernFormat
         }
+
+        /// Whether to try `-v epoch -v uid`. An unknown API level (getprop hasn't answered) counts as yes: a
+        /// device that rejects them says so, and `LogcatExit` reads that.
+        public static func modernFormatSupported(apiLevel: Int?) -> Bool { (apiLevel ?? 24) >= 24 }
     }
 
     public enum LogcatEvent: Sendable {
@@ -324,7 +328,12 @@ public struct ADB: Sendable {
         case ended(status: Int32, error: String)
     }
 
-    public static func logcatArguments(serial: String, options: LogcatOptions) -> [String] {
+    /// Pre-Nougat logcat only takes `-T 'MM-DD hh:mm:ss.mmm'`, so a legacy session formats its resume time that
+    /// way. Legacy timestamps are read in the Mac's time zone (`LogcatTime.parse`), so formatting them back in
+    /// the same zone reproduces the device's own text.
+    public static func logcatArguments(
+        serial: String, options: LogcatOptions, timeZone: TimeZone = .current
+    ) -> [String] {
         var arguments = ["-s", serial, "logcat", "-v", "long"]
         if options.modernFormat {
             arguments += ["-v", "epoch", "-v", "uid"]
@@ -333,7 +342,10 @@ public struct ADB: Sendable {
             arguments += ["-b", buffer]
         }
         if let since = options.since {
-            arguments += ["-T", String(format: "%.3f", since)]
+            let time = options.modernFormat
+                ? String(format: "%.3f", since)
+                : LogcatTime.formatMonthDay(since, timeZone: timeZone)
+            arguments += ["-T", time]
         }
         return arguments
     }
