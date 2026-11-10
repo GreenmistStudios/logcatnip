@@ -188,7 +188,7 @@ final class FindController {
         guard let session, let finder, row < session.rows.count else { return nil }
         let logRow = session.rows[row]
         guard let entry = session.entry(for: logRow), entry.kind == .log else { return nil }
-        return finder.ranges(in: LogTableView.Coordinator.line(Int(logRow.line), of: entry.message)).first
+        return finder.ranges(in: logRow.text(in: entry.message)).first
     }
 
     /// Fills the query from the selected text, else from the first selected row, and applies it at once.
@@ -214,7 +214,7 @@ final class FindController {
         guard let session, let index = table?.selectedRowIndexes.first, index < session.rows.count,
               let entry = session.entry(for: session.rows[index])
         else { return nil }
-        let message = LogTableView.Coordinator.line(Int(session.rows[index].line), of: entry.message)
+        let message = session.rows[index].text(in: entry.message)
         return Self.firstLine(of: message) ?? Self.firstLine(of: entry.tag)
     }
 
@@ -377,7 +377,7 @@ final class FindController {
                     let expected = finder.matchingRows(
                         in: 0..<rows.count,
                         row: { (rows[$0].entryID, rows[$0].line) },
-                        entry: { session.entry(for: LogSession.Row(entryID: $0, line: 0)) }
+                        entry: { session.entry(id: $0) }
                     )
                     let verdict = expected == results.rows ? "ok" : "MISMATCH(\(expected.count) vs \(results.rows.count))"
                     debugCheck = (key, verdict)

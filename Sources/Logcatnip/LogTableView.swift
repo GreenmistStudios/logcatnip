@@ -62,9 +62,14 @@ struct LogTableView: NSViewRepresentable {
         private var heightUpdatePending = false
         private var showDate = false
         private var isProgrammaticScroll = false
-        /// Width of the widest message line rendered so far; the Message column grows to fit it so long
-        /// lines scroll horizontally instead of truncating.
+        /// Lines longer than this many cells are cut off with an ellipsis when not wrapping, so one huge line
+        /// cannot make the column (and the view behind it) enormous. The tooltip still has the whole line.
+        static let maxMessageCells = 10_000
+        /// Width, measured from the rendered text, of the widest message line whose width the monospaced
+        /// arithmetic cannot know (tabs, wide characters, markers). The Message column is at least this wide.
         private var widestMessage: CGFloat = 0
+        /// `session.widestLineCells` as of the last column sizing, so appends only resize when it grew.
+        private var appliedWidestCells = 0
         private var messageWidthUpdatePending = false
         /// Paragraph styles for highlighted (attributed) cells, matching the line breaking of plain cells.
         private let truncatingStyle: NSParagraphStyle = {
@@ -96,6 +101,8 @@ struct LogTableView: NSViewRepresentable {
                     tableColumn.width = 800
                     // Sized to its content (see updateMessageColumnWidth), so dragging it would be undone.
                     tableColumn.resizingMask = []
+                    // The default cap would stop a 10,000-cell line at large font sizes.
+                    tableColumn.maxWidth = 1_000_000
                 }
                 tableColumn.minWidth = min(tableColumn.minWidth, 20)
                 tableView.addTableColumn(tableColumn)
@@ -211,6 +218,9 @@ struct LogTableView: NSViewRepresentable {
             switch change {
             case .appended:
                 tableView.noteNumberOfRowsChanged()
+                // A long line may have arrived; the column is sized from the session's widest line, not from
+                // the cells that happen to be on screen.
+                if session.widestLineCells != appliedWidestCells { updateMessageColumnWidth() }
                 updateFindMarkers()
                 if session.autoScroll { scrollToEnd() }
             case let .reloaded(removedFront):
@@ -283,9 +293,11 @@ struct LogTableView: NSViewRepresentable {
             updateMessageColumnWidth()
         }
 
+        /// Measures a rendered label. Only lines whose width the monospaced arithmetic cannot know need this
+        /// (anything but printable ASCII), so the common line costs nothing here.
         private func noteMessageWidth(of label: NSTextField) {
             guard !wrapLines else { return }
-            let width = ceil(label.attributedStringValue.size().width)
+            let width = min(ceil(label.attributedStringValue.size().width), CGFloat(Self.maxMessageCells) * charWidth)
             guard width > widestMessage else { return }
             widestMessage = width
             // Resizing a column while the table is asking for cell views would re-enter layout.
@@ -298,24 +310,31 @@ struct LogTableView: NSViewRepresentable {
             }
         }
 
-        /// Widens the Message column for a line that has not been rendered yet, using the monospaced advance.
-        private func noteMessageWidth(ofLine line: String) {
-            let width = ceil(charWidth * CGFloat(Self.columns(line)))
+        /// Widens the Message column for a line that has not been rendered yet. Printable ASCII lines are
+        /// already covered by the session's widest line.
+        private func noteMessageWidth(ofRow row: LogSession.Row) {
+            guard !row.span.isASCII else { return }
+            let width = min(ceil(charWidth * CGFloat(row.span.cells)), CGFloat(Self.maxMessageCells) * charWidth)
             guard width > widestMessage else { return }
             widestMessage = width
             updateMessageColumnWidth()
         }
 
         /// Makes the Message column as wide as its widest line, and at least wide enough to fill the view.
+        /// The width comes from the session's line widths, so a line is readable in full by scrolling before
+        /// it has ever been drawn; lines whose width is only an estimate can widen it further once drawn.
         private func updateMessageColumnWidth() {
             guard let message = tableView.tableColumn(withIdentifier: Column.message.identifier) else { return }
+            appliedWidestCells = session?.widestLineCells ?? 0
             let spacing = tableView.intercellSpacing.width
             let others = tableView.tableColumns.reduce(CGFloat(0)) { sum, column in
                 column === message || column.isHidden ? sum : sum + column.width + spacing
             }
             let fill = scrollView.contentView.bounds.width - others - spacing
+            let cap = CGFloat(Self.maxMessageCells) * charWidth
+            let content = max(CGFloat(min(appliedWidestCells, Self.maxMessageCells)) * charWidth, min(widestMessage, cap))
             // Text fields inset their text by a few points on each side.
-            let width = wrapLines ? max(fill, 100) : max(widestMessage + 8, fill, 100)
+            let width = wrapLines ? max(fill, 100) : max(content + 8, fill, 100)
             if abs(message.width - width) >= 0.5 {
                 message.width = width
             }
@@ -329,16 +348,6 @@ struct LogTableView: NSViewRepresentable {
         private func currentWrapColumns() -> Int {
             guard let message = tableView.tableColumn(withIdentifier: Column.message.identifier) else { return 1 }
             return max(1, Int((message.width - 8) / charWidth))
-        }
-
-        /// Character cells the text takes. Scalars from Hangul Jamo up (CJK, emoji) render about twice as
-        /// wide as Latin text, so they count as two; overestimating only leaves a little spare space.
-        private static func columns(_ text: String) -> Int {
-            var count = 0
-            for scalar in text.unicodeScalars {
-                count += scalar.value < 0x1100 ? 1 : 2
-            }
-            return count
         }
 
         /// Measures what one more line adds to a wrapping label, which can differ from the font's line height
@@ -374,15 +383,13 @@ struct LogTableView: NSViewRepresentable {
             }
         }
 
+        /// A wrapped row is as tall as its lines need. Spans were measured when the rows were built, so this
+        /// is an array read and some arithmetic: AppKit may call it for every row of a 500,000-row table.
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
             guard wrapLines, let session, row < session.rows.count else { return tableView.rowHeight }
             let logRow = session.rows[row]
-            guard let entry = session.entry(for: logRow) else { return tableView.rowHeight }
-            // Markers add six characters of decoration around the message.
-            let length = entry.kind == .marker
-                ? Self.columns(entry.message) + 6
-                : Self.columns(Self.line(Int(logRow.line), of: entry.message))
-            let lines = max(1, (length + wrapColumns - 1) / wrapColumns)
+            // Markers are drawn with eight characters of dashes and spaces around the message.
+            let lines = logRow.span.wrappedLineCount(columns: wrapColumns, extraCells: logRow.isMarker ? 8 : 0)
             guard lines > 1 else { return tableView.rowHeight }
             return tableView.rowHeight + CGFloat(lines - 1) * textLineHeight
         }
@@ -428,6 +435,7 @@ struct LogTableView: NSViewRepresentable {
                     label.stringValue = "——— \(entry.message) ———"
                     label.font = italicFont ?? label.font
                     label.textColor = .secondaryLabelColor
+                    // The decoration around a marker's text is not in its span.
                     noteMessageWidth(of: label)
                 } else {
                     label.stringValue = column == .time ? LogcatTime.format(entry.timestamp, includeDate: showDate) : ""
@@ -472,26 +480,16 @@ struct LogTableView: NSViewRepresentable {
                 label.toolTip = isFirstLine ? process : nil
             case .message:
                 setWrapping(label)
-                let text = Self.line(Int(logRow.line), of: entry.message)
+                let text = logRow.text(in: entry.message)
                 label.stringValue = text
                 label.textColor = LogColors.text(for: entry.level)
-                if !wrapLines, text.count > 120 { label.toolTip = text }
+                if !wrapLines, logRow.span.cells > 120 { label.toolTip = text }
                 highlightMatches(in: label, text: text, row: row, wrapped: wrapLines)
-                noteMessageWidth(of: label)
+                if !logRow.span.isASCII { noteMessageWidth(of: label) }
             case .level:
                 break
             }
             return label
-        }
-
-        static func line(_ index: Int, of message: String) -> String {
-            if index == 0, !message.contains("\n") { return message }
-            var current = 0
-            for line in message.split(separator: "\n", omittingEmptySubsequences: false) {
-                if current == index { return String(line) }
-                current += 1
-            }
-            return ""
         }
 
         private func makeLabel(_ identifier: NSUserInterfaceItemIdentifier) -> NSTextField {
@@ -755,17 +753,17 @@ extension LogTableView.Coordinator: FindTableNavigating {
         if rowRect.minY < viewportTop || rowRect.maxY > viewportBottom {
             origin.y = rowRect.midY - (viewportBottom - viewportTop) / 2 - insets.top
         }
-        if !wrapLines, let highlight, let line = currentMessageLine(row: row) {
-            // The Message column is only as wide as the widest line rendered so far, and this line may not
-            // have been rendered yet, so widen it first or the scroll would stop at the old edge.
-            noteMessageWidth(ofLine: line)
+        if !wrapLines, let highlight, row < session.rows.count, let line = currentMessageLine(row: row) {
+            // A line whose width is only an estimate may not have been drawn yet, so widen the column
+            // first or the scroll would stop at the old edge.
+            noteMessageWidth(ofRow: session.rows[row])
             let column = tableView.column(withIdentifier: Column.message.identifier)
             if column >= 0 {
                 let prefix = (line as NSString).substring(to: highlight.location)
                 let matched = (line as NSString).substring(with: highlight)
                 // The text starts a few points inside its cell.
-                let x = tableView.rect(ofColumn: column).minX + 4 + charWidth * CGFloat(Self.columns(prefix))
-                let width = charWidth * CGFloat(Self.columns(matched))
+                let x = tableView.rect(ofColumn: column).minX + 4 + charWidth * CGFloat(MessageLines.cells(prefix))
+                let width = charWidth * CGFloat(MessageLines.cells(matched))
                 if x < bounds.minX || x + width > bounds.maxX {
                     origin.x = max(0, x - 40)
                 }
@@ -780,7 +778,7 @@ extension LogTableView.Coordinator: FindTableNavigating {
 
     private func currentMessageLine(row: Int) -> String? {
         guard let session, row < session.rows.count, let entry = session.entry(for: session.rows[row]) else { return nil }
-        return Self.line(Int(session.rows[row].line), of: entry.message)
+        return session.rows[row].text(in: entry.message)
     }
 
     func focusTable() {
