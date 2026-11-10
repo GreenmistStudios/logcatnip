@@ -128,6 +128,9 @@ public struct CommandResult: Sendable {
     public var status: Int32
     public var stdout: Data
     public var stderr: String
+    /// True when `run` killed the process for exceeding its timeout. adb's own failures and our kill look
+    /// alike otherwise (empty output, a signal status), and the user should be told which one it was.
+    public var timedOut = false
 
     public var output: String { String(decoding: stdout, as: UTF8.self) }
 }
@@ -186,8 +189,10 @@ public struct ADB: Sendable {
     public func run(_ arguments: [String], timeout: Duration = .seconds(30)) async throws -> CommandResult {
         let process = StreamingProcess(executable: executable, arguments: arguments)
         let collected = DataBox()
+        let timedOut = FlagBox()
         let timeoutTask = Task {
             try await Task.sleep(for: timeout)
+            timedOut.set()
             process.terminate()
         }
         defer { timeoutTask.cancel() }
@@ -197,7 +202,9 @@ public struct ADB: Sendable {
                     try process.start(
                         onData: { collected.append($0) },
                         onExit: { status, stderr in
-                            continuation.resume(returning: CommandResult(status: status, stdout: collected.data, stderr: stderr))
+                            continuation.resume(returning: CommandResult(
+                                status: status, stdout: collected.data, stderr: stderr, timedOut: timedOut.isSet
+                            ))
                         }
                     )
                 } catch {
@@ -369,6 +376,14 @@ private final class DataBox: @unchecked Sendable {
     private var storage = Data()
     func append(_ data: Data) { lock.withLock { storage.append(data) } }
     var data: Data { lock.withLock { storage } }
+}
+
+/// Set by the timeout task, read from the process exit queue; the lock orders the two.
+private final class FlagBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
 }
 
 private final class DecoderBox: @unchecked Sendable {
