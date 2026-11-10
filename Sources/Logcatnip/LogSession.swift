@@ -73,6 +73,11 @@ final class LogSession: Identifiable {
     /// Wrap long lines inside the Message column instead of scrolling them sideways. Per session; a new
     /// session starts with the last value chosen. Set it through `setSoftWrap` to remember the choice.
     var softWrap = UserDefaults.standard.bool(forKey: SettingsKey.wrapLines)
+    /// How this session's table looks: columns, timestamp style and so on. Per session; a new session starts
+    /// with the default saved in Settings. A choice here changes nothing else.
+    var viewOptions = Defaults.viewOptions
+    /// Presents the Modify View sheet. Menus set it, so the sheet lives in the session's own view.
+    var isModifyingView = false
     var filterQuery = "" {
         didSet { if filterQuery != oldValue { scheduleFilterUpdate() } }
     }
@@ -95,6 +100,9 @@ final class LogSession: Identifiable {
     @ObservationIgnored private(set) var widestLineCells = 0
     /// The table showing this session, for the debug summary.
     @ObservationIgnored weak var tableDebug: (any LogTableDebugging)?
+    /// Timestamp of the first log entry received since the session opened or was last cleared: "since start"
+    /// times count from it. For a live session it is the oldest line logcat replayed; for a file, its first.
+    @ObservationIgnored private(set) var startTimestamp: Double?
 
     @ObservationIgnored private let adb: ADB?
     @ObservationIgnored private weak var model: AppModel?
@@ -171,6 +179,13 @@ final class LogSession: Identifiable {
 
     func processName(for entry: LogEntry) -> String? {
         entry.processName ?? processNames[entry.pid]
+    }
+
+    /// The entry of the visible row above `index`: what "hide repeated" and delta time compare with. It is
+    /// the row, not the previous entry in the buffer, so filtering and trimming cannot leave a stale answer.
+    func previousEntry(beforeRow index: Int) -> LogEntry? {
+        guard index > 0, index <= rows.count else { return nil }
+        return entry(for: rows[index - 1])
     }
 
     // MARK: Streaming
@@ -310,6 +325,7 @@ final class LogSession: Identifiable {
                 }
             }
             lastTimestamp = entry.timestamp
+            if startTimestamp == nil { startTimestamp = entry.timestamp }
             entries.append(entry)
         }
         trimIfNeeded()
@@ -491,6 +507,7 @@ final class LogSession: Identifiable {
         entries.removeAll(keepingCapacity: true)
         rows.removeAll(keepingCapacity: true)
         widestLineCells = 0
+        startTimestamp = nil
         firstID = nextID
         lastFilteredID = nextID - 1
         filterGeneration += 1
@@ -614,23 +631,22 @@ final class LogSession: Identifiable {
 
     // MARK: Text output
 
-    func formattedLine(for entry: LogEntry) -> String {
-        if entry.kind == .marker {
-            return "--------- \(entry.message)"
-        }
-        let time = LogcatTime.format(entry.timestamp)
-        let process = processName(for: entry) ?? "?"
-        return "\(time) \(entry.pid)-\(entry.tid) \(entry.tag) \(process) \(entry.level.letter)  \(entry.message)"
-    }
-
-    /// Text for the given rows, one line per entry (a multi-line message is copied once, in full).
-    func text(forRows rowIndexes: IndexSet) -> String {
+    /// Text for the given rows, one line per entry (a multi-line message is copied once, in full), in the
+    /// format the table shows: `columns` are the visible ones in table order.
+    func text(forRows rowIndexes: IndexSet, columns: [LogColumn], formatter: LogLineFormatter) -> String {
         var seen = Set<Int>()
         var lines: [String] = []
         for index in rowIndexes where index < rows.count {
             let row = rows[index]
             guard seen.insert(row.entryID).inserted, let entry = entry(for: row) else { continue }
-            lines.append(formattedLine(for: entry))
+            // An entry's rows are contiguous, so its first row is `index - row.line`.
+            lines.append(formatter.copyLine(
+                for: entry,
+                previous: previousEntry(beforeRow: index - Int(row.line)),
+                sessionStart: startTimestamp,
+                processName: { processName(for: $0) },
+                columns: columns
+            ))
         }
         return lines.joined(separator: "\n")
     }
