@@ -129,6 +129,7 @@ struct LogTableView: NSViewRepresentable {
             tableView.autosaveName = "LogTable"
             tableView.autosaveTableColumns = true
             tableView.copyHandler = { [weak self] in self?.copySelection() }
+            tableView.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
             tableView.cancelHandler = { [weak self] in
                 guard let find = self?.session?.find, find.isVisible else { return false }
                 find.hide()
@@ -712,6 +713,29 @@ struct LogTableView: NSViewRepresentable {
             markers.setRows(current, for: .currentFindMatch, style: LogColors.currentFindMarker)
         }
 
+        // MARK: Keyboard
+
+        /// ←/→ scroll sideways by eight characters, ⌘←/⌘→ to the left and right edges, when long lines scroll
+        /// instead of wrapping and the table has focus. Returns whether it handled the key.
+        func handleKey(_ event: NSEvent) -> Bool {
+            let clip = scrollView.contentView
+            guard !wrapLines, tableView.frame.width > clip.bounds.width + 0.5, let key = event.specialKey else { return false }
+            let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            let maxX = tableView.frame.width - clip.bounds.width
+            var x = clip.bounds.origin.x
+            switch (key, modifiers) {
+            case (.leftArrow, []): x -= 8 * charWidth
+            case (.rightArrow, []): x += 8 * charWidth
+            case (.leftArrow, .command): x = 0
+            case (.rightArrow, .command): x = maxX
+            default: return false
+            }
+            let target = NSRect(x: min(max(0, x), maxX), y: clip.bounds.origin.y, width: clip.bounds.width, height: clip.bounds.height)
+            clip.scroll(to: clip.constrainBoundsRect(target).origin)
+            scrollView.reflectScrolledClipView(clip)
+            return true
+        }
+
         // MARK: Copy and menus
 
         func copySelection() {
@@ -846,6 +870,13 @@ final class LogNSTableView: NSTableView {
     var copyHandler: (() -> Void)?
     /// Called on Esc; returns whether it handled the key (it closes the find bar).
     var cancelHandler: (() -> Bool)?
+    /// Offered every key press first; returns whether it handled the key (sideways scrolling).
+    var keyHandler: ((NSEvent) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if keyHandler?(event) == true { return }
+        super.keyDown(with: event)
+    }
 
     override func cancelOperation(_ sender: Any?) {
         if cancelHandler?() == true { return }
