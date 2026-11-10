@@ -263,8 +263,7 @@ final class LogSession: Identifiable {
         Task { [weak self] in
             let result: Result<[LogEntry], Error> = await Task.detached(priority: .userInitiated) {
                 do {
-                    let data = try Data(contentsOf: url)
-                    return .success(LogFileImporter.parse(String(decoding: data, as: UTF8.self)))
+                    return .success(try LogFileImporter.load(contentsOf: url))
                 } catch {
                     return .failure(error)
                 }
