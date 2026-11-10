@@ -81,7 +81,10 @@ check the image and run again; on CI (`CI` set) it is only recorded. A mismatch 
 and a diff to `.build/snapshot-failures/`.
 
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, `LOGCATNIP_FIND='text'` opens the find bar
+with that query, and `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. With
+`LOGCATNIP_DEBUG=1` the find bar's state is printed too, including a recount from scratch (`check=ok`).
+`LOGCATNIP_PERF_TESTS=1 swift test --filter FindPerformance` times find on 500,000 rows.
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch, and `LOGCATNIP_UPDATE_INSTALL=1` with it downloads and
 installs what it finds without clicking. `LOGCATNIP_UPDATE_FEED=/path/release.json` (or a URL) reads releases from
 a copy of the GitHub API response instead, and `LOGCATNIP_UPDATE_VERSION=0.1.0` pretends to be that version. With
