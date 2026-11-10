@@ -119,6 +119,8 @@ with that query, and `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at
 `LOGCATNIP_PERF_TESTS=1 swift test --filter FindPerformance` times find on 500,000 rows.
 `LOGCATNIP_WIFI_SHEET=qr|code|ip` opens the Connect over Wi-Fi sheet, `LOGCATNIP_WIFI_CONNECT=host:port|discovered`
 connects, and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` pairs, without clicking.
+For files opened with `LOGCATNIP_OPEN`, `LOGCATNIP_DEBUG=1` also prints each file's first and last times as the
+table shows them and as Export writes them.
 
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch, and `LOGCATNIP_UPDATE_INSTALL=1` with it downloads and
 installs what it finds without clicking. `LOGCATNIP_UPDATE_FEED=/path/release.json` (or a URL) reads releases from
