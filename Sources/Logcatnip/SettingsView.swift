@@ -57,7 +57,7 @@ struct SettingsView: View {
                 PresetPicker(title: "New sessions", options: defaultViewOptions)
                     .pickerStyle(.menu)
                 Button("Customize…") { customizingView = true }
-                Text("The view a session starts with. Each session can change its own with View › Modify View….")
+                Text("The view a session starts with, as a table or as cards. Each session can change its own with View › Modify View….")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

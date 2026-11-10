@@ -19,7 +19,7 @@ struct PresetPicker: View {
     var body: some View {
         Picker(title, selection: Binding(
             get: { options.preset },
-            set: { if let preset = $0 { options = preset.options } }
+            set: { if let preset = $0 { options.apply(preset) } }
         )) {
             ForEach(LogViewOptions.Preset.allCases, id: \.self) { preset in
                 Text(preset.menuTitle).tag(Optional(preset))
@@ -32,7 +32,8 @@ struct PresetPicker: View {
 }
 
 /// The presets as menu items, with a checkmark on the active one. The View menu and the toolbar's More
-/// menu share it. Choosing the active preset again restores it, which is how a Custom view resets.
+/// menu share it. Choosing the active preset again restores it, which is how a Custom view resets. A preset
+/// keeps the layout, so it picks the fields of a card as it picks the columns of the table.
 struct ViewPresetMenuItems: View {
     let session: LogSession?
 
@@ -40,11 +41,24 @@ struct ViewPresetMenuItems: View {
         ForEach(LogViewOptions.Preset.allCases, id: \.self) { preset in
             Toggle(preset.menuTitle, isOn: Binding(
                 get: { session?.viewOptions.preset == preset },
-                set: { _ in session?.viewOptions = preset.options }
+                set: { _ in session?.viewOptions.apply(preset) }
             ))
         }
         Toggle("Custom", isOn: .constant(session.map { $0.viewOptions.preset == nil } ?? false))
             .disabled(true)
+    }
+}
+
+/// Switches the session between the column table and one card per entry. The View menu and the toolbar's
+/// More menu share it.
+struct CardLayoutToggle: View {
+    let session: LogSession?
+
+    var body: some View {
+        Toggle("Card Layout", isOn: Binding(
+            get: { session?.viewOptions.layout == .cards },
+            set: { session?.viewOptions.layout = $0 ? .cards : .table }
+        ))
     }
 }
 
@@ -70,6 +84,17 @@ struct ViewOptionsForm: View {
             Section {
                 PresetPicker(title: "Preset", options: $options)
                     .pickerStyle(.segmented)
+                Picker("Layout", selection: $options.layout) {
+                    Text("Table").tag(LogLayout.table)
+                    Text("Cards").tag(LogLayout.cards)
+                }
+                .pickerStyle(.segmented)
+            } footer: {
+                Text(
+                    "Cards show each entry with its level, tag and time on top, the message below, and the PID, TID "
+                        + "and package underneath. The fields follow the columns you show; presets keep the layout. "
+                        + "Widths and Hide repeated apply to the table."
+                )
             }
 
             Section("Timestamp") {

@@ -101,6 +101,8 @@ struct LogcatCommands: Commands {
         CommandGroup(after: .toolbar) {
             Toggle("Soft Wrap", isOn: Binding(get: { session?.softWrap ?? false }, set: { session?.setSoftWrap($0) }))
                 .keyboardShortcut("l", modifiers: [.command, .control])
+                .disabled(session == nil || session?.viewOptions.layout == .cards)
+            CardLayoutToggle(session: session)
                 .disabled(session == nil)
             Menu("Presets") {
                 ViewPresetMenuItems(session: session)
