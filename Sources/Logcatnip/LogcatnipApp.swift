@@ -79,6 +79,9 @@ struct LogcatCommands: Commands {
                     Text("No devices connected")
                 }
             }
+            Button("Connect over Wi-Fi…") { model.wireless.presentSheet(tab: .qrCode) }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(model.adb == nil)
             Button("Open Log File…") { FilePanels.openLogFile(model: model) }
                 .keyboardShortcut("o")
             Divider()

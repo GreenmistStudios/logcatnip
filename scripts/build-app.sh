@@ -59,6 +59,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Logcatnip uses adb to find, pair and connect Android devices on your network for wireless debugging.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>
