@@ -93,7 +93,7 @@ struct ViewOptionsForm: View {
                 Text(
                     "Cards show each entry with its level, tag and time on top, the message below, and the PID, TID "
                         + "and package underneath. The fields follow the columns you show; presets keep the layout. "
-                        + "Widths and Hide repeated apply to the table."
+                        + "Widths and Hide repeated belong to the table, so they are unavailable while cards show."
                 )
             }
 
@@ -127,7 +127,7 @@ struct ViewOptionsForm: View {
                 Toggle("Show", isOn: visible(.tag))
                 widthStepper(.tag)
                 Toggle("Hide repeated", isOn: $options.hideRepeatedTags)
-                    .disabled(!options.isVisible(.tag))
+                    .disabled(options.layout == .cards || !options.isVisible(.tag))
                 Toggle("Color tags", isOn: $options.colorTags)
                     .disabled(!options.isVisible(.tag))
             }
@@ -136,14 +136,14 @@ struct ViewOptionsForm: View {
                 Toggle("Show", isOn: visible(.package))
                 widthStepper(.package)
                 Toggle("Hide repeated", isOn: $options.hideRepeatedPackages)
-                    .disabled(!options.isVisible(.package))
+                    .disabled(options.layout == .cards || !options.isVisible(.package))
             }
 
             Section {
                 Toggle("Show", isOn: visible(.process))
                 widthStepper(.process)
                 Toggle("Hide repeated", isOn: $options.hideRepeatedProcesses)
-                    .disabled(!options.isVisible(.process))
+                    .disabled(options.layout == .cards || !options.isVisible(.process))
             } header: {
                 Text("Process")
             } footer: {
@@ -170,7 +170,7 @@ struct ViewOptionsForm: View {
         ) {
             Text("Width: \(characters) characters")
         }
-        .disabled(!options.isVisible(column))
+        .disabled(options.layout == .cards || !options.isVisible(column))
     }
 }
 
