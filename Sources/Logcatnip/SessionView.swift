@@ -145,15 +145,20 @@ struct FilterBar: View {
             .help("Match case")
 
             Picker("Level", selection: levelBinding) {
-                Text("Any Level").tag(LogLevel?.none)
+                Text("Any Level").tag(LevelSelection.any)
                 Divider()
                 ForEach(LogLevel.allCases, id: \.self) { level in
-                    Text(level.name.capitalized).tag(LogLevel?.some(level))
+                    Text(level.name.capitalized).tag(LevelSelection.minimum(level))
+                }
+                // Without a matching tag the pop-up would show nothing for a level the picker cannot express.
+                if session.levelSelection == .mixed {
+                    Divider()
+                    Text("Mixed").tag(LevelSelection.mixed)
                 }
             }
             .labelsHidden()
             .fixedSize()
-            .help("Minimum log level (edits the level: term)")
+            .help("Minimum log level (edits the top-level level: term; Mixed when the level comes from is: or a group)")
 
             Button {
                 showingHelp.toggle()
@@ -175,10 +180,16 @@ struct FilterBar: View {
         return FilterLibrary.isFavorite(session.filterQuery)
     }
 
-    private var levelBinding: Binding<LogLevel?> {
+    private var levelBinding: Binding<LevelSelection> {
         Binding(
-            get: { session.minimumLevel },
-            set: { session.setMinimumLevel($0) }
+            get: { session.levelSelection },
+            set: { selection in
+                switch selection {
+                case .any: session.setMinimumLevel(nil)
+                case let .minimum(level): session.setMinimumLevel(level)
+                case .mixed: break
+                }
+            }
         )
     }
 
@@ -331,7 +342,7 @@ struct FilterHelpView: View {
                     }
                 }
             }
-            Text("Spaces separate terms with the lowest precedence: `foo bar tag:a | tag:b` means `\"foo bar\" & (tag:a | tag:b)`. Among them, terms with the same key are ORed and the rest ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to filter by its tag, package or process.")
+            Text("Spaces separate terms with the lowest precedence: `foo bar tag:a | tag:b` means `\"foo bar\" & (tag:a | tag:b)`. Among them, terms with the same key are ORed and the rest ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to show only or hide its tag, package or process; the new term applies to the whole query.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

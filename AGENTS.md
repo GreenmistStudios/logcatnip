@@ -33,6 +33,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `Devices.swift`: `adb track-devices` decoding and device properties.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
+  - `FilterQueryEditor.swift`: structural edits for the context menu and level picker (a new term ANDs with the
+    whole query), and `LogFilter.levelSelection`, the picker's value read from the parsed filter.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
 - `Sources/Logcatnip/`: the app.
