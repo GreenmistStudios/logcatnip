@@ -53,6 +53,8 @@ final class LogSession: Identifiable {
 
     let id = UUID()
     let source: Source
+    /// Find-in-results for this session's rows.
+    let find = FindController()
     private(set) var baseTitle = ""
     var title = ""
     private(set) var status: Status = .starting
@@ -105,6 +107,7 @@ final class LogSession: Identifiable {
         self.source = source
         self.adb = adb
         self.model = model
+        find.session = self
     }
 
     var serial: String? {
@@ -128,6 +131,16 @@ final class LogSession: Identifiable {
         let index = row.entryID - firstID
         guard index >= 0, index < entries.count else { return nil }
         return entries[index]
+    }
+
+    /// Id of the oldest entry still in the buffer. Entries are indexed by `id - firstEntryID`.
+    var firstEntryID: Int { firstID }
+
+    /// Index of `row` in `rows`, or nil when it is gone (trimmed, or filtered out).
+    func rowIndex(of row: Row) -> Int? {
+        let index = firstRowIndex(atOrAfter: row.entryID) + Int(row.line)
+        guard index < rows.count, rows[index] == row else { return nil }
+        return index
     }
 
     func processName(for entry: LogEntry) -> String? {
@@ -309,6 +322,7 @@ final class LogSession: Identifiable {
         }
         visibleCount = max(0, visibleCount - removedEntries)
         rows.removeFirst(removedRows)
+        find.rowsRemovedFront(removedRows)
         onRowsChanged?(.reloaded(removedFront: removedRows))
     }
 
@@ -353,6 +367,7 @@ final class LogSession: Identifiable {
         let start = rows.count
         rows.append(contentsOf: newRows)
         visibleCount += matched
+        find.rowsAppended()
         onRowsChanged?(.appended(start..<rows.count))
     }
 
@@ -422,6 +437,7 @@ final class LogSession: Identifiable {
             self.rows = firstValid == 0 ? rows : Array(rows[firstValid...])
             self.visibleCount = firstValid == 0 ? visible : Set(self.rows.map(\.entryID)).count
             self.lastFilteredID = lastID
+            self.find.rowsReplaced()
             self.onRowsChanged?(.reloaded(removedFront: 0))
             self.flushRows()
         }
@@ -449,6 +465,7 @@ final class LogSession: Identifiable {
         refilterInFlight = false
         totalCount = 0
         visibleCount = 0
+        find.rowsReplaced()
         onRowsChanged?(.reloaded(removedFront: 0))
     }
 

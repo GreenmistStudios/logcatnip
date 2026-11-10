@@ -113,8 +113,20 @@ struct LogcatCommands: Commands {
                 .keyboardShortcut("r")
                 .disabled(session?.serial == nil)
             Divider()
-            Button("Find / Filter") { session?.focusFilterRequest += 1 }
+            Button("Filter…") { session?.focusFilterRequest += 1 }
+                .keyboardShortcut("l")
+                .disabled(session == nil)
+            Button("Find…") { session?.find.show() }
                 .keyboardShortcut("f")
+                .disabled(session == nil)
+            Button("Find Next") { session?.find.navigate(.next) }
+                .keyboardShortcut("g")
+                .disabled(session?.find.query.isEmpty ?? true)
+            Button("Find Previous") { session?.find.navigate(.previous) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(session?.find.query.isEmpty ?? true)
+            Button("Use Selection for Find") { session?.find.useSelectionForFind() }
+                .keyboardShortcut("e")
                 .disabled(session == nil)
             Button("Scroll to End") { session?.autoScroll = true }
                 .keyboardShortcut(.downArrow, modifiers: [.command])

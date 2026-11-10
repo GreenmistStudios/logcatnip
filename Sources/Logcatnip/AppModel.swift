@@ -60,6 +60,12 @@ final class AppModel {
         if ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1" {
             startDebugReporting()
         }
+        // Debug helper: open log files at launch, `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt`.
+        if let paths = ProcessInfo.processInfo.environment["LOGCATNIP_OPEN"] {
+            for path in paths.split(separator: ":") {
+                openFile(URL(fileURLWithPath: String(path)))
+            }
+        }
     }
 
     /// Stops every adb child process. Called on quit, when tasks no longer get a chance to run.
@@ -83,6 +89,9 @@ final class AppModel {
                         + "rows=\(session.rows.count) processes=\(session.processNames.count) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
                     FileHandle.standardError.write(Data(line.utf8))
+                    if session.find.isVisible {
+                        FileHandle.standardError.write(Data("[logcatnip]     \(session.find.debugSummary())\n".utf8))
+                    }
                 }
                 try? await Task.sleep(for: .seconds(3))
             }
@@ -186,8 +195,17 @@ final class AppModel {
             session.filterQuery = initialFilter
             session.applyFilterNow()
         }
+        applyDebugFind(to: session)
         session.start()
         return session
+    }
+
+    /// Debug helper: `LOGCATNIP_FIND='text'` opens the find bar with that query in new sessions.
+    private func applyDebugFind(to session: LogSession) {
+        guard let query = ProcessInfo.processInfo.environment["LOGCATNIP_FIND"] else { return }
+        session.find.query = query
+        session.find.isVisible = true
+        session.find.applyNow()
     }
 
     /// Selects an existing session for the device, or opens one.
@@ -204,6 +222,11 @@ final class AppModel {
         sessions.append(session)
         selectedSessionID = session.id
         refreshTitles()
+        if let initialFilter = ProcessInfo.processInfo.environment["LOGCATNIP_FILTER"] {
+            session.filterQuery = initialFilter
+            session.applyFilterNow()
+        }
+        applyDebugFind(to: session)
         session.loadFile()
     }
 

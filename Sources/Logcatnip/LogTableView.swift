@@ -48,7 +48,7 @@ struct LogTableView: NSViewRepresentable {
 
         private var session: LogSession?
         private let tableView = LogNSTableView()
-        private let scrollView = NSScrollView()
+        private let scrollView = LogScrollView()
         private var font: NSFont?
         private var italicFont: NSFont?
         /// Advance of one character in the monospaced font, used to work out wrapped row heights without
@@ -66,6 +66,17 @@ struct LogTableView: NSViewRepresentable {
         /// lines scroll horizontally instead of truncating.
         private var widestMessage: CGFloat = 0
         private var messageWidthUpdatePending = false
+        /// Paragraph styles for highlighted (attributed) cells, matching the line breaking of plain cells.
+        private let truncatingStyle: NSParagraphStyle = {
+            let style = NSMutableParagraphStyle()
+            style.lineBreakMode = .byTruncatingTail
+            return style
+        }()
+        private let wrappingStyle: NSParagraphStyle = {
+            let style = NSMutableParagraphStyle()
+            style.lineBreakMode = .byCharWrapping
+            return style
+        }()
 
         func makeScrollView() -> NSScrollView {
             for column in Column.allCases {
@@ -102,6 +113,11 @@ struct LogTableView: NSViewRepresentable {
             tableView.autosaveName = "LogTable"
             tableView.autosaveTableColumns = true
             tableView.copyHandler = { [weak self] in self?.copySelection() }
+            tableView.cancelHandler = { [weak self] in
+                guard let find = self?.session?.find, find.isVisible else { return false }
+                find.hide()
+                return true
+            }
 
             let menu = NSMenu()
             menu.delegate = self
@@ -136,9 +152,11 @@ struct LogTableView: NSViewRepresentable {
         func update(session: LogSession, fontSize: Double, showDate: Bool, wrapLines: Bool) {
             var needsReload = false
             if self.session !== session {
-                self.session?.onRowsChanged = nil
+                unbindSession()
                 self.session = session
                 session.onRowsChanged = { [weak self] change in self?.apply(change) }
+                session.find.table = self
+                session.find.onChange = { [weak self] change in self?.applyFind(change) }
                 needsReload = true
             }
             if font.map({ Double($0.pointSize) }) != fontSize {
@@ -170,13 +188,20 @@ struct LogTableView: NSViewRepresentable {
                 resetMessageWidth()
                 wrapColumns = currentWrapColumns()
                 tableView.reloadData()
+                updateFindMarkers()
                 if session.autoScroll { scrollToEnd() }
             }
         }
 
         func unbind() {
-            session?.onRowsChanged = nil
+            unbindSession()
             NotificationCenter.default.removeObserver(self)
+        }
+
+        private func unbindSession() {
+            session?.onRowsChanged = nil
+            session?.find.onChange = nil
+            session?.find.table = nil
         }
 
         // MARK: Updates
@@ -186,6 +211,7 @@ struct LogTableView: NSViewRepresentable {
             switch change {
             case .appended:
                 tableView.noteNumberOfRowsChanged()
+                updateFindMarkers()
                 if session.autoScroll { scrollToEnd() }
             case let .reloaded(removedFront):
                 let selectedIDs = selectedEntryIDs()
@@ -195,6 +221,7 @@ struct LogTableView: NSViewRepresentable {
                 if removedFront == 0 { resetMessageWidth() }
                 tableView.reloadData()
                 restoreSelection(selectedIDs)
+                updateFindMarkers()
                 if session.autoScroll {
                     scrollToEnd()
                 } else if removedFront > 0 {
@@ -269,6 +296,14 @@ struct LogTableView: NSViewRepresentable {
                 messageWidthUpdatePending = false
                 updateMessageColumnWidth()
             }
+        }
+
+        /// Widens the Message column for a line that has not been rendered yet, using the monospaced advance.
+        private func noteMessageWidth(ofLine line: String) {
+            let width = ceil(charWidth * CGFloat(Self.columns(line)))
+            guard width > widestMessage else { return }
+            widestMessage = width
+            updateMessageColumnWidth()
         }
 
         /// Makes the Message column as wide as its widest line, and at least wide enough to fill the view.
@@ -429,6 +464,7 @@ struct LogTableView: NSViewRepresentable {
                 label.stringValue = isFirstLine ? entry.tag : ""
                 label.textColor = LogColors.tag(entry.tag)
                 label.toolTip = isFirstLine ? entry.tag : nil
+                if isFirstLine { highlightMatches(in: label, text: entry.tag, row: row, wrapped: false) }
             case .package:
                 let process = session.processName(for: entry)
                 label.stringValue = isFirstLine ? (process ?? (entry.pid > 0 ? "pid-\(entry.pid)" : "")) : ""
@@ -440,6 +476,7 @@ struct LogTableView: NSViewRepresentable {
                 label.stringValue = text
                 label.textColor = LogColors.text(for: entry.level)
                 if !wrapLines, text.count > 120 { label.toolTip = text }
+                highlightMatches(in: label, text: text, row: row, wrapped: wrapLines)
                 noteMessageWidth(of: label)
             case .level:
                 break
@@ -447,7 +484,7 @@ struct LogTableView: NSViewRepresentable {
             return label
         }
 
-        private static func line(_ index: Int, of message: String) -> String {
+        static func line(_ index: Int, of message: String) -> String {
             if index == 0, !message.contains("\n") { return message }
             var current = 0
             for line in message.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -491,6 +528,50 @@ struct LogTableView: NSViewRepresentable {
             cell.badgeHeight = tableView.rowHeight
             cell.badge.font = NSFont.monospacedSystemFont(ofSize: (font?.pointSize ?? 12) - 1, weight: .bold)
             return cell
+        }
+
+        // MARK: Find
+
+        /// Gives the label an attributed string with every match highlighted. Rows that do not match keep
+        /// the plain string, so scrolling past them costs one binary search.
+        private func highlightMatches(in label: NSTextField, text: String, row: Int, wrapped: Bool) {
+            guard let isCurrent = session?.find.highlight(forRow: row),
+                  let ranges = session?.find.ranges(in: text), !ranges.isEmpty
+            else { return }
+            let attributed = NSMutableAttributedString(string: text, attributes: [
+                .font: label.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: label.textColor ?? NSColor.labelColor,
+                .paragraphStyle: wrapped ? wrappingStyle : truncatingStyle,
+            ])
+            let background = isCurrent ? LogColors.currentFindMatch : LogColors.findMatch
+            for range in ranges {
+                attributed.addAttributes([.backgroundColor: background, .foregroundColor: LogColors.findMatchText], range: range)
+            }
+            label.attributedStringValue = attributed
+        }
+
+        /// Redraws the visible cells after the matches changed.
+        private func applyFind(_ change: FindChange) {
+            let visible = tableView.rows(in: tableView.visibleRect)
+            if visible.length > 0 {
+                var rows = visible.location..<(visible.location + visible.length)
+                if case let .rows(changed) = change { rows = rows.clamped(to: changed) }
+                let columns = IndexSet([Column.tag, Column.message].map { tableView.column(withIdentifier: $0.identifier) }.filter { $0 >= 0 })
+                if !rows.isEmpty, !columns.isEmpty {
+                    tableView.reloadData(forRowIndexes: IndexSet(integersIn: rows), columnIndexes: columns)
+                }
+            }
+            updateFindMarkers()
+        }
+
+        private func updateFindMarkers() {
+            guard let session else { return }
+            let find = session.find
+            let markers = scrollView.markers
+            markers.rowCount = session.rows.count
+            markers.setRows(find.isActive ? find.results.rows : [], for: .findMatches, style: LogColors.findMarker)
+            let current = find.currentRow.flatMap { find.isActive && find.results.contains($0) ? [$0] : nil } ?? []
+            markers.setRows(current, for: .currentFindMatch, style: LogColors.currentFindMarker)
         }
 
         // MARK: Copy and menus
@@ -622,9 +703,16 @@ final class BadgeCellView: NSView {
     }
 }
 
-/// Routes Edit > Copy (⌘C) to the coordinator.
+/// Routes Edit > Copy (⌘C) and Esc to the coordinator.
 final class LogNSTableView: NSTableView {
     var copyHandler: (() -> Void)?
+    /// Called on Esc; returns whether it handled the key (it closes the find bar).
+    var cancelHandler: (() -> Bool)?
+
+    override func cancelOperation(_ sender: Any?) {
+        if cancelHandler?() == true { return }
+        super.cancelOperation(sender)
+    }
 
     @objc func copy(_ sender: Any?) {
         copyHandler?()
@@ -635,5 +723,67 @@ final class LogNSTableView: NSTableView {
             return selectedRow >= 0
         }
         return super.validateUserInterfaceItem(item)
+    }
+}
+
+extension LogTableView.Coordinator: FindTableNavigating {
+    var findAnchor: FindAnchor {
+        let selected = tableView.selectedRowIndexes
+        if let first = selected.first, let last = selected.last { return .selection(first...last) }
+        let visible = tableView.rows(in: tableView.visibleRect)
+        if visible.length > 0 { return .viewport(visible.location...(visible.location + visible.length - 1)) }
+        return .none
+    }
+
+    var selectedRowIndexes: IndexSet { tableView.selectedRowIndexes }
+
+    /// Selects the row alone, stops following new logs, and scrolls it to the vertical centre unless it is
+    /// fully visible already. Without wrapping, also scrolls sideways when the first highlight is out of
+    /// sight.
+    func revealFindMatch(row: Int, highlight: NSRange?) {
+        guard let session, row >= 0, row < tableView.numberOfRows else { return }
+        session.autoScroll = false
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+
+        let clip = scrollView.contentView
+        let bounds = clip.bounds
+        let insets = clip.contentInsets
+        let viewportTop = bounds.minY + insets.top
+        let viewportBottom = bounds.maxY - insets.bottom
+        let rowRect = tableView.rect(ofRow: row)
+        var origin = bounds.origin
+        if rowRect.minY < viewportTop || rowRect.maxY > viewportBottom {
+            origin.y = rowRect.midY - (viewportBottom - viewportTop) / 2 - insets.top
+        }
+        if !wrapLines, let highlight, let line = currentMessageLine(row: row) {
+            // The Message column is only as wide as the widest line rendered so far, and this line may not
+            // have been rendered yet, so widen it first or the scroll would stop at the old edge.
+            noteMessageWidth(ofLine: line)
+            let column = tableView.column(withIdentifier: Column.message.identifier)
+            if column >= 0 {
+                let prefix = (line as NSString).substring(to: highlight.location)
+                let matched = (line as NSString).substring(with: highlight)
+                // The text starts a few points inside its cell.
+                let x = tableView.rect(ofColumn: column).minX + 4 + charWidth * CGFloat(Self.columns(prefix))
+                let width = charWidth * CGFloat(Self.columns(matched))
+                if x < bounds.minX || x + width > bounds.maxX {
+                    origin.x = max(0, x - 40)
+                }
+            }
+        }
+        guard origin != bounds.origin else { return }
+        isProgrammaticScroll = true
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: bounds.size)).origin)
+        scrollView.reflectScrolledClipView(clip)
+        isProgrammaticScroll = false
+    }
+
+    private func currentMessageLine(row: Int) -> String? {
+        guard let session, row < session.rows.count, let entry = session.entry(for: session.rows[row]) else { return nil }
+        return Self.line(Int(session.rows[row].line), of: entry.message)
+    }
+
+    func focusTable() {
+        tableView.window?.makeFirstResponder(tableView)
     }
 }
