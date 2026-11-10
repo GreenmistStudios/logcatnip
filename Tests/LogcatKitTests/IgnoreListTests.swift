@@ -142,6 +142,21 @@ private func outcome(
         }
     }
 
+    @Test func largeBufferWithBigListsFiltersQuickly() throws {
+        // The table's buffer holds 250,000 entries and a refilter walks all of them, so the lists must stay cheap.
+        let list = IgnoreList(tags: (0..<200).map { "noisy\($0)" }, packages: (0..<200).map { "com.noisy\($0)" })
+        let entries = (0..<250_000).map { index in
+            entry(tag: index % 7 == 0 ? "noisy\(index % 200)" : "Tag\(index % 500)", process: "com.app\(index % 300)")
+        }
+        let filter = try LogFilter("level:I")
+        let ctx = context(list)
+        let start = ContinuousClock.now
+        let ignored = entries.reduce(0) { $0 + (filter.evaluate($1, context: ctx) == .ignored ? 1 : 0) }
+        let elapsed = ContinuousClock.now - start
+        #expect(ignored == entries.indices.filter { $0 % 7 == 0 }.count)
+        #expect(elapsed < .seconds(2), "took \(elapsed)")
+    }
+
     @Test func emptyIgnoreListChangesNothing() throws {
         let entries = [entry(tag: "Foo"), entry(tag: "Bar", level: .error), entry(tag: "Baz", process: nil)]
         for query in ["", "tag:Foo", "level:E | Baz"] {

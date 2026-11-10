@@ -74,6 +74,8 @@ public struct LogFilter: Sendable {
     /// count is what showing them would add.
     public func evaluate(_ entry: LogEntry, context: FilterContext) -> FilterOutcome {
         if entry.kind == .marker { return .shown }
+        // The common case of no query and no lists should not pay for building a subject per entry.
+        if root == nil, context.ignoreList.isEmpty { return .shown }
         var subject = FilterSubject(entry: entry, context: context)
         let ignored = subject.isIgnored()
         if let root, !root.evaluate(&subject) { return .filteredOut }
