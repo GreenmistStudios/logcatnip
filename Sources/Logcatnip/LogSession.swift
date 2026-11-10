@@ -103,6 +103,13 @@ final class LogSession: Identifiable {
     /// How many `ps` lookups this session ran. For debug output.
     @ObservationIgnored private(set) var processLookupCount = 0
 
+    @ObservationIgnored private var packageTracker = PackageUIDTracker()
+    @ObservationIgnored private var packageRefreshInFlight = false
+    @ObservationIgnored private var packageRefreshQueued = false
+    @ObservationIgnored private var lastPackageRefresh = Date.distantPast
+    /// How many `pm list packages` reads this session ran. For debug output.
+    @ObservationIgnored private(set) var packageLookupCount = 0
+
     /// How long a new pid waits for ActivityManager's `Start proc` line before `ps` is asked about it, so
     /// processes announced in the stream never cost a `ps`.
     private static let processStartGrace = 0.3
@@ -145,6 +152,14 @@ final class LogSession: Identifiable {
     /// How many pids the resolver knows, is waiting on, or gave up on. For debug output.
     var processNameStats: ProcessNameResolver.Stats { processResolver.stats }
 
+    /// The package for an entry: its process name's, else the packages that own its uid.
+    func resolvedPackage(for entry: LogEntry) -> ResolvedPackage? {
+        packageTracker.map.resolvedPackage(for: entry)
+    }
+
+    /// How many app ids have a known owner. For debug output.
+    var packageOwnerCount: Int { packageTracker.map.count }
+
     // MARK: Streaming
 
     func start() {
@@ -157,6 +172,8 @@ final class LogSession: Identifiable {
         let token = UUID()
         streamToken = token
         requestProcessNames(force: true)
+        packageTracker.reset()
+        requestPackages(force: true)
 
         streamTask = Task { [weak self] in
             var receivedAny = false
@@ -276,6 +293,9 @@ final class LogSession: Identifiable {
             entry.id = nextID
             nextID += 1
             processResolver.stamp(&entry, now: now)
+            if entry.processName == nil, let uid = PackageUIDMap.uid(fromLogcat: entry.uid) {
+                packageTracker.note(uid: uid)
+            }
             lastTimestamp = entry.timestamp
             entries.append(entry)
             if let event = ProcessEvent(entry) { apply(event, seq: entry.id, to: &named) }
@@ -283,6 +303,7 @@ final class LogSession: Identifiable {
         if !named.isEmpty { applyNameUpdate(named) }
         trimIfNeeded()
         if processResolver.needsLookup { requestProcessNames() }
+        if packageTracker.needsRefresh { requestPackages() }
         scheduleFlush()
     }
 
@@ -290,8 +311,9 @@ final class LogSession: Identifiable {
     /// (the child logs a few lines before system_server writes the event).
     private func apply(_ event: ProcessEvent, seq: Int, to update: inout ProcessNameResolver.Update) {
         switch event {
-        case let .started(pid, process, _):
+        case let .started(pid, process, uid):
             update.merge(processResolver.processStarted(pid: pid, name: process, seq: seq))
+            if let uid { packageTracker.note(uid: uid) }
         }
     }
 
@@ -386,7 +408,7 @@ final class LogSession: Identifiable {
     // MARK: Filtering
 
     private func filterContext() -> FilterContext {
-        FilterContext(myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970)
+        FilterContext(myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970, packages: packageTracker.map)
     }
 
     private func scheduleFilterUpdate() {
@@ -543,6 +565,67 @@ final class LogSession: Identifiable {
         guard update.apply(to: &entries) > 0 else { return }
         // Entries the filter has not seen yet are filtered with their names at the next flush.
         guard update.assignments.values.contains(where: { $0.firstSeq <= lastFilteredID }) else { return }
+        if filter.dependsOnProcessNames {
+            refilter()
+        } else {
+            onRowsChanged?(.refreshVisible)
+        }
+    }
+
+    // MARK: Packages by uid
+
+    /// Reads `pm list packages -U` when the stream starts and when an entry carries an app uid the map lacks
+    /// (each app id at most once, see `PackageUIDTracker`). Entries whose process was never seen can then
+    /// still be attributed to their app. Lookups are at least 2 s apart.
+    private func requestPackages(force: Bool = false) {
+        guard let serial, adb != nil else { return }
+        // `pm list packages -U` needs Android 8.0. Start proc events cover older releases.
+        if let api = model?.device(serial: serial)?.properties?.apiLevel, api < 26 { return }
+        guard force || packageTracker.needsRefresh else { return }
+        if packageRefreshInFlight {
+            packageRefreshQueued = true
+            return
+        }
+        guard !packageRefreshQueued else { return }
+        let wait = 2 - Date().timeIntervalSince(lastPackageRefresh)
+        guard wait > 0 else {
+            runPackageLookup()
+            return
+        }
+        packageRefreshQueued = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard let self else { return }
+            self.packageRefreshQueued = false
+            if force || self.packageTracker.needsRefresh { self.runPackageLookup() }
+        }
+    }
+
+    private func runPackageLookup() {
+        guard let serial, let adb, !packageRefreshInFlight else { return }
+        packageRefreshInFlight = true
+        lastPackageRefresh = Date()
+        packageLookupCount += 1
+        let refresh = packageTracker.beginRefresh()
+        Task { [weak self] in
+            let map = try? await adb.packagesByUID(serial: serial)
+            guard let self else { return }
+            self.packageRefreshInFlight = false
+            // A device with apps never lists none, so an empty list is an error message, not an answer.
+            if let map, map.count > 0 {
+                if self.packageTracker.finishRefresh(refresh, with: map) { self.packagesChanged() }
+            } else {
+                self.packageTracker.failRefresh(refresh)
+            }
+            if self.packageRefreshQueued {
+                self.packageRefreshQueued = false
+                self.requestPackages()
+            }
+        }
+    }
+
+    /// New owners can change which entries `package:` terms match and what the Package cells show.
+    private func packagesChanged() {
         if filter.dependsOnProcessNames {
             refilter()
         } else {
