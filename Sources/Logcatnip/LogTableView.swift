@@ -132,6 +132,13 @@ struct LogTableView: NSViewRepresentable {
             tableView.delegate = self
             tableView.autosaveName = "LogTable"
             tableView.autosaveTableColumns = true
+            // A layout saved before the Process column existed restores it after Message, where it would sit
+            // off screen behind the widest column. Put it back after Package.
+            let processIndex = tableView.column(withIdentifier: Column.process.identifier)
+            let levelIndex = tableView.column(withIdentifier: Column.level.identifier)
+            if processIndex > tableView.column(withIdentifier: Column.message.identifier), levelIndex >= 0 {
+                tableView.moveColumn(processIndex, toColumn: levelIndex)
+            }
             tableView.copyHandler = { [weak self] in self?.copySelection() }
             tableView.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
             tableView.cancelHandler = { [weak self] in
