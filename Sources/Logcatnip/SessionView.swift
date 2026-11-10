@@ -8,6 +8,21 @@ struct SessionView: View {
     @AppStorage(SettingsKey.wrapLines) private var wrapLines = false
 
     var body: some View {
+        SessionContent(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
+            .focusedSceneValue(\.session, session)
+            .toolbar { SessionToolbar(session: session, showDate: $showDate, wrapLines: $wrapLines) }
+    }
+}
+
+/// The filter bar, table and status bar. Takes the display settings as values rather than reading
+/// them from user defaults, so screenshot tests can render it with fixed settings.
+struct SessionContent: View {
+    let session: LogSession
+    var fontSize: Double
+    var showDate: Bool
+    var wrapLines: Bool
+
+    var body: some View {
         VStack(spacing: 0) {
             FilterBar(session: session)
             Divider()
@@ -15,8 +30,6 @@ struct SessionView: View {
             Divider()
             StatusBar(session: session)
         }
-        .focusedSceneValue(\.session, session)
-        .toolbar { SessionToolbar(session: session, showDate: $showDate, wrapLines: $wrapLines) }
     }
 }
 

@@ -44,9 +44,16 @@ You can also open `Package.swift` in Xcode and run the `Logcatnip` scheme.
 ## Tests
 
 ```sh
-swift test                                   # parser and filter tests
+swift test                                   # parser, filter and screenshot tests
 LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached device
+LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 ```
+
+Screenshot tests render the session view offscreen and compare it with PNGs in
+`Tests/LogcatnipTests/__Snapshots__/macOS-<major>/`. Text renders differently between macOS releases, so
+each major version has its own references. A missing reference is recorded and the test fails until you
+check the image and run again; on CI (`CI` set) it is only recorded. A mismatch writes the actual image
+and a diff to `.build/snapshot-failures/`.
 
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
@@ -78,6 +85,7 @@ them.
   (device tracking, logcat streaming, process names). No UI dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
+- `Tests/LogcatnipTests`: screenshot tests of the app's views.
 
 Long-running adb commands run under a small `sh` watchdog that stops them when the app exits, even if it
 crashes.
