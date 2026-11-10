@@ -42,6 +42,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `FilterCompletion.swift`: `completionContext(query:cursor:)` and the suggestions for keys, values and history.
   - `IgnoreList.swift`: `IgnoreList` (global ignored tags and packages), `FilterOutcome` (shown, ignored or filtered
     out, so the status bar can count what the lists hide) and `DefaultFilter` (the query new sessions start with).
+  - `PeriodicRefresh.swift`: a main-actor loop for state that goes stale with time (`age:` filters), held weakly
+    so it ends with its owner.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
 - `Sources/Logcatnip/`: the app.
