@@ -499,11 +499,24 @@ final class LogSession: Identifiable {
     private func scheduleAgeRefresh() {
         stopAgeRefresh()
         guard filter.dependsOnTime else { return }
-        ageRefresh = PeriodicRefresh.start(every: .seconds(5), owner: self) { session in
+        let task = PeriodicRefresh.start(every: .seconds(5), owner: self) { session in
             guard session.filter.dependsOnTime, !session.isPaused else { return }
             session.refilter()
         }
+        ageRefresh = task
+        if Self.debugLogging {
+            let title = title
+            Task {
+                let ending = await task.value
+                FileHandle.standardError.write(Data("[logcatnip] age refresh ended (\(ending)) for \(title)\n".utf8))
+            }
+        }
     }
+
+    /// Whether the `age:` refresh loop is scheduled, for the debug output.
+    var isRefreshingAge: Bool { ageRefresh != nil }
+
+    private static let debugLogging = ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1"
 
     private func stopAgeRefresh() {
         ageRefresh?.cancel()

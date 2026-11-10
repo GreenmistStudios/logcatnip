@@ -17,7 +17,10 @@ CONFIG=debug scripts/build-app.sh            # debug app bundle
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, overriding the default filter. The debug
 output includes the ignore lists and each session's `ignored=` count. `LOGCATNIP_COMPLETE='tag:Net'` (with
-`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query.
+`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query. With `LOGCATNIP_DEBUG=1`,
+`LOGCATNIP_RESTART_AFTER=<seconds>` restarts every device session once and `LOGCATNIP_CLOSE_AFTER=<seconds>`
+closes every session (both counted from launch); each session line shows `ageRefresh=`, and an
+`age refresh ended (<reason>)` line is printed when a session's `age:` refresh stops.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`. Run all three before you call a change done.
