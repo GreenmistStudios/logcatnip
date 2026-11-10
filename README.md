@@ -10,9 +10,10 @@ Android Studio's Logcat window.
   sessions per device; each has its own filter, pause state and buffer. When a device disconnects, its
   sessions keep their logs and resume where they left off when it comes back.
 - **Android Studio filter syntax.** `tag:`, `package:`, `process:`, `message:`, `line:`, `level:`, `age:`,
-  `is:crash`, `is:stacktrace`, `name:`, plus `pid:` and `tid:`. Every text key supports contains (`key:`),
-  exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with `&`, `|` and parentheses.
-  Without operators, same-key terms are ORed and everything else is ANDed, as in Android Studio.
+  `is:crash`, `is:stacktrace`, `is:firebase`, `is:<level>`, `name:`, plus `pid:` and `tid:`. Every text key
+  supports contains (`key:`), exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with
+  `&`, `|` and parentheses. Spaces have the lowest precedence, and same-key terms are ORed, as in Android
+  Studio.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
@@ -72,12 +73,25 @@ and a diff to `.build/snapshot-failures/`.
 | `level:WARN` | WARN and above (`V D I W E A` work too) |
 | `age:30s`, `age:5m`, `age:2h`, `age:1d` | recent entries only |
 | `is:crash`, `is:stacktrace` | crashes and ANRs; entries containing stack frames |
+| `is:error` (any level name) | exactly that level (`level:` is that level and above) |
+| `is:firebase` | Firebase SDK tags (`FA`, `FirebaseMessaging`, …) |
 | `pid:1234`, `tid:5678` | process or thread id |
 | `name:"My filter"` | names the filter |
 | `(tag:a \| tag:b) & level:E` | explicit operators; `&` binds tighter than `\|` |
 
 Unquoted values end at whitespace, `&` or `|` (regex values only at whitespace). Quote values that contain
 them.
+
+### Precedence
+
+Spaces separate terms with the lowest precedence, as in Android Studio, so `foo bar tag:a | tag:b` means
+`"foo bar" & (tag:a | tag:b)`. Among the space-separated terms, non-negated terms with the same key are
+ORed and the rest are ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`, and negated terms
+are always ANDed. `package:mine` is never ORed, so `package:mine package:foo` needs both. Parentheses may
+hold a whole sequence, and `()` matches everything.
+
+Before 0.2, spaces bound tighter than `&` and `|`. Saved favorites and recent filters whose meaning changed
+are marked ⚠︎ in the filter menu once, until you remove them or choose Dismiss ⚠︎ Warnings.
 
 ## Layout
 

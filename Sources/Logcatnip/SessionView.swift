@@ -200,17 +200,18 @@ struct FilterBar: View {
         let _ = libraryVersion
         let favorites = FilterLibrary.favorites
         let history = FilterLibrary.history
+        let flagged = FilterLibrary.precedenceChanged
         if !favorites.isEmpty {
             Section("Favorites") {
                 ForEach(favorites, id: \.self) { query in
-                    Button(query) { use(query) }
+                    Button(flagged.contains(query) ? "⚠︎ \(query)" : query) { use(query) }
                 }
             }
         }
         if !history.isEmpty {
             Section("Recent") {
                 ForEach(history, id: \.self) { query in
-                    Button(query) { use(query) }
+                    Button(flagged.contains(query) ? "⚠︎ \(query)" : query) { use(query) }
                 }
             }
             Divider()
@@ -221,6 +222,14 @@ struct FilterBar: View {
         }
         if favorites.isEmpty && history.isEmpty {
             Text("No saved filters")
+        }
+        if !flagged.isEmpty {
+            Divider()
+            Text("⚠︎ Meaning changed: spaces now bind looser than & and |")
+            Button("Dismiss ⚠︎ Warnings") {
+                FilterLibrary.dismissPrecedenceWarnings()
+                libraryVersion += 1
+            }
         }
         Divider()
         Section("Examples") {
@@ -302,6 +311,7 @@ struct FilterHelpView: View {
         Example(query: "tag~:^(Okhttp|Retrofit)", description: "tag regex"),
         Example(query: "age:5m", description: "logged in the last 5 minutes"),
         Example(query: "(tag:Net | tag:Http) & level:ERROR", description: "operators and grouping"),
+        Example(query: "level:ERROR tag:Net | tag:Http", description: "errors from either tag"),
     ]
 
     private let rows: [(String, String)] = [
@@ -315,10 +325,11 @@ struct FilterHelpView: View {
         ("level:WARN", "WARN and above (V, D, I, W, E, A also work)"),
         ("age:30s age:5m age:2h age:1d", "Recent entries only"),
         ("is:crash  is:stacktrace", "Crashes / entries containing stack traces"),
+        ("is:error  is:firebase", "Exactly one level / Firebase SDK tags"),
         ("pid:123  tid:456", "Process or thread id"),
         ("name:\"My filter\"", "Names the filter"),
         ("foo bar  \"foo bar\"", "Free text anywhere in the line"),
-        ("&  |  ( )", "AND, OR and grouping; & binds tighter than |"),
+        ("&  |  ( )", "AND, OR and grouping; & binds tighter than |, spaces loosest"),
     ]
 
     var body: some View {
@@ -333,7 +344,7 @@ struct FilterHelpView: View {
                     }
                 }
             }
-            Text("Without operators, terms with the same key are ORed and everything else is ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to filter by its tag, package or process.")
+            Text("Spaces separate terms with the lowest precedence: `foo bar tag:a | tag:b` means `\"foo bar\" & (tag:a | tag:b)`. Among them, terms with the same key are ORed and the rest ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to filter by its tag, package or process.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

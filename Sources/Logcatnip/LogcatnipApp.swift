@@ -10,6 +10,7 @@ struct LogcatnipApp: App {
 
     init() {
         Defaults.register()
+        FilterLibrary.flagPrecedenceChangesOnce()
     }
 
     var body: some Scene {
