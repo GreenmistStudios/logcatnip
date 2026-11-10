@@ -6,9 +6,12 @@ Android Studio's Logcat window.
 
 ## Features
 
-- **Devices and sessions.** Devices appear in the sidebar as adb reports them. Open one or more logcat
-  sessions per device; each has its own filter, pause state and buffer. When a device disconnects, its
-  sessions keep their logs and resume where they left off when it comes back.
+- **Devices and sessions.** Each physical device gets one sidebar row, with icons for how it is connected
+  (USB, Wi-Fi, emulator). Open one or more logcat sessions per device; each has its own filter, pause state
+  and buffer. Sessions follow the device rather than the adb serial: when it disconnects they keep their
+  logs and resume where they left off when it comes back, even on a new Wi-Fi port, as an emulator on
+  another port, or over Wi-Fi after you unplug USB. When both USB and Wi-Fi are connected, logs stream over
+  USB.
 - **Android Studio filter syntax.** `tag:`, `package:`, `process:`, `message:`, `line:`, `level:`, `age:`,
   `is:crash`, `is:stacktrace`, `name:`, plus `pid:` and `tid:`. Every text key supports contains (`key:`),
   exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with `&`, `|` and parentheses.

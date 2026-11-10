@@ -31,6 +31,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `ADB.swift`: locating adb, `StreamingProcess` (child processes under an `sh` watchdog so they die
     with the app), device tracking, logcat streaming.
   - `Devices.swift`: `adb track-devices` decoding and device properties.
+  - `DeviceIdentity.swift`: device identity (serial number, AVD name, mDNS serial), transport kind, and
+    matching sessions to transports.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace

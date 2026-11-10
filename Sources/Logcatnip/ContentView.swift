@@ -71,12 +71,13 @@ struct SidebarView: View {
             }
 
             Section("Devices") {
-                if model.devices.isEmpty {
+                let groups = model.deviceGroups
+                if groups.isEmpty {
                     Text("No devices")
                         .foregroundStyle(.secondary)
                 }
-                ForEach(model.devices) { device in
-                    DeviceRow(device: device)
+                ForEach(groups) { group in
+                    DeviceRow(group: group)
                 }
             }
 
@@ -97,27 +98,46 @@ struct SidebarView: View {
     }
 }
 
+private extension DeviceTransport {
+    /// SF Symbols stay in the app: LogcatKit has no UI dependencies.
+    var symbolName: String {
+        switch self {
+        case .usb: "cable.connector"
+        case .wifi: "wifi"
+        case .emulator: "desktopcomputer"
+        }
+    }
+}
+
+/// One row per physical device. The leading icon is the transport sessions stream over; other online
+/// transports of the same device (a phone on both USB and Wi-Fi) get a small glyph before the button.
 private struct DeviceRow: View {
     @Environment(AppModel.self) private var model
-    let device: Device
+    let group: DeviceGroup
 
     var body: some View {
+        let primary = group.primary
         HStack(spacing: 8) {
-            Image(systemName: device.descriptor.isEmulator ? "desktopcomputer" : "iphone")
-                .foregroundStyle(device.isOnline ? .primary : .tertiary)
+            Image(systemName: primary.transport.symbolName)
+                .foregroundStyle(group.isOnline ? .primary : .tertiary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(device.displayName)
+                Text(group.displayName)
                     .lineLimit(1)
-                Text(device.subtitle)
+                Text(group.subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
-            if device.isOnline {
+            ForEach(group.transports.dropFirst().filter(\.isOnline)) { other in
+                Image(systemName: other.transport.symbolName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if group.isOnline {
                 Button {
-                    model.openSession(serial: device.serial)
+                    model.openSession(serial: primary.serial)
                 } label: {
                     Image(systemName: "plus.circle")
                 }
@@ -126,17 +146,35 @@ private struct DeviceRow: View {
             }
         }
         .contentShape(Rectangle())
+        .help(tooltip)
         .onTapGesture(count: 2) {
-            if device.isOnline { model.showDevice(serial: device.serial) }
+            if group.isOnline { model.showDevice(serial: primary.serial) }
         }
         .contextMenu {
-            Button("New Session") { model.openSession(serial: device.serial) }
-                .disabled(!device.isOnline)
-            Button("Copy Serial") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(device.serial, forType: .string)
+            Button("New Session") { model.openSession(serial: primary.serial) }
+                .disabled(!group.isOnline)
+            if group.transports.count == 1 {
+                Button("Copy Serial") { copy(primary.serial) }
+            } else {
+                Menu("Copy Serial") {
+                    ForEach(group.transports) { device in
+                        Button("\(device.transport.label): \(device.serial)") { copy(device.serial) }
+                    }
+                }
             }
         }
+    }
+
+    private var tooltip: String {
+        group.transports.map { device in
+            let state = device.isOnline ? "" : " (\(device.descriptor.state.description))"
+            return "\(device.transport.label): \(device.serial)\(state)"
+        }.joined(separator: "\n")
+    }
+
+    private func copy(_ serial: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(serial, forType: .string)
     }
 }
 
