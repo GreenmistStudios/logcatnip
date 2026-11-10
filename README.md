@@ -80,7 +80,7 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 | `line:foo`, `foo`, `"foo bar"` | anywhere in the line |
 | `package:mine` | packages listed in Settings |
 | `level:WARN` | WARN and above (`V D I W E A` work too) |
-| `age:30s`, `age:5m`, `age:2h`, `age:1d` | recent entries only |
+| `age:30s`, `age:5m`, `age:2h`, `age:1d` | recent entries only; older ones drop out within about 5 s |
 | `is:crash`, `is:stacktrace` | crashes and ANRs; entries containing stack frames |
 | `is:error` (any level name) | exactly that level (`level:` is that level and above) |
 | `is:firebase` | Firebase SDK tags (`FA`, `FirebaseMessaging`, …) |
