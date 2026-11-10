@@ -15,6 +15,39 @@ private let utc = TimeZone(identifier: "UTC")!
 /// Milliseconds since 1970 as the seconds a `LogEntry` stores.
 private func at(_ milliseconds: Int64) -> Double { Double(milliseconds) / 1000 }
 
+/// A scratch directory that goes away with the test.
+private final class SaveScratch {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("logcatnip-tests-\(UUID().uuidString)")
+
+    init() throws {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    deinit { try? FileManager.default.removeItem(at: url) }
+
+    func folder(_ path: String) throws -> URL {
+        let folder = url.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    @discardableResult
+    func write(_ path: String, _ text: String) throws -> URL {
+        let file = url.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: file)
+        return file
+    }
+
+    func read(_ path: String) throws -> String {
+        try String(contentsOf: url.appendingPathComponent(path), encoding: .utf8)
+    }
+
+    var contents: [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []).sorted()
+    }
+}
+
 // MARK: Goldens
 
 /// A physical device with six messages: a kernel line, an unknown process, escapes of every kind, HTML-sensitive
@@ -397,30 +430,8 @@ private func firstDifference(_ actual: String, _ expected: String) -> String {
         #expect(LogcatFileDevice(info: LogFileInfo()) == nil)
     }
 
-    private final class Scratch {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("logcatnip-tests-\(UUID().uuidString)")
-
-        init() throws {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        }
-
-        deinit { try? FileManager.default.removeItem(at: url) }
-
-        func folder(_ path: String) throws -> URL {
-            let folder = url.appendingPathComponent(path)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            return folder
-        }
-
-        func write(_ path: String, _ text: String) throws {
-            let file = url.appendingPathComponent(path)
-            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(text.utf8).write(to: file)
-        }
-    }
-
     @Test func locatesAvdFolders() throws {
-        let scratch = try Scratch()
+        let scratch = try SaveScratch()
         let home = scratch.url.appendingPathComponent("home")
         let avdFolder = try scratch.folder("home/.android/avd/Medium_Phone.avd")
         try scratch.write(
@@ -443,5 +454,362 @@ private func firstDifference(_ actual: String, _ expected: String) -> String {
         #expect(AvdLocator.path(forAvdName: "X", environment: ["ANDROID_AVD_HOME": elsewhere.path], home: home) == elsewhereFolder.path)
 
         #expect(AvdLocator.path(forAvdName: "Unknown", environment: [:], home: home) == nil)
+    }
+}
+
+// MARK: Text formats
+
+@Suite struct LogTextFormatTests {
+    private let time = LogcatTime.parse(date: "2026-11-09", time: "13:11:17.123", timeZone: utc)!
+
+    private func entry(
+        pid: Int32 = 1234, tid: Int32 = 5678, tag: String = "Tag", message: String = "m", process: String? = nil
+    ) -> LogEntry {
+        LogEntry(timestamp: time, pid: pid, tid: tid, level: .info, tag: tag, message: message, processName: process)
+    }
+
+    @Test func threadtimeLineLikeLogcat() {
+        func format(_ entry: LogEntry) -> String { LogcatThreadtimeFormat.format(entry, timeZone: utc) }
+        #expect(format(entry()) == "11-09 13:11:17.123  1234  5678 I Tag     : m\n")
+        #expect(format(entry(tag: "ActivityManager")) == "11-09 13:11:17.123  1234  5678 I ActivityManager: m\n")
+        #expect(format(entry(pid: 7, tid: 123_456)).contains(" I Tag") && format(entry(pid: 7, tid: 123_456)).contains("    7 123456 I"))
+        #expect(
+            format(entry(message: "a\n\tb"))
+                == "11-09 13:11:17.123  1234  5678 I Tag     : a\n11-09 13:11:17.123  1234  5678 I Tag     : \tb\n"
+        )
+        #expect(format(entry(message: "")) == "11-09 13:11:17.123  1234  5678 I Tag     : \n")
+    }
+
+    @Test func threadtimeReadsBack() throws {
+        // A fixed July day, so the test can't straddle a time zone change; the reference date is the next day.
+        let base = try #require(LogcatTime.parse(date: "2026-07-15", time: "12:00:00.000"))
+        let reference = Date(timeIntervalSince1970: base + 86_400)
+        let made = [
+            LogEntry(timestamp: base + 1.001, pid: 100, tid: 101, level: .warn, tag: "Net", message: "one\n\ttwo"),
+            LogEntry(timestamp: base + 2.5, pid: 200, tid: 201, level: .error, tag: "Quiet", message: ""),
+            LogEntry(timestamp: base + 3.999, pid: 300, tid: 300, level: .debug, tag: "My Tag", message: "spaced"),
+            LogEntry(timestamp: base + 4, pid: 40_000, tid: 123_456, level: .assert, tag: "ActivityManager", message: "last"),
+        ]
+        let text = made.map { LogcatThreadtimeFormat.format($0) }.joined()
+        let read = LogcatThreadtimeFormat.parse(text, referenceDate: reference)
+        #expect(read.count == made.count)
+        for (before, after) in zip(made, read) {
+            #expect(after.pid == before.pid)
+            #expect(after.tid == before.tid)
+            #expect(after.level == before.level)
+            #expect(after.tag == before.tag)
+            #expect(after.message == before.message)
+            #expect(LogcatTime.milliseconds(after.timestamp) == LogcatTime.milliseconds(before.timestamp))
+            #expect(after.uid == nil)
+        }
+    }
+
+    @Test func plainTextLikeTheTable() {
+        func line(_ entry: LogEntry, process: String? = nil) -> String {
+            LogPlainTextFormat.line(for: entry, processName: process, timeZone: utc)
+        }
+        #expect(
+            line(entry(process: "com.example.app:remote"), process: "com.example.app:remote")
+                == "2026-11-09 13:11:17.123 1234-5678 Tag com.example.app:remote I m"
+        )
+        #expect(line(entry()) == "2026-11-09 13:11:17.123 1234-5678 Tag pid-1234 I m")
+        #expect(line(entry(pid: 0, tid: 0)) == "2026-11-09 13:11:17.123 0-0 Tag I m")
+        #expect(line(LogEntry.marker("Device disconnected")) == "--------- Device disconnected")
+        #expect(line(entry(message: "a\nb")) == "2026-11-09 13:11:17.123 1234-5678 Tag pid-1234 I a\nb")
+    }
+}
+
+// MARK: Formats and file names
+
+@Suite struct LogSaveFormatTests {
+    @Test func defaultIsLogcat() {
+        #expect(LogSaveFormat.allCases == [.logcat, .long, .threadtime, .plainText])
+        #expect(LogSaveFormat.allCases.map(\.title) == [
+            "Logcat (.logcat, Android Studio compatible)", "logcat -v long", "Threadtime", "Plain text as displayed",
+        ])
+        #expect(LogSaveFormat.allCases.map(\.fileExtension) == ["logcat", "txt", "txt", "txt"])
+        #expect(LogSaveFormat.allCases.filter(\.includesMarkers) == [.plainText])
+    }
+
+    @Test func suggestsAndroidStudioLikeNames() throws {
+        let date = Date(timeIntervalSince1970: try #require(LogcatTime.parse(date: "2026-11-10", time: "08:44:00.000", timeZone: utc)))
+        #expect(
+            LogSaveFormat.logcat.suggestedFileName(base: "Medium Phone API 37.0", date: date, timeZone: utc)
+                == "Medium Phone API 37.0_2026-11-10_084400.logcat"
+        )
+        #expect(
+            LogSaveFormat.threadtime.suggestedFileName(base: "Medium Phone API 37.0", date: date, timeZone: utc)
+                == "Medium Phone API 37.0_2026-11-10_084400.txt"
+        )
+        #expect(LogSaveFormat.logcat.suggestedFileName(base: "a/b:c", date: date, timeZone: utc) == "a-b-c_2026-11-10_084400.logcat")
+    }
+
+    @Test func switchesTheExtension() {
+        #expect(LogSaveFormat.threadtime.fileName(switching: "x_1.logcat") == "x_1.txt")
+        #expect(
+            LogSaveFormat.logcat.fileName(switching: "bugreport.zip · Events_2026-11-10_084400.txt")
+                == "bugreport.zip · Events_2026-11-10_084400.logcat"
+        )
+        #expect(LogSaveFormat.logcat.fileName(switching: "notes") == "notes.logcat")
+        #expect(LogSaveFormat.logcat.fileName(switching: "bugreport.zip") == "bugreport.zip.logcat")
+        #expect(LogSaveFormat.long.fileName(switching: "Medium Phone API 37.0") == "Medium Phone API 37.0.txt")
+    }
+}
+
+// MARK: Streaming write
+
+private actor SaveEventBox {
+    private(set) var events: [LogSaveEvent] = []
+    func append(_ event: LogSaveEvent) { events.append(event) }
+}
+
+private actor ReadEventBox {
+    private(set) var events: [LogFileEvent] = []
+    func append(_ event: LogFileEvent) { events.append(event) }
+}
+
+@Suite(.serialized) struct LogFileWriterTests {
+    private let phoneProperties = DeviceProperties(values: [
+        "ro.product.manufacturer": "Google", "ro.product.model": "Pixel 8", "ro.build.version.release": "14",
+        "ro.build.version.sdk": "34",
+    ])
+
+    private func make(
+        _ id: Int, pid: Int32 = 100, tid: Int32? = nil, level: LogLevel = .info, tag: String = "Tag",
+        message: String? = nil, process: String? = nil, uid: String? = nil, milliseconds: Int64? = nil
+    ) -> LogEntry {
+        LogEntry(
+            id: id, timestamp: at(milliseconds ?? 1_794_248_000_000 + Int64(id) * 37), uid: uid, pid: pid, tid: tid ?? pid,
+            level: level, tag: tag, message: message ?? "m\(id)", processName: process
+        )
+    }
+
+    private func read(_ url: URL) async throws -> [LogFileEvent] {
+        let box = ReadEventBox()
+        try await LogFileReader().read(url) { await box.append($0) }
+        return await box.events
+    }
+
+    private func readEntries(_ events: [LogFileEvent]) -> [LogEntry] {
+        events.flatMap { event -> [LogEntry] in
+            if case let .entries(batch, _) = event { batch } else { [] }
+        }
+    }
+
+    private func readMetadata(_ events: [LogFileEvent]) -> LogcatFileMetadata? {
+        for event in events {
+            if case let .metadata(metadata) = event { return metadata }
+        }
+        return nil
+    }
+
+    private func lines(_ text: String) -> [String] {
+        text.split(separator: "\n").map(String.init)
+    }
+
+    // The round trip the issue asks for: save as .logcat, open it again, and the Package column and package:
+    // filters behave as before.
+    @Test func roundTripKeepsPackagesAndFilters() async throws {
+        let scratch = try SaveScratch()
+        let entries = [
+            make(0, pid: 4321, tid: 4330, level: .warn, tag: "Net", message: "timeout\n\tat x", process: "com.example.app:remote"),
+            make(1, pid: 4400, level: .info, tag: "Ui"),
+            make(2, pid: 5000, level: .error, tag: "libc", process: "com.google.android.gms.persistent"),
+            make(3, pid: 1303, level: .debug, tag: "vold"),
+            make(4, pid: 0, level: .info, tag: "kernel"),
+        ]
+        let names: [Int32: String] = [4400: "com.example.app"]
+        let device = LogcatFileDevice(properties: phoneProperties, serial: "35930112X", isOnline: true, avdPath: nil)
+        let metadata = LogcatFileMetadata(device: device, filter: "package:mine level:INFO", projectApplicationIds: ["com.example.app"])
+        let url = scratch.url.appendingPathComponent("x.logcat")
+        try await LogFileWriter().write(
+            LogSaveRequest(format: .logcat, entries: entries, processNames: names, metadata: metadata), to: url
+        )
+
+        let events = try await read(url)
+        guard case .format(.logcatJSON) = try #require(events.first) else {
+            Issue.record("the saved file should be detected as a .logcat")
+            return
+        }
+        let readMetadata = try #require(readMetadata(events))
+        #expect(readMetadata == metadata)
+        let back = readEntries(events)
+        #expect(back.count == 5)
+        #expect(back.map(\.processName) == ["com.example.app:remote", "com.example.app", "com.google.android.gms.persistent", nil, "kernel"])
+        for (before, after) in zip(entries, back) {
+            #expect(after.pid == before.pid)
+            #expect(after.tid == before.tid)
+            #expect(after.level == before.level)
+            #expect(after.tag == before.tag)
+            #expect(after.message == before.message)
+            #expect(LogcatTime.milliseconds(after.timestamp) == LogcatTime.milliseconds(before.timestamp))
+        }
+
+        func matching(_ query: String, in list: [LogEntry], context: FilterContext) throws -> [Int] {
+            let filter = try LogFilter(query)
+            return list.indices.filter { filter.matches(list[$0], context: context) }
+        }
+        let before = FilterContext(processNames: names, myPackages: ["com.example.app"])
+        let after = FilterContext(myPackages: ["com.example.app"])
+        #expect(try matching("package:com.example.app", in: entries, context: before) == [0, 1])
+        #expect(try matching("package:com.example.app", in: back, context: after) == [0, 1])
+        #expect(try matching("package:mine level:INFO", in: entries, context: before) == [0, 1])
+        #expect(try matching("package:mine level:INFO", in: back, context: after) == [0, 1])
+        // Opening it somewhere else spells out what `package:mine` meant here.
+        #expect(readMetadata.filter(forMyPackages: ["com.other"]) == "package:com.example.app level:INFO")
+    }
+
+    @Test func roundTripLongAndThreadtime() async throws {
+        let scratch = try SaveScratch()
+        // A fixed July day with the files dated the day after: threadtime has no year, so the reader takes it from there.
+        let base = try #require(LogcatTime.parse(date: "2026-07-15", time: "12:00:00.000"))
+        let entries = [
+            LogEntry(id: 0, timestamp: base + 1.001, uid: "10123", pid: 4321, tid: 4330, level: .warn, tag: "Net", message: "timeout\n\tat x"),
+            LogEntry(id: 1, timestamp: base + 2.5, pid: 4400, tid: 4400, level: .info, tag: "My Tag", message: "spaced"),
+            LogEntry(id: 2, timestamp: base + 3.999, pid: 5000, tid: 5001, level: .error, tag: "libc", message: ""),
+            LogEntry(id: 3, timestamp: base + 5, pid: 1303, tid: 1303, level: .debug, tag: "vold", message: "last"),
+        ]
+        let modified = Date(timeIntervalSince1970: base + 86_400)
+
+        for (format, name) in [(LogSaveFormat.long, "x.txt"), (LogSaveFormat.threadtime, "y.txt")] {
+            let url = scratch.url.appendingPathComponent(name)
+            try await LogFileWriter().write(LogSaveRequest(format: format, entries: entries), to: url)
+            try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+
+            let events = try await read(url)
+            switch (format, try #require(events.first)) {
+            case (.long, .format(.long)), (.threadtime, .format(.threadtime)): break
+            default: Issue.record("\(format) was detected as something else")
+            }
+            let back = readEntries(events)
+            #expect(back.count == entries.count)
+            #expect(back.map(\.tag) == entries.map(\.tag))
+            #expect(back.map(\.message) == entries.map(\.message))
+            #expect(back.map { LogcatTime.milliseconds($0.timestamp) } == entries.map { LogcatTime.milliseconds($0.timestamp) })
+            #expect(back.map(\.pid) == entries.map(\.pid))
+            #expect(back.map(\.uid) == (format == .long ? ["10123", nil, nil, nil] : [nil, nil, nil, nil]))
+        }
+    }
+
+    @Test func writesOnlyVisibleEntries() async throws {
+        let scratch = try SaveScratch()
+        var marker = LogEntry.marker("Device disconnected", at: at(1_794_248_000_500))
+        marker.id = 15
+        var buffer = (10...19).map { make($0, pid: Int32($0)) }
+        buffer[5] = marker
+        let ids = [11, 11, 13, 13, 13, 15, 18, 25]
+
+        let threadtime = LogSaveRequest(format: .threadtime, entries: buffer, onlyEntryIDs: ids)
+        #expect(threadtime.selectedEntries().map(\.id) == [11, 13, 18])
+        let tt = scratch.url.appendingPathComponent("a.txt")
+        try await LogFileWriter().write(threadtime, to: tt)
+        let ttLines = lines(try scratch.read("a.txt"))
+        #expect(ttLines.count == 3)
+        #expect(ttLines.map { $0.components(separatedBy: ": ").last } == ["m11", "m13", "m18"])
+
+        let plain = LogSaveRequest(format: .plainText, entries: buffer, onlyEntryIDs: ids, timeZone: utc)
+        #expect(plain.selectedEntries().map(\.id) == [11, 13, 15, 18])
+        try await LogFileWriter().write(plain, to: scratch.url.appendingPathComponent("b.txt"))
+        let plainLines = lines(try scratch.read("b.txt"))
+        #expect(plainLines.count == 4)
+        #expect(plainLines[0].hasSuffix(" I m11"))
+        #expect(plainLines[1].hasSuffix(" I m13"))
+        #expect(plainLines[2] == "--------- Device disconnected")
+        #expect(plainLines[3].hasSuffix(" I m18"))
+
+        // Ids that aren't consecutive (the buffer was trimmed or cleared between): found by searching.
+        let gappy = [make(10), make(11), make(20), make(21)]
+        #expect(LogSaveRequest(format: .long, entries: gappy, onlyEntryIDs: [20]).selectedEntries().map(\.id) == [20])
+        #expect(LogSaveRequest(format: .long, entries: gappy, onlyEntryIDs: [10, 21, 12]).selectedEntries().map(\.id) == [10, 21])
+        let shifted = [make(10), make(12), make(13)]
+        #expect(LogSaveRequest(format: .long, entries: shifted, onlyEntryIDs: [12]).selectedEntries().map(\.id) == [12])
+        #expect(LogSaveRequest(format: .long, entries: [], onlyEntryIDs: [1]).selectedEntries().isEmpty)
+    }
+
+    @Test func skipsMarkersExceptInPlainText() async throws {
+        let scratch = try SaveScratch()
+        let buffer = [make(0), LogEntry.marker("Device disconnected", at: at(1_794_248_000_100)), make(2)]
+        for format in LogSaveFormat.allCases {
+            let name = "out-\(format.rawValue).\(format.fileExtension)"
+            let result = try await LogFileWriter().write(LogSaveRequest(format: format, entries: buffer), to: scratch.url.appendingPathComponent(name))
+            let text = try scratch.read(name)
+            #expect(text.contains("---------") == format.includesMarkers, "\(format)")
+            #expect(result.entries == (format.includesMarkers ? 3 : 2), "\(format)")
+        }
+    }
+
+    @Test func reportsEstimateAndProgress() async throws {
+        let scratch = try SaveScratch()
+        let buffer = (0..<20_000).map { make($0, pid: Int32(1000 + $0 % 50), process: "com.example.app") }
+        var writer = LogFileWriter()
+        writer.batchSize = 1_000
+        let box = SaveEventBox()
+        let url = scratch.url.appendingPathComponent("big.logcat")
+        let result = try await writer.write(LogSaveRequest(format: .logcat, entries: buffer), to: url) { await box.append($0) }
+
+        let events = await box.events
+        guard case let .estimated(bytes) = try #require(events.first) else {
+            Issue.record("the first event should be the estimate")
+            return
+        }
+        #expect(bytes > 0)
+        let fractions = events.compactMap { event -> Double? in
+            if case let .progress(fraction) = event { fraction } else { nil }
+        }
+        #expect(fractions.count >= 20)
+        #expect(fractions == fractions.sorted())
+        #expect(fractions.last == 1.0)
+        #expect(result.entries == 20_000)
+        let size = try #require(try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64)
+        #expect(result.bytes == size)
+    }
+
+    @Test func estimateIsCloseToTheResult() async throws {
+        let scratch = try SaveScratch()
+        let buffer = (0..<1_000).map {
+            make($0, pid: Int32(2000 + $0 % 20), tag: "ActivityMa", message: String(repeating: "x", count: 60), process: "com.example.app")
+        }
+        for format in LogSaveFormat.allCases {
+            let request = LogSaveRequest(format: format, entries: buffer)
+            let result = try await LogFileWriter().write(request, to: scratch.url.appendingPathComponent("e.\(format.fileExtension)"))
+            let estimate = LogSaveRequest.estimatedBytes(of: buffer, format: format)
+            let ratio = Double(estimate) / Double(result.bytes)
+            #expect((0.5...2.0).contains(ratio), "\(format): estimated \(estimate) for \(result.bytes) bytes")
+        }
+    }
+
+    @Test func cancellationKeepsTheOldFile() async throws {
+        let scratch = try SaveScratch()
+        let url = try scratch.write("x.logcat", "old")
+        let buffer = (0..<200_000).map { make($0) }
+        var writer = LogFileWriter()
+        writer.batchSize = 100
+        let task = Task { [writer] in
+            try await writer.write(LogSaveRequest(format: .logcat, entries: buffer), to: url) { event in
+                if case .progress = event { withUnsafeCurrentTask { $0?.cancel() } }
+            }
+        }
+        let result = await task.result
+        #expect(throws: CancellationError.self) { try result.get() }
+        #expect(try scratch.read("x.logcat") == "old")
+        #expect(scratch.contents == ["x.logcat"])
+    }
+
+    @Test func replacesAnExistingFile() async throws {
+        let scratch = try SaveScratch()
+        let url = try scratch.write("x.logcat", "old")
+        let request = LogSaveRequest(format: .logcat, entries: [make(0, process: "com.example.app"), make(1)])
+        let result = try await LogFileWriter().write(request, to: url)
+        #expect(try scratch.read("x.logcat") == LogcatFileWriter.encode(metadata: request.metadata, entries: request.entries))
+        #expect(result.entries == 2)
+        #expect(scratch.contents == ["x.logcat"])
+    }
+
+    @Test func createsANewFile() async throws {
+        let scratch = try SaveScratch()
+        let request = LogSaveRequest(format: .logcat, entries: [make(0), make(1, process: "com.example.app")])
+        try await LogFileWriter().write(request, to: scratch.url.appendingPathComponent("new.logcat"))
+        #expect(try scratch.read("new.logcat") == LogcatFileWriter.encode(metadata: request.metadata, entries: request.entries))
+        #expect(scratch.contents == ["new.logcat"])
     }
 }
