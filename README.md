@@ -17,10 +17,13 @@ Android Studio's Logcat window.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header, or View > Modify View…), and follow mode that stops when you
   scroll up. The Package column shows the package; the optional Process column shows the full process name
-  (`com.example.app:remote`). Long lines scroll horizontally (trackpad, or ←/→ with the table focused;
-  ⌘←/⌘→ jump to either edge), or turn on View > Soft Wrap (⌃⌘L, also in the toolbar) to wrap them inside
-  the Message column. Soft wrap is per session, and a new session starts with the last choice. Lines over
-  10,000 characters are cut off with an ellipsis when not wrapping; hover for the whole line.
+  (`com.example.app:remote`). Long lines scroll sideways inside the Message column while Time, PID, Tag,
+  Package, Process and Level stay in place (trackpad, shift and the mouse wheel, the scroller under the
+  Message column, or ←/→ with the table focused; ⌘←/⌘→ jump to either edge), or turn on View > Soft Wrap
+  (⌃⌘L, also in the toolbar) to wrap them inside the Message column. In a window too narrow to leave the
+  Message column 100 points beside the other columns, the whole table scrolls sideways instead. Soft wrap is
+  per session, and a new session starts with the last choice. Lines over 10,000 characters are cut off with an
+  ellipsis when not wrapping; hover for the whole line.
 - **View presets.** View > Presets switches a session between **Standard** (date and time, PID-TID, tag,
   package, level, message) and **Compact** (time, tag, level, message). View > Modify View… changes the
   session's view as you watch: the timestamp as date and time, time, epoch seconds, seconds since the
@@ -76,10 +79,16 @@ with that query, and `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at
 `LOGCATNIP_PERF_TESTS=1 swift test --filter FindPerformance` times find on 500,000 rows.
 `LOGCATNIP_WRAP_TOGGLE=<seconds>` toggles soft wrap four times, that far apart, and prints the table's state
 after each (`LOGCATNIP_WRAP_SELECT=middle|end|none|<row>` picks the row it selects first, `LOGCATNIP_WRAP_RESIZE=<points>`
-resizes the window afterwards, `LOGCATNIP_WRAP_KEYS=1` sends the arrow keys); `LOGCATNIP_SCROLL_BENCH=<pages>`
-times scrolling page by page in each mode. With `LOGCATNIP_DEBUG=1` every session also prints a `table:` line,
-where `clipped` counts visible wrapped lines taller than their row and `truncated` counts visible unwrapped
-lines wider than the Message column; both should stay 0.
+resizes the window afterwards, `LOGCATNIP_WINDOW_WIDTH=<points>` sets its width first, `LOGCATNIP_FIND_JUMP=1`
+goes to the first find match, `LOGCATNIP_WRAP_KEYS=1` sends the arrow keys and sideways scroll gestures);
+`LOGCATNIP_SCROLL_BENCH=<pages>` times scrolling page by page in each mode, and sideways when lines do not
+wrap. With `LOGCATNIP_DEBUG=1` every session also prints a `table:` line, where `clipped` counts visible
+wrapped lines taller than their row and `truncated` counts visible unwrapped lines wider than the Message
+column; both should stay 0. The same line shows `hscroll` (the message text's offset and its maximum),
+`fits` and `clipX` (the table itself only scrolls sideways when the window is too narrow to pin the other
+columns) and `scroller` (the Message column's own scroller). The key and gesture lines end in `pinned=ok`,
+which means the other columns did not move. `-AppleShowScrollBars Always|WhenScrolling` as a launch argument
+picks legacy or overlay scrollers for a check.
 `LOGCATNIP_PERF_TESTS=1 swift test --filter WrapPerformance` times the line spans on 500,000 rows.
 `LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of new sessions, and
 `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every timestamp style, the Process
