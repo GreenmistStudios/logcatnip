@@ -33,6 +33,8 @@ Connect over Wi-Fi flows without clicking; the debug report has a `wireless:` li
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch and `LOGCATNIP_UPDATE_INSTALL=1` installs what it finds
 without clicking; `LOGCATNIP_UPDATE_FEED=/path/release.json|URL` and `LOGCATNIP_UPDATE_VERSION=0.1.0` point it at a
 local feed and fake the running version. With `LOGCATNIP_DEBUG=1` each step logs an `update:` line.
+The debug report also has a `file:` line per opened file (format, load progress, first process, device) and
+`mainLagMax`, the longest main-thread stall since the last report.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`, and uploads the zipped app as an artifact. Run all three before you call a change done.
@@ -65,7 +67,16 @@ an ad-hoc signed release once signed ones exist.
   - `UnifiedLogParser.swift`: `log stream --style ndjson` parsing into `LogEntry`.
   - `Wireless.swift`: mDNS service parsing and tracking (`adb mdns`), the QR pairing payload, `adb pair`,
     `connect` and `disconnect` output, and matching discovered services to devices.
-  - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
+  - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing, and the line
+    joining (`RecordMerger`, `LineSplitter`) the chunked reader uses.
+  - `LogcatBriefFormat.swift`: `-v brief`, `-v time` and Firebase `L/Tag(pid): message` lines.
+  - `LogFileFormat.swift`: file format detection, like Android Studio's `getLogcatFileType`.
+  - `LogFileReader.swift`: reads a file in chunks off the main actor and hands it over as events, with
+    progress and cancellation.
+  - `LogcatFile.swift`: Android Studio `.logcat` JSON (device, filter, messages) and `safeGetFilter`.
+  - `Bugreport.swift`: bug report text split into system, event and radio logs, and the `adb bugreport`
+    zip (extracted with `/usr/bin/unzip`).
+  - `LogFileInfo.swift`: device, build and capture time of a saved log, for the status bar.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
   - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
     events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
@@ -82,6 +93,8 @@ an ad-hoc signed release once signed ones exist.
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
+  - `FileLoader.swift`: loads one log file into its sessions (one per bug report buffer) and exposes
+    progress and Cancel for the status bar.
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
   - `FindController.swift`, `FindBar.swift`: the find bar, its state, and incremental off-main scans.

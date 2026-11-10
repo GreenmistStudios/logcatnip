@@ -58,6 +58,11 @@ final class LogSession: Identifiable {
     private(set) var source: Source
     /// Find-in-results for this session's rows.
     let find = FindController()
+    /// Which buffer of a file this session shows; bug reports open one session per buffer.
+    var fileSection: LogFileSection = .main
+    private(set) var fileInfo: LogFileInfo?
+    /// Observed, so the status bar follows a load's progress.
+    private(set) var fileLoader: FileLoader?
     private(set) var baseTitle = ""
     var title = ""
     private(set) var status: Status = .starting
@@ -164,7 +169,7 @@ final class LogSession: Identifiable {
                 baseTitle = udid
             }
         case let .file(url):
-            baseTitle = url.lastPathComponent
+            baseTitle = fileSection.title.map { "\(url.lastPathComponent) · \($0)" } ?? url.lastPathComponent
         }
     }
 
@@ -239,6 +244,8 @@ final class LogSession: Identifiable {
     }
 
     func stop() {
+        // Closing the Events or Radio session of a bug report shouldn't abandon the system log still loading.
+        if fileSection == .main { fileLoader?.cancel() }
         streamToken = nil
         streamTask?.cancel()
         streamTask = nil
@@ -328,25 +335,59 @@ final class LogSession: Identifiable {
         udid != nil ? "Simulator shut down" : "Device disconnected"
     }
 
-    func loadFile() {
-        guard case let .file(url) = source else { return }
+    // MARK: File loading
+
+    func beginLoading(_ loader: FileLoader) {
+        fileLoader = loader
         status = .loading
-        Task { [weak self] in
-            let result: Result<[LogEntry], Error> = await Task.detached(priority: .userInitiated) {
-                do {
-                    return .success(try LogFileImporter.load(contentsOf: url))
-                } catch {
-                    return .failure(error)
-                }
-            }.value
-            guard let self else { return }
-            switch result {
-            case let .success(entries):
-                self.ingest(entries)
-                self.status = .loaded
-            case let .failure(error):
-                self.status = .failed(error.localizedDescription)
-            }
+    }
+
+    func ingestLoaded(_ batch: [LogEntry]) {
+        ingest(batch)
+    }
+
+    func setFileInfo(_ info: LogFileInfo) {
+        fileInfo = info
+    }
+
+    /// A bug report's `ps` section names its processes once, for the whole file. There's no live device to
+    /// ask again, so names go straight onto the unnamed entries instead of through the resolver's lookups.
+    func adoptProcessNames(_ names: [Int32: String]) {
+        let assignments = names.mapValues { ProcessNameResolver.Assignment(name: $0, firstSeq: firstID) }
+        let update = ProcessNameResolver.Update(assignments: assignments)
+        guard update.apply(to: &entries, scanLimit: entries.count) > 0 else { return }
+        if filter.dependsOnProcessNames {
+            refilter()
+        } else {
+            onRowsChanged?(.refreshVisible)
+        }
+    }
+
+    /// A `.logcat` file carries the filter it was saved with, and Android Studio applies it on open; so do we.
+    func applyFileMetadata(_ metadata: LogcatFileMetadata) {
+        if let device = metadata.device { fileInfo = LogFileInfo(device: device) }
+        let query = metadata.filter(forMyPackages: Defaults.myPackages).trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return }
+        filterQuery = query
+        applyFilterNow()
+    }
+
+    func finishLoading(delivered: Int, state: FileLoader.State, fraction: Double?) {
+        switch state {
+        case .running:
+            return
+        case .finished:
+            status = .loaded
+        case .cancelled:
+            appendMarker("Stopped loading at \(Int((fraction ?? 0) * 100))%")
+            status = .stopped
+        case let .failed(message):
+            status = .failed(message)
+        }
+        let kept = entries.lazy.filter { $0.kind == .log }.count
+        if delivered > kept {
+            appendMarker("Showing the newest \(kept.formatted()) of \(delivered.formatted()) entries. "
+                + "Raise Settings › Logcat › Keep up to for more.")
         }
     }
 
