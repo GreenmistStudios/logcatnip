@@ -43,7 +43,10 @@ struct SettingsView: View {
 
             Section("Logcat") {
                 TextField("Buffers", text: $logcatBuffers, prompt: Text("main, system, crash (logcat default)"))
-                Text("Passed to logcat -b, e.g. main,system,crash,events or all. Applies to new and restarted sessions.")
+                Text(
+                    "Passed to logcat -b, e.g. main,system,crash,events or all. With events, process markers also "
+                        + "read ActivityManager's am_proc_start, am_proc_died and am_kill events. "
+                        + "Applies to new and restarted sessions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Picker("Keep up to", selection: $maxEntries) {

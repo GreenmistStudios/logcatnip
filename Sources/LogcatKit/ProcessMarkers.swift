@@ -35,13 +35,13 @@ public enum ProcessMarkerScope: String, Sendable, CaseIterable {
 extension ProcessEvent {
     var pid: Int32 {
         switch self {
-        case let .started(pid, _, _), let .ended(pid, _, _): pid
+        case let .started(pid, _, _), let .ended(pid, _, _), let .crashed(pid, _): pid
         }
     }
 }
 
 /// Decides which PROCESS STARTED / ENDED markers to insert, so each run of a process gets one of each whichever
-/// source reports it first (ActivityManager lines now; the events buffer and jdwp later, issue #15 follow-up).
+/// source reports it first (ActivityManager lines and events-buffer entries, `ps` snapshots, and `adb track-jdwp`).
 ///
 /// Positions are entry sequence numbers, as in `ProcessNameResolver`: a `ps` snapshot never overrides what a
 /// report newer than the request said. The owner serializes calls.
@@ -133,6 +133,28 @@ public struct ProcessMarkerTracker: Sendable {
             return entry.tag == "libc" && entry.message.hasPrefix("Fatal signal")
         default:
             return false
+        }
+    }
+
+    /// Remembers that a process crashed, from an `am_crash` event, so its end says so. `am_crash` is written by
+    /// system_server with the pid of the caller; for a native crash that is system_server's own pid, so a live
+    /// record under another name is left alone.
+    public mutating func noteCrash(pid: Int32, process: String) {
+        if let record = records[pid], record.alive, record.process != process { return }
+        if crashed.count >= Self.crashedLimit { crashed.removeAll() }
+        crashed.insert(pid)
+    }
+
+    /// Applies a parsed ActivityManager or events-buffer report.
+    public mutating func apply(_ event: ProcessEvent, seq: Int) -> [Marker] {
+        switch event {
+        case let .started(pid, process, uid):
+            return started(pid: pid, process: process, uid: uid, seq: seq)
+        case let .ended(pid, process, reason):
+            return ended(pid: pid, process: process, reason: reason, seq: seq).map { [$0] } ?? []
+        case let .crashed(pid, process):
+            noteCrash(pid: pid, process: process)
+            return []
         }
     }
 

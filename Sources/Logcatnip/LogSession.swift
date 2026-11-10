@@ -312,7 +312,8 @@ final class LogSession: Identifiable {
             // The child logs before system_server writes its `Start proc` line; the marker goes above them.
             if let startIndex = hoisted[index], case let .started(pid, process, uid)? = events[startIndex] {
                 appendProcessMarkers(
-                    markerTracker.started(pid: pid, process: process, uid: uid, seq: nextID), at: entry.timestamp)
+                    markerTracker.started(pid: pid, process: process, uid: uid, seq: nextID), at: entry.timestamp,
+                    source: batch[startIndex].tag)
             }
             entry.id = nextID
             nextID += 1
@@ -332,27 +333,28 @@ final class LogSession: Identifiable {
         scheduleFlush()
     }
 
-    /// Binds pids named by ActivityManager and inserts the process markers they call for. The update fills in
-    /// entries the pid logged before its start line (the child logs a few lines before system_server writes the
-    /// event). Markers follow the line that reported them, after any crash entry that came first.
+    /// Binds pids named by ActivityManager (or the events buffer) and inserts the process markers they call for.
+    /// The update fills in entries the pid logged before its start line (the child logs a few lines before
+    /// system_server writes the event). Markers follow the line that reported them, after any crash entry that
+    /// came first.
     private func apply(_ event: ProcessEvent, entry: LogEntry, to update: inout ProcessNameResolver.Update) {
         switch event {
         case let .started(pid, process, uid):
             update.merge(processResolver.processStarted(pid: pid, name: process, seq: entry.id))
             if let uid { packageTracker.note(uid: uid) }
-            // Empty when the marker was already placed above the pid's first lines.
-            appendProcessMarkers(
-                markerTracker.started(pid: pid, process: process, uid: uid, seq: entry.id), at: entry.timestamp)
-        case let .ended(pid, process, reason):
+        case let .ended(pid, _, _):
             processResolver.processEnded(pid: pid, seq: entry.id)
-            if let marker = markerTracker.ended(pid: pid, process: process, reason: reason, seq: entry.id) {
-                appendProcessMarkers([marker], at: entry.timestamp)
-            }
+        case .crashed:
+            break
         }
+        // Empty for a start whose marker was already placed above the pid's first lines, and for a source that
+        // reports a transition another one already did.
+        appendProcessMarkers(markerTracker.apply(event, seq: entry.id), at: entry.timestamp, source: entry.tag)
     }
 
     /// Appends marker rows. They are generated for every process; the scope setting only decides which show.
-    private func appendProcessMarkers(_ markers: [ProcessMarkerTracker.Marker], at timestamp: Double) {
+    /// `source` says which report produced them, for debug output.
+    private func appendProcessMarkers(_ markers: [ProcessMarkerTracker.Marker], at timestamp: Double, source: String) {
         guard !markers.isEmpty else { return }
         let context = Self.debugMarkers ? filterContext() : nil
         for marker in markers {
@@ -361,18 +363,18 @@ final class LogSession: Identifiable {
             nextID += 1
             entries.append(entry)
             processMarkerCount += 1
-            if let context { debugPrint(marker: entry, context: context) }
+            if let context { debugPrint(marker: entry, source: source, context: context) }
         }
         scheduleFlush()
     }
 
     /// Debug output for `LOGCATNIP_DEBUG=1`: the marker, whether the current filter shows it, and the newest
     /// earlier entry of the same pid, so ordering against crash entries can be read from a terminal.
-    private func debugPrint(marker: LogEntry, context: FilterContext) {
+    private func debugPrint(marker: LogEntry, source: String, context: FilterContext) {
         let visible = filter.matches(marker, context: context)
         let after = entries.suffix(2000).last { $0.kind == .log && $0.pid == marker.pid }
         let anchor = after.map { "#\($0.id) \($0.tag)/\($0.level.letter)" } ?? "-"
-        let line = "[logcatnip]   \(title): marker #\(marker.id) \"\(marker.message)\" visible=\(visible) after=\(anchor)\n"
+        let line = "[logcatnip]   \(title): marker #\(marker.id) \"\(marker.message)\" source=\(source) visible=\(visible) after=\(anchor)\n"
         FileHandle.standardError.write(Data(line.utf8))
     }
 
@@ -621,7 +623,7 @@ final class LogSession: Identifiable {
         let mine = Defaults.myPackages
         appendProcessMarkers(
             markerTracker.applySnapshot(names, lookupStartSeq: lookup.startSeq) { mine.contains($0) },
-            at: lastTimestamp ?? Date().timeIntervalSince1970)
+            at: lastTimestamp ?? Date().timeIntervalSince1970, source: "ps")
     }
 
     /// Stamps names from a snapshot or an event on the entries that waited for them, and refreshes what the
