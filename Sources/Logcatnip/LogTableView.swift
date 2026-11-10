@@ -1,5 +1,6 @@
 import AppKit
 import LogcatKit
+import os
 import SwiftUI
 
 /// The log table. AppKit's NSTableView keeps scrolling smooth with hundreds of thousands of rows, which
@@ -71,6 +72,14 @@ struct LogTableView: NSViewRepresentable {
         /// `session.widestLineCells` as of the last column sizing, so appends only resize when it grew.
         private var appliedWidestCells = 0
         private var messageWidthUpdatePending = false
+        /// Whether the delegate answers `tableView(_:heightOfRow:)`. A table that has it may ask for the
+        /// height of many rows when it reloads, which is wasted work for 500,000 equal rows, so it is hidden
+        /// unless lines wrap. Lock-guarded because `responds(to:)` is nonisolated.
+        private let heightOfRowEnabled = OSAllocatedUnfairLock(initialState: false)
+        private var fullHeightPass: Task<Void, Never>?
+        /// The wrap width every row's height was last computed for. Differs from `wrapColumns` while a resize
+        /// is still being applied.
+        private var heightsColumns = 0
         /// Paragraph styles for highlighted (attributed) cells, matching the line breaking of plain cells.
         private let truncatingStyle: NSParagraphStyle = {
             let style = NSMutableParagraphStyle()
@@ -178,6 +187,7 @@ struct LogTableView: NSViewRepresentable {
             if self.wrapLines != wrapLines {
                 self.wrapLines = wrapLines
                 scrollView.hasHorizontalScroller = !wrapLines
+                setHeightOfRowEnabled(wrapLines)
                 if wrapLines {
                     let clipView = scrollView.contentView
                     clipView.scroll(to: NSPoint(x: 0, y: clipView.bounds.origin.y))
@@ -194,7 +204,7 @@ struct LogTableView: NSViewRepresentable {
             if needsReload {
                 resetMessageWidth()
                 wrapColumns = currentWrapColumns()
-                tableView.reloadData()
+                reloadAll()
                 updateFindMarkers()
                 if session.autoScroll { scrollToEnd() }
             }
@@ -209,6 +219,7 @@ struct LogTableView: NSViewRepresentable {
             session?.onRowsChanged = nil
             session?.find.onChange = nil
             session?.find.table = nil
+            fullHeightPass?.cancel()
         }
 
         // MARK: Updates
@@ -229,7 +240,7 @@ struct LogTableView: NSViewRepresentable {
                 // Trimming the front of the buffer keeps the width so the view doesn't jump; a new filter
                 // or a clear measures again.
                 if removedFront == 0 { resetMessageWidth() }
-                tableView.reloadData()
+                reloadAll()
                 restoreSelection(selectedIDs)
                 updateFindMarkers()
                 if session.autoScroll {
@@ -284,6 +295,71 @@ struct LogTableView: NSViewRepresentable {
                 scrollView.reflectScrolledClipView(clipView)
             }
             isProgrammaticScroll = false
+        }
+
+        /// Reloads every row. A reload makes any pending height pass redundant.
+        private func reloadAll() {
+            fullHeightPass?.cancel()
+            heightsColumns = wrapColumns
+            tableView.reloadData()
+        }
+
+        // MARK: Keeping the viewport
+
+        private var viewportTop: CGFloat {
+            let clip = scrollView.contentView
+            return clip.bounds.minY + clip.contentInsets.top
+        }
+
+        /// Whether the end of the log is on screen: the test that decides whether to follow new logs.
+        private var isScrolledToBottom: Bool {
+            guard let document = scrollView.documentView else { return true }
+            return scrollView.contentView.bounds.maxY >= document.frame.height - tableView.rowHeight * 1.5
+        }
+
+        /// The row to hold still across a change of row heights, and where it sits in the viewport.
+        private func captureAnchor() -> ViewportAnchor? {
+            guard let session else { return nil }
+            let visible = tableView.rows(in: tableView.visibleRect)
+            let anchor = ViewportAnchor.choose(
+                selectedRows: tableView.selectedRowIndexes,
+                visibleRows: visible.location..<(visible.location + visible.length),
+                isFollowing: session.autoScroll
+            )
+            guard case let .row(row, _, _) = anchor else { return anchor }
+            return anchor?.withOffset(Double(tableView.rect(ofRow: row).minY - viewportTop))
+        }
+
+        /// Scrolls so the anchored row is where it was (or, for a selected row, still on screen), after the
+        /// heights above it changed. `settleFollow` also updates follow mode, which is state SwiftUI observes
+        /// and so must not change while SwiftUI is updating the view.
+        private func restore(_ anchor: ViewportAnchor, settleFollow: Bool) {
+            guard let session else { return }
+            switch anchor {
+            case .end:
+                scrollToEnd()
+            case let .row(row, offset, keepInView):
+                guard row < tableView.numberOfRows else { return }
+                scrollView.tile()
+                tableView.tile()
+                let clip = scrollView.contentView
+                let insets = clip.contentInsets
+                let rect = tableView.rect(ofRow: row)
+                let top = ViewportAnchor.restoredTop(
+                    rowMinY: Double(rect.minY), rowHeight: Double(rect.height), offset: offset, keepInView: keepInView,
+                    viewportHeight: Double(clip.bounds.height - insets.top - insets.bottom),
+                    documentHeight: Double(tableView.frame.height)
+                )
+                isProgrammaticScroll = true
+                let target = NSRect(x: clip.bounds.origin.x, y: CGFloat(top) - insets.top, width: clip.bounds.width, height: clip.bounds.height)
+                clip.scroll(to: clip.constrainBoundsRect(target).origin)
+                scrollView.reflectScrolledClipView(clip)
+                isProgrammaticScroll = false
+                // A selected row that was followed to the bottom may now be somewhere else.
+                if settleFollow, keepInView, session.autoScroll != isScrolledToBottom {
+                    session.autoScroll = isScrolledToBottom
+                }
+            }
         }
 
         // MARK: Message column width
@@ -363,6 +439,9 @@ struct LogTableView: NSViewRepresentable {
             return max(1, ceil((eleven - one) / 10))
         }
 
+        /// The width the text wraps at changed. The rows on screen get their new heights on the next turn
+        /// of the run loop, so a live resize re-wraps what is visible at once; every other row follows once
+        /// the resizing settles, because heights for 500,000 rows are too much work for every frame.
         private func wrapWidthDidChange() {
             let columns = currentWrapColumns()
             guard columns != wrapColumns else { return }
@@ -373,13 +452,42 @@ struct LogTableView: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 heightUpdatePending = false
-                let count = tableView.numberOfRows
-                guard wrapLines, count > 0 else { return }
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0
-                    tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<count))
+                guard wrapLines, heightsColumns != wrapColumns else { return }
+                let visible = tableView.rows(in: tableView.visibleRect)
+                if visible.length > 0 {
+                    noteHeightsChanged(IndexSet(integersIn: visible.location..<(visible.location + visible.length)))
                 }
-                if session?.autoScroll == true { scrollToEnd() }
+                scheduleFullHeightPass()
+            }
+        }
+
+        private func noteHeightsChanged(_ rows: IndexSet) {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                tableView.noteHeightOfRows(withIndexesChanged: rows)
+            }
+        }
+
+        private func scheduleFullHeightPass() {
+            fullHeightPass?.cancel()
+            fullHeightPass = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                self?.updateAllHeights()
+            }
+        }
+
+        /// Recomputes every row's height, keeping the reading position or the selected row where it was.
+        private func updateAllHeights() {
+            let count = tableView.numberOfRows
+            guard wrapLines, count > 0, let session else { return }
+            let anchor = captureAnchor()
+            heightsColumns = wrapColumns
+            noteHeightsChanged(IndexSet(integersIn: 0..<count))
+            if let anchor {
+                restore(anchor, settleFollow: true)
+            } else if session.autoScroll {
+                scrollToEnd()
             }
         }
 
@@ -392,6 +500,23 @@ struct LogTableView: NSViewRepresentable {
             let lines = logRow.span.wrappedLineCount(columns: wrapColumns, extraCells: logRow.isMarker ? 8 : 0)
             guard lines > 1 else { return tableView.rowHeight }
             return tableView.rowHeight + CGFloat(lines - 1) * textLineHeight
+        }
+
+        /// Hides `tableView(_:heightOfRow:)` from AppKit while lines do not wrap: a table that is told there
+        /// are no per-row heights never asks for them and keeps every row at `rowHeight`.
+        nonisolated override func responds(to aSelector: Selector!) -> Bool {
+            if aSelector == NSSelectorFromString("tableView:heightOfRow:") {
+                return heightOfRowEnabled.withLock { $0 }
+            }
+            return super.responds(to: aSelector)
+        }
+
+        /// NSTableView looks at what its delegate responds to when the delegate is set, so the delegate is set
+        /// again for the change to take effect. Callers reload right after.
+        private func setHeightOfRowEnabled(_ enabled: Bool) {
+            heightOfRowEnabled.withLock { $0 = enabled }
+            tableView.delegate = nil
+            tableView.delegate = self
         }
 
         @objc private func viewportDidResize(_ notification: Notification) {
@@ -407,9 +532,8 @@ struct LogTableView: NSViewRepresentable {
 
         /// Scrolling away from the bottom stops following new logs; scrolling back to it resumes.
         @objc private func boundsDidChange(_ notification: Notification) {
-            guard !isProgrammaticScroll, let session, let document = scrollView.documentView else { return }
-            let visible = scrollView.contentView.bounds
-            let atBottom = visible.maxY >= document.frame.height - tableView.rowHeight * 1.5
+            guard !isProgrammaticScroll, let session else { return }
+            let atBottom = isScrolledToBottom
             if session.autoScroll != atBottom {
                 session.autoScroll = atBottom
             }
