@@ -613,6 +613,9 @@ let concepts: [(String, CGImage)] = [
 for (name, image) in concepts {
     save(image, to: output.appendingPathComponent("\(name).png"))
 }
+// The chosen concept is the master that scripts/build-app.sh turns into AppIcon.icns.
+let appIcon = concepts.first { $0.0 == "concept-1b-log-cat-catnip" }!.1
+save(appIcon, to: output.deletingLastPathComponent().appendingPathComponent("AppIcon.png"))
 
 // Preview sheet: each concept at Dock and Finder sizes, on light and dark backgrounds, to check small-size
 // legibility.

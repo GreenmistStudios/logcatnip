@@ -46,7 +46,9 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   are gated on `LOGCATNIP_DEVICE_TESTS=1`.
 - `scripts/build-app.sh`: assembles the `.app` bundle and writes `Info.plist` inline (bundle id
   `studio.greenmist.logcatnip`). Add new bundle resources, such as an app icon, here.
-- `design/`: app icon drafts and their source.
+- `design/`: the app icon. `render-icons.swift` draws the concepts into `icons/` and the chosen one into
+  `AppIcon.png`, which `scripts/build-app.sh` turns into `AppIcon.icns` with `sips` and `iconutil`. To
+  change the icon, edit the script, run `swift design/render-icons.swift`, and commit the PNGs.
 
 ## Conventions
 
