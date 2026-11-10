@@ -26,7 +26,8 @@ and `LOGCATNIP_WRAP_KEYS=1` add a selection, a window resize and the arrow keys)
 `LOGCATNIP_SCROLL_BENCH=<pages>` times scrolling in each mode. Use them to check wrapping from a terminal,
 since screenshots of the Mac are off limits. `LOGCATNIP_VIEW=standard|compact|cards|<json>` sets the view options
 of new sessions and `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every style (the card
-layout included); `LOGCATNIP_LAYOUT_TOGGLE=1` makes `LOGCATNIP_WRAP_TOGGLE` switch between table and cards. With
+layout included); `LOGCATNIP_LAYOUT_TOGGLE=1` makes `LOGCATNIP_WRAP_TOGGLE` switch between table and cards;
+`LOGCATNIP_CARD_KEYS=1` sends the arrow keys to the table in each layout and prints `card-keys ... check=ok`. With
 `LOGCATNIP_DEBUG=1` each session prints its options and the table a `view:` line (column order, `header=`,
 on-screen cells or `cards=[...]`, and `check=ok`, a recount of every visible cell, and in cards every row's
 height, against the formatter). JSON launch arguments must be
@@ -63,6 +64,7 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `LogLineFormatter.swift`: the text of every cell, of a copied line and of a card for a set of view
     options, so the table, Copy and the card layout agree.
   - `LogCardLayout.swift`: card geometry (row heights, wrap width) as plain arithmetic.
+  - `CardNavigation.swift`: which rows ↑/↓ select in the card layout (whole entries).
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.

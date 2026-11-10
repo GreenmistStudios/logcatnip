@@ -38,9 +38,9 @@ Android Studio's Logcat window.
   message below (always wrapped, so Soft Wrap is disabled while cards show), and the PID, TID and
   package underneath. The card shows the fields of the visible columns, so Standard and Compact (which
   keep the layout) choose its fields, and the timestamp and PID formats apply. Hide repeated and the
-  column widths belong to the table and apply when you switch back. A click or arrow key selects a whole
-  card, and Copy uses the same one-line format as the table. The layout is per session, and
-  Settings > Log View sets what new sessions start with.
+  column widths belong to the table and apply when you switch back. A click selects a whole card, ↑ and ↓
+  move card by card, and ⇧↑/⇧↓ add the next card. Copy uses the same one-line format as the table. The
+  layout is per session, and Settings > Log View sets what new sessions start with.
 - **Find in results.** ⌘F opens a find bar that searches the tag and message of the rows shown (after the
   filter), with match case, regex and whole word options. Every match is highlighted, the current one in
   orange, with an "N of M" counter and tick marks on the scroller. Return or ⌘G goes to the next match,
@@ -93,12 +93,14 @@ lines wider than the Message column; both should stay 0.
 `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every timestamp style, the Process
 column, hide repeated, tag colors and the card layout, printing after each step what Copy would paste for
 the last three entries. `LOGCATNIP_LAYOUT_TOGGLE=1` makes `LOGCATNIP_WRAP_TOGGLE` switch between the table and
-cards instead of soft wrap, printing `layout-toggle:` lines. With `LOGCATNIP_DEBUG=1` every session prints its options, and its table a `view:` line with the
-column order, whether the header is shown (`header=`), the cells on screen (`cards=[level|tag|time|footer|message]`
-in the card layout) and `check=ok`, a comparison of every visible cell with a fresh run of the formatter, and in
-cards of every row's height too (`MISMATCH` means a cell was not reloaded after an option change, a filter or a
-trim). To pass JSON
-as a launch argument, quote it as a property-list string: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
+cards instead of soft wrap, printing `layout-toggle:` lines. `LOGCATNIP_CARD_KEYS=1` sends ↑, ↓ and ⇧ arrows to
+the table from a multi-line entry in each layout and prints `card-keys:` with `check=ok` when cards move by
+whole entries, the table by rows, and ↓ onto the last entry resumes following. With `LOGCATNIP_DEBUG=1` every
+session prints its options, and its table a `view:` line with the column order, whether the header is shown
+(`header=`), the cells on screen (`cards=[level|tag|time|footer|message]` in the card layout) and `check=ok`, a
+comparison of every visible cell with a fresh run of the formatter, and in cards of every row's height too
+(`MISMATCH` means a cell was not reloaded after an option change, a filter or a trim). To pass JSON as a launch
+argument, quote it as a property-list string: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
 
 ## Filter reference
 
