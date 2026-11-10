@@ -24,10 +24,12 @@ column, the selection, `clipped` and `truncated` counts); `LOGCATNIP_WRAP_TOGGLE
 four times and prints it after each (`LOGCATNIP_WRAP_SELECT=middle|end|none|<row>`, `LOGCATNIP_WRAP_RESIZE=<points>`
 and `LOGCATNIP_WRAP_KEYS=1` add a selection, a window resize and the arrow keys), and
 `LOGCATNIP_SCROLL_BENCH=<pages>` times scrolling in each mode. Use them to check wrapping from a terminal,
-since screenshots of the Mac are off limits. `LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of
-new sessions and `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every style; with
-`LOGCATNIP_DEBUG=1` each session prints its options and the table a `view:` line (column order, on-screen
-cells, and `check=ok`, a recount of every visible cell against the formatter). JSON launch arguments must be
+since screenshots of the Mac are off limits. `LOGCATNIP_VIEW=standard|compact|cards|<json>` sets the view options
+of new sessions and `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every style (the card
+layout included); `LOGCATNIP_LAYOUT_TOGGLE=1` makes `LOGCATNIP_WRAP_TOGGLE` switch between table and cards. With
+`LOGCATNIP_DEBUG=1` each session prints its options and the table a `view:` line (column order, `header=`,
+on-screen cells or `cards=[...]`, and `check=ok`, a recount of every visible cell, and in cards every row's
+height, against the formatter). JSON launch arguments must be
 quoted as plist strings: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
@@ -56,15 +58,19 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
     table sizes wrapped rows and the Message column without touching the text.
   - `ViewportAnchor.swift`: which row to hold still, and where to scroll, when row heights change.
   - `LogViewOptions.swift`: a session's view (columns, timestamp and PID style, widths, hide repeated, tag
-    colors), the Standard and Compact presets, and lenient JSON for the saved default. `LogcatTime` formats
-    the timestamp styles.
-  - `LogLineFormatter.swift`: the text of every cell and of a copied line for a set of view options, so the
-    table, Copy and any future layout agree.
+    colors, table or card layout), the Standard and Compact presets (which ignore the layout), and lenient
+    JSON for the saved default. `LogcatTime` formats the timestamp styles.
+  - `LogLineFormatter.swift`: the text of every cell, of a copied line and of a card for a set of view
+    options, so the table, Copy and the card layout agree.
+  - `LogCardLayout.swift`: card geometry (row heights, wrap width) as plain arithmetic.
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
-    because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
+    because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows. Its card layout code
+    sits in the `// MARK: Cards` section.
+  - `LogCardViews.swift`: the card layout's cell view (header, message, footer) and row view (the card
+    background across the rows of one entry).
   - `FindController.swift`, `FindBar.swift`: the find bar, its state, and incremental off-main scans.
   - `ScrollMarkers.swift`: the tick marks drawn over the table's vertical scroller, one layer per kind of
     mark.
