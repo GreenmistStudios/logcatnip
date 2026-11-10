@@ -35,6 +35,11 @@ public struct ProcessNameResolver: Sendable {
             self.assignments = assignments
         }
 
+        /// Adds another update's assignments; for a pid in both, the other's wins.
+        public mutating func merge(_ other: Update) {
+            assignments.merge(other.assignments) { _, new in new }
+        }
+
         /// Stamps unnamed entries of the assigned pids, newest first, looking at most `scanLimit` entries
         /// back so a huge buffer does not stall the main thread. Returns how many entries changed.
         @discardableResult
@@ -172,6 +177,8 @@ public struct ProcessNameResolver: Sendable {
         var update = Update()
         for (pid, name) in names {
             if let binding = running[pid], !binding.isSuperseded(byLookupStartingAt: start) { continue }
+            // ps caught the process before it renamed itself; the start event already named it.
+            if Self.forkNames.contains(name), running[pid]?.fromEvent == true { continue }
             if Self.forkNames.contains(name), !(tentative.contains(pid) || running[pid]?.name == name) {
                 // First sighting under a zygote name: wait for a second look instead of trusting it.
                 running[pid] = nil
@@ -199,8 +206,8 @@ public struct ProcessNameResolver: Sendable {
         return update
     }
 
-    /// An authoritative process start (ActivityManager `Start proc`, issue #16). Names the pid from `seq`
-    /// on and fills in its waiting entries.
+    /// An authoritative process start (ActivityManager `Start proc`). Names the pid from `seq` on and fills
+    /// in its waiting entries, so a process that exits before any `ps` still has a name.
     public mutating func processStarted(pid: Int32, name: String, seq: Int) -> Update {
         running[pid] = Binding(name: name, since: seq, fromEvent: true)
         tentative.remove(pid)

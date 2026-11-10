@@ -97,8 +97,15 @@ final class LogSession: Identifiable {
 
     @ObservationIgnored private var processRefreshInFlight = false
     @ObservationIgnored private var processRefreshQueued = false
+    @ObservationIgnored private var processRefreshForced = false
     @ObservationIgnored private var lastProcessRefresh = Date.distantPast
     @ObservationIgnored private var processResolver = ProcessNameResolver()
+    /// How many `ps` lookups this session ran. For debug output.
+    @ObservationIgnored private(set) var processLookupCount = 0
+
+    /// How long a new pid waits for ActivityManager's `Start proc` line before `ps` is asked about it, so
+    /// processes announced in the stream never cost a `ps`.
+    private static let processStartGrace = 0.3
 
     init(source: Source, adb: ADB?, model: AppModel) {
         self.source = source
@@ -149,7 +156,7 @@ final class LogSession: Identifiable {
         let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
         let token = UUID()
         streamToken = token
-        requestProcessNames()
+        requestProcessNames(force: true)
 
         streamTask = Task { [weak self] in
             var receivedAny = false
@@ -258,6 +265,7 @@ final class LogSession: Identifiable {
 
     private func ingest(_ batch: [LogEntry]) {
         let now = ProcessInfo.processInfo.systemUptime
+        var named = ProcessNameResolver.Update()
         entries.reserveCapacity(entries.count + batch.count)
         for var entry in batch {
             if let resumeAfter {
@@ -270,10 +278,21 @@ final class LogSession: Identifiable {
             processResolver.stamp(&entry, now: now)
             lastTimestamp = entry.timestamp
             entries.append(entry)
+            if let event = ProcessEvent(entry) { apply(event, seq: entry.id, to: &named) }
         }
+        if !named.isEmpty { applyNameUpdate(named) }
         trimIfNeeded()
         if processResolver.needsLookup { requestProcessNames() }
         scheduleFlush()
+    }
+
+    /// Binds pids named by ActivityManager. The update fills in entries the pid logged before its start line
+    /// (the child logs a few lines before system_server writes the event).
+    private func apply(_ event: ProcessEvent, seq: Int, to update: inout ProcessNameResolver.Update) {
+        switch event {
+        case let .started(pid, process, _):
+            update.merge(processResolver.processStarted(pid: pid, name: process, seq: seq))
+        }
     }
 
     private func alreadyHave(_ entry: LogEntry) -> Bool {
@@ -464,26 +483,38 @@ final class LogSession: Identifiable {
 
     // MARK: Process names
 
-    private func requestProcessNames() {
-        guard let serial, let adb else { return }
+    /// Asks for a `ps` snapshot when entries wait for a name. `force` skips the grace period for a pid that a
+    /// process-start event may still name; lookups are never closer together than 1.5 s.
+    private func requestProcessNames(force: Bool = false) {
+        if force { processRefreshForced = true }
+        guard serial != nil, adb != nil else { return }
         if processRefreshInFlight {
             processRefreshQueued = true
             return
         }
-        let wait = 1.5 - Date().timeIntervalSince(lastProcessRefresh)
-        if wait > 0 {
-            guard !processRefreshQueued else { return }
-            processRefreshQueued = true
-            Task { [weak self] in
-                try? await Task.sleep(for: .seconds(wait))
-                guard let self else { return }
-                self.processRefreshQueued = false
-                self.requestProcessNames()
-            }
+        guard !processRefreshQueued else { return }
+        let throttle = 1.5 - Date().timeIntervalSince(lastProcessRefresh)
+        let wait = max(throttle, processRefreshForced ? 0 : Self.processStartGrace)
+        guard wait > 0 else {
+            runProcessLookup()
             return
         }
+        processRefreshQueued = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard let self else { return }
+            self.processRefreshQueued = false
+            // A process-start event may have named the waiting pids in the meantime.
+            if self.processRefreshForced || self.processResolver.needsLookup { self.runProcessLookup() }
+        }
+    }
+
+    private func runProcessLookup() {
+        guard let serial, let adb, !processRefreshInFlight else { return }
+        processRefreshForced = false
         processRefreshInFlight = true
         lastProcessRefresh = Date()
+        processLookupCount += 1
         let lookup = processResolver.beginLookup(seq: nextID)
         Task { [weak self] in
             let names = try? await adb.processes(serial: serial)
@@ -495,17 +526,23 @@ final class LogSession: Identifiable {
                 self.processResolver.cancelLookup(lookup)
             }
             // After a failure, retry only when asked again, so an unreachable device is not polled.
-            if self.processRefreshQueued || (names != nil && self.processResolver.needsLookup) {
-                self.processRefreshQueued = false
-                self.requestProcessNames()
-            }
+            let again = self.processRefreshQueued || (names != nil && self.processResolver.needsLookup)
+            self.processRefreshQueued = false
+            if again { self.requestProcessNames() }
         }
     }
 
     private func applyProcessNames(_ names: [Int32: String], from lookup: ProcessNameResolver.Lookup) {
-        let update = processResolver.applySnapshot(names, from: lookup, now: ProcessInfo.processInfo.systemUptime)
+        applyNameUpdate(processResolver.applySnapshot(names, from: lookup, now: ProcessInfo.processInfo.systemUptime))
+    }
+
+    /// Stamps names from a snapshot or an event on the entries that waited for them, and refreshes what the
+    /// table shows.
+    private func applyNameUpdate(_ update: ProcessNameResolver.Update) {
         // Cells only change when entries got a name, so skip the refresh otherwise.
         guard update.apply(to: &entries) > 0 else { return }
+        // Entries the filter has not seen yet are filtered with their names at the next flush.
+        guard update.assignments.values.contains(where: { $0.firstSeq <= lastFilteredID }) else { return }
         if filter.dependsOnProcessNames {
             refilter()
         } else {
