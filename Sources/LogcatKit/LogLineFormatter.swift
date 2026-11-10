@@ -1,7 +1,24 @@
 import Foundation
 
-/// The text of each table cell and of a copied line for a set of view options. The table, Copy and (later)
-/// a card layout all read their fields from here, so they agree on every one.
+/// What a card shows for one entry. A nil field belongs to a hidden column (or to a marker, which has no
+/// level or tag), so the card leaves that part out.
+public struct LogCardText: Sendable, Equatable {
+    public var level: String?
+    public var tag: String?
+    public var time: String?
+    /// PID/TID, package and process joined by " · "; empty when none is shown.
+    public var footer: String
+
+    public init(level: String?, tag: String?, time: String?, footer: String) {
+        self.level = level
+        self.tag = tag
+        self.time = time
+        self.footer = footer
+    }
+}
+
+/// The text of each table cell, of a copied line and of a card for a set of view options. The table, Copy
+/// and the card layout all read their fields from here, so they agree on every one.
 public struct LogLineFormatter: Sendable {
     public let options: LogViewOptions
     private let zone: TimeZone
@@ -43,6 +60,39 @@ public struct LogLineFormatter: Sendable {
             if !text.isEmpty { fields.append(text) }
         }
         return fields.joined(separator: " ")
+    }
+
+    /// The fields of an entry's card. A card stands alone, like a copied line: repeated tags, packages and
+    /// processes are never blanked, and `previous` only feeds the delta time. The footer spells out
+    /// `PID 1234 · TID 5678` because, unlike a table column, nothing above it says what the numbers are, and it
+    /// leaves out a process that only repeats the package shown next to it.
+    public func card(
+        for entry: LogEntry,
+        previous: LogEntry?,
+        sessionStart: Double?,
+        processName: (LogEntry) -> String?
+    ) -> LogCardText {
+        func field(_ column: LogColumn) -> String? {
+            options.isVisible(column)
+                ? cell(column, for: entry, previous: previous, sessionStart: sessionStart, processName: processName, hidingRepeats: false)
+                : nil
+        }
+        let time = field(.time)
+        guard entry.kind == .log else { return LogCardText(level: nil, tag: nil, time: time, footer: "") }
+
+        var parts: [String] = []
+        if options.isVisible(.pid) {
+            parts.append(options.pidStyle == .pid ? "PID \(entry.pid)" : "PID \(entry.pid) · TID \(entry.tid)")
+        }
+        var packageShown: String?
+        if let package = field(.package), !package.isEmpty {
+            parts.append(package)
+            packageShown = package
+        }
+        if let process = field(.process), !process.isEmpty, process != packageShown {
+            parts.append(process)
+        }
+        return LogCardText(level: field(.level), tag: field(.tag), time: time, footer: parts.joined(separator: " · "))
     }
 
     /// The package cell: the package of the process, `pid-N` while the process is unknown, nothing for pid 0.

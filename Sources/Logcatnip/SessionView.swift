@@ -31,7 +31,12 @@ private struct SessionToolbar: ToolbarContent {
             Toggle(isOn: Binding(get: { session.softWrap }, set: { session.setSoftWrap($0) })) {
                 Label("Soft Wrap", systemImage: "arrow.turn.down.left")
             }
-            .help(session.softWrap ? "Stop wrapping long lines (⌃⌘L)" : "Wrap long lines in the Message column (⌃⌘L)")
+            .disabled(session.viewOptions.layout == .cards)
+            .help(
+                session.viewOptions.layout == .cards
+                    ? "Cards always wrap"
+                    : session.softWrap ? "Stop wrapping long lines (⌃⌘L)" : "Wrap long lines in the Message column (⌃⌘L)"
+            )
 
             Button {
                 session.isPaused.toggle()
@@ -71,6 +76,7 @@ private struct SessionToolbar: ToolbarContent {
             Menu {
                 Section("View") {
                     ViewPresetMenuItems(session: session)
+                    CardLayoutToggle(session: session)
                     Button("Modify View…") { session.isModifyingView = true }
                 }
                 Divider()

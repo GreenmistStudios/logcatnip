@@ -78,6 +78,11 @@ struct LogTableView: NSViewRepresentable {
         private var lastReload: (rows: Int, milliseconds: Double)?
         private var lastHeightPass: Duration?
         private var lastAnchor: (row: Int, before: Double, after: Double)?
+        /// Geometry and fonts of the card layout; nil while the table shows columns. See `// MARK: Cards`.
+        private var cardLayout: LogCardLayout?
+        private var cardFonts: LogCardFonts?
+        /// What the table looked like before cards took its header, corner and spacing away.
+        private var tableChrome: TableChrome?
         /// Paragraph styles for highlighted (attributed) cells, matching the line breaking of plain cells.
         private let truncatingStyle: NSParagraphStyle = {
             let style = NSMutableParagraphStyle()
@@ -178,6 +183,8 @@ struct LogTableView: NSViewRepresentable {
         }
 
         func update(session: LogSession, fontSize: Double, viewOptions: LogViewOptions, wrapLines: Bool) {
+            // A card is a vertical layout and its time sits at the right edge, so cards always wrap.
+            let wrapLines = wrapLines || viewOptions.layout == .cards
             var needsReload = false
             var fontChanged = false
             // The viewport is captured before anything changes, while the old heights are still in place.
@@ -185,7 +192,7 @@ struct LogTableView: NSViewRepresentable {
             var selection = IndexSet()
             if self.session === session {
                 selection = tableView.selectedRowIndexes
-                if self.wrapLines != wrapLines { anchor = captureAnchor() }
+                if self.wrapLines != wrapLines || self.viewOptions?.layout != viewOptions.layout { anchor = captureAnchor() }
             }
             if self.session !== session {
                 unbindSession()
@@ -232,7 +239,8 @@ struct LogTableView: NSViewRepresentable {
                 wrapColumns = currentWrapColumns()
                 reloadAll()
                 // Reloading drops the selection; the rows are the same ones, so it can simply be put back.
-                if !selection.isEmpty { tableView.selectRowIndexes(selection, byExtendingSelection: false) }
+                // A card is selected whole, so rows picked in the table grow to their entries.
+                if !selection.isEmpty { tableView.selectRowIndexes(expandedToEntries(selection), byExtendingSelection: false) }
                 updateFindMarkers()
                 if let anchor {
                     restore(anchor, settleFollow: false)
@@ -495,8 +503,10 @@ struct LogTableView: NSViewRepresentable {
             guard let options = viewOptions else { return }
             isApplyingOptions = true
             defer { isApplyingOptions = false }
+            // Cards draw every field inside the Message column, so no other column shows.
+            let cards = options.layout == .cards
             for column in Column.allCases where column != .message {
-                tableView.tableColumn(withIdentifier: column.identifier)?.isHidden = !options.isVisible(column)
+                tableView.tableColumn(withIdentifier: column.identifier)?.isHidden = cards || !options.isVisible(column)
             }
             // These two sizes are reset by a change of style or font only, so a width the user dragged to
             // survives unrelated changes such as hiding repeats.
@@ -523,6 +533,7 @@ struct LogTableView: NSViewRepresentable {
                 // where the mouse is; do not snap the edge under it.
                 if abs(tableColumn.width - target) > charWidth / 2 + 1 { tableColumn.width = target }
             }
+            updateCardLayout(cards: cards)
             updateMessageColumnWidth()
         }
 
@@ -538,6 +549,7 @@ struct LogTableView: NSViewRepresentable {
         /// row may get a little spare space but its text is never clipped.
         private func currentWrapColumns() -> Int {
             guard let message = tableView.tableColumn(withIdentifier: Column.message.identifier) else { return 1 }
+            if let cardLayout { return cardLayout.wrapColumns(columnWidth: Double(message.width), charWidth: Double(charWidth)) }
             return max(1, Int((message.width - 8) / charWidth))
         }
 
@@ -617,6 +629,7 @@ struct LogTableView: NSViewRepresentable {
             heightCalls += 1
             guard wrapLines, let session, row < session.rows.count else { return tableView.rowHeight }
             let logRow = session.rows[row]
+            if let cardLayout { return cardRowHeight(row, logRow, cardLayout, session) }
             // Markers are drawn with eight characters of dashes and spaces around the message.
             let lines = logRow.span.wrappedLineCount(columns: wrapColumns, extraCells: logRow.isMarker ? 8 : 0)
             guard lines > 1 else { return tableView.rowHeight }
@@ -680,6 +693,9 @@ struct LogTableView: NSViewRepresentable {
             else { return nil }
             let logRow = session.rows[row]
             guard let entry = session.entry(for: logRow) else { return nil }
+            if let cardLayout, let cardFonts {
+                return column == .message ? cardView(row: row, logRow, entry, session, cardLayout, cardFonts) : nil
+            }
 
             if entry.kind == .marker {
                 let label = makeLabel(column.identifier)
@@ -859,9 +875,11 @@ struct LogTableView: NSViewRepresentable {
 
         // MARK: Keyboard
 
-        /// ←/→ scroll sideways by eight characters, ⌘←/⌘→ to the left and right edges, when long lines scroll
-        /// instead of wrapping and the table has focus. Returns whether it handled the key.
+        /// In cards, ↑/↓ move by whole cards (`handleCardKey`). ←/→ scroll sideways by eight characters, ⌘←/⌘→ to
+        /// the left and right edges, when long lines scroll instead of wrapping and the table has focus. Returns
+        /// whether it handled the key.
         func handleKey(_ event: NSEvent) -> Bool {
+            if cardLayout != nil, handleCardKey(event) { return true }
             let clip = scrollView.contentView
             guard !wrapLines, tableView.frame.width > clip.bounds.width + 0.5, let key = event.specialKey else { return false }
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
@@ -892,7 +910,9 @@ struct LogTableView: NSViewRepresentable {
         /// line reads like the table.
         fileprivate func copyText(forRows rows: IndexSet) -> String? {
             guard let session else { return nil }
-            let columns = tableView.tableColumns.filter { !$0.isHidden }.compactMap { Column(rawValue: $0.identifier.rawValue) }
+            // The columns the options show, which in cards are hidden although the card has their fields.
+            let columns = tableView.tableColumns.compactMap { Column(rawValue: $0.identifier.rawValue) }
+                .filter { viewOptions?.isVisible($0) ?? true }
             return session.text(forRows: rows, columns: columns, formatter: formatter)
         }
 
@@ -934,7 +954,7 @@ struct LogTableView: NSViewRepresentable {
 
         @objc private func choosePreset(_ sender: NSMenuItem) {
             guard let raw = sender.representedObject as? String, let preset = LogViewOptions.Preset(rawValue: raw) else { return }
-            session?.viewOptions = preset.options
+            session?.viewOptions.apply(preset)
         }
 
         @objc private func modifyView() {
@@ -948,7 +968,7 @@ struct LogTableView: NSViewRepresentable {
                   let entry = session.entry(for: session.rows[clicked])
             else { return }
             if !tableView.selectedRowIndexes.contains(clicked) {
-                tableView.selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
+                tableView.selectRowIndexes(expandedToEntries(IndexSet(integer: clicked)), byExtendingSelection: false)
             }
 
             menu.addItem(item("Copy", #selector(copyRows)))
@@ -995,6 +1015,309 @@ struct LogTableView: NSViewRepresentable {
             guard let raw = sender.representedObject as? Int, let level = LogLevel(rawValue: raw) else { return }
             session?.setMinimumLevel(level)
         }
+    }
+}
+
+// MARK: Cards
+
+/// The table's own look, kept while cards replace it so it comes back exactly as it was.
+private struct TableChrome {
+    var header: NSTableHeaderView?
+    var corner: NSView?
+    var background: NSColor
+    var spacing: NSSize
+}
+
+extension LogTableView.Coordinator {
+    private static let cardIdentifier = NSUserInterfaceItemIdentifier("card")
+    private static let cardRowIdentifier = NSUserInterfaceItemIdentifier("cardRow")
+    /// Points of padding inside a card above and below its text, the gap between cards, and the space from
+    /// the column edge to the card and from the card to its text.
+    private static let cardPadding = 6.0
+    private static let cardGap = 6.0
+    private static let cardInset = 6.0
+    private static let cardHorizontalPadding = 10.0
+    /// Selecting more rows than this is not widened to whole entries: it is a select-all, which already is. A
+    /// shift-click range longer than this can start or end partway through a card; that is accepted, since it
+    /// only affects the drawn edge of a huge selection.
+    private static let maxExpandedSelection = 5000
+
+    /// Sets up the card geometry and fonts, and takes the column header, corner and column spacing off the
+    /// table (a header over a single Message column would only be in the way). Switching back puts them back.
+    func updateCardLayout(cards: Bool) {
+        if cards, let font, let options = viewOptions {
+            let rowHeight = Double(tableView.rowHeight)
+            cardLayout = LogCardLayout(
+                lineHeight: rowHeight,
+                wrappedLineHeight: Double(textLineHeight),
+                headerHeight: options.cardHasHeader ? rowHeight + 4 : 0,
+                footerHeight: options.cardHasFooter ? ceil(Double(font.pointSize - 1) * 1.5) : 0,
+                padding: Self.cardPadding,
+                gap: Self.cardGap,
+                inset: Self.cardInset,
+                horizontalPadding: Self.cardHorizontalPadding
+            )
+            if cardFonts?.regular !== font { cardFonts = LogCardFonts(font) }
+            if tableChrome == nil {
+                tableChrome = TableChrome(
+                    header: tableView.headerView, corner: tableView.cornerView,
+                    background: tableView.backgroundColor, spacing: tableView.intercellSpacing
+                )
+                tableView.headerView = nil
+                tableView.cornerView = nil
+                tableView.backgroundColor = .windowBackgroundColor
+                // The cell then spans the column, so the card drawn by the row lines up with the text.
+                tableView.intercellSpacing = NSSize(width: 0, height: 0)
+                scrollView.tile()
+            }
+        } else {
+            cardLayout = nil
+            cardFonts = nil
+            if let chrome = tableChrome {
+                tableChrome = nil
+                tableView.headerView = chrome.header
+                tableView.cornerView = chrome.corner
+                tableView.backgroundColor = chrome.background
+                tableView.intercellSpacing = chrome.spacing
+                scrollView.tile()
+            }
+        }
+    }
+
+    private func isLastLine(_ row: Int, _ logRow: LogSession.Row, _ session: LogSession) -> Bool {
+        row + 1 >= session.rows.count || session.rows[row + 1].entryID != logRow.entryID
+    }
+
+    /// The height of one row of a card, from the precomputed line spans, so it is arithmetic like the
+    /// table's wrapped heights: AppKit may ask for every row of a 500,000-row table.
+    func cardRowHeight(_ row: Int, _ logRow: LogSession.Row, _ layout: LogCardLayout, _ session: LogSession) -> CGFloat {
+        if logRow.isMarker {
+            // The decoration around a marker's text is not in its span.
+            return CGFloat(layout.markerHeight(wrappedLines: logRow.span.wrappedLineCount(columns: wrapColumns, extraCells: 8)))
+        }
+        return CGFloat(layout.rowHeight(
+            line: Int(logRow.line),
+            isLastLine: isLastLine(row, logRow, session),
+            wrappedLines: logRow.span.wrappedLineCount(columns: wrapColumns)
+        ))
+    }
+
+    /// The card fields for the entry that `row` belongs to. Only the first and last rows of an entry need them.
+    private func cardText(row: Int, logRow: LogSession.Row, entry: LogEntry, session: LogSession) -> LogCardText {
+        let first = row - Int(logRow.line)
+        let needsPrevious = formatter.options.isVisible(.time) && formatter.needsPrevious(.time)
+        return formatter.card(
+            for: entry,
+            previous: needsPrevious ? session.previousEntry(beforeRow: first) : nil,
+            sessionStart: session.startTimestamp,
+            processName: { session.processName(for: $0) }
+        )
+    }
+
+    /// One row of a card: its line of the message, and the header or footer when it is the first or last row.
+    func cardView(
+        row: Int, _ logRow: LogSession.Row, _ entry: LogEntry, _ session: LogSession,
+        _ layout: LogCardLayout, _ fonts: LogCardFonts
+    ) -> LogCardCellView {
+        let cell: LogCardCellView
+        if let reused = tableView.makeView(withIdentifier: Self.cardIdentifier, owner: nil) as? LogCardCellView {
+            cell = reused
+        } else {
+            cell = LogCardCellView()
+            cell.identifier = Self.cardIdentifier
+        }
+        let line = Int(logRow.line)
+        let isLast = isLastLine(row, logRow, session)
+        cell.configure(geometry: layout, line: line, isLastLine: isLast, isMarker: entry.kind == .marker)
+        let message = cell.messageLabel
+
+        guard entry.kind == .log else {
+            for label in [cell.badge, cell.tagLabel, cell.timeLabel, cell.footerLabel] { label.isHidden = true }
+            message.stringValue = "——— \(entry.message) ———"
+            message.font = italicFont ?? fonts.regular
+            message.textColor = .secondaryLabelColor
+            return cell
+        }
+
+        let text = (line == 0 || isLast) ? cardText(row: row, logRow: logRow, entry: entry, session: session) : nil
+
+        if line == 0, let text {
+            if let level = text.level {
+                cell.badge.isHidden = false
+                cell.badge.stringValue = level
+                cell.badge.font = fonts.badge
+                cell.badge.backgroundColor = LogColors.badgeBackground(for: entry.level)
+                cell.badge.textColor = LogColors.badgeText(for: entry.level)
+                cell.badgeWidth = max(20, CGFloat(layout.lineHeight))
+            } else {
+                cell.badge.isHidden = true
+            }
+            if let tag = text.tag {
+                let label = cell.tagLabel
+                label.isHidden = false
+                label.stringValue = tag
+                label.font = fonts.bold
+                label.textColor = viewOptions?.colorTags == false ? .secondaryLabelColor : LogColors.tag(entry.tag)
+                label.toolTip = tag.isEmpty ? nil : tag
+                if !tag.isEmpty { highlightMatches(in: label, text: tag, row: row, style: middleTruncatingStyle) }
+            } else {
+                cell.tagLabel.isHidden = true
+            }
+            if let time = text.time {
+                let label = cell.timeLabel
+                label.isHidden = false
+                label.stringValue = time
+                label.font = fonts.small
+                label.textColor = .secondaryLabelColor
+                let cells = viewOptions?.timestampStyle.sampleCells ?? 23
+                cell.timeWidth = ceil(CGFloat(cells) * fonts.smallCharWidth) + 8
+            } else {
+                cell.timeLabel.isHidden = true
+            }
+        } else {
+            for label in [cell.badge, cell.tagLabel, cell.timeLabel] { label.isHidden = true }
+        }
+
+        let messageText = logRow.text(in: entry.message)
+        message.stringValue = messageText
+        message.font = fonts.regular
+        message.textColor = LogColors.text(for: entry.level)
+        highlightMatches(in: message, text: messageText, row: row, style: wrappingStyle)
+
+        if isLast, let text, !text.footer.isEmpty {
+            let footer = cell.footerLabel
+            footer.isHidden = false
+            footer.stringValue = text.footer
+            footer.font = fonts.small
+            footer.textColor = .tertiaryLabelColor
+            footer.toolTip = text.footer
+        } else {
+            cell.footerLabel.isHidden = true
+        }
+        return cell
+    }
+
+    /// Draws the card behind the row. Nil in the table, which uses AppKit's default row view.
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        guard let cardLayout, let session, row < session.rows.count else { return nil }
+        let logRow = session.rows[row]
+        let view: LogCardRowView
+        if let reused = tableView.makeView(withIdentifier: Self.cardRowIdentifier, owner: nil) as? LogCardRowView {
+            view = reused
+        } else {
+            view = LogCardRowView()
+            view.identifier = Self.cardRowIdentifier
+        }
+        view.configure(geometry: cardLayout, line: Int(logRow.line), isLastLine: isLastLine(row, logRow, session), isMarker: logRow.isMarker)
+        return view
+    }
+
+    /// A card is selected whole, so a click on one of its rows, or any key AppKit handles, takes all of them.
+    func tableView(_ tableView: NSTableView, selectionIndexesForProposedSelection proposed: IndexSet) -> IndexSet {
+        expandedToEntries(proposed)
+    }
+
+    /// ↑/↓ select the previous or next card whole (⇧ adds it). AppKit would move its selected row one row at a
+    /// time, and `expandedToEntries` would pull each step back into the same card. Other keys, and ↑/↓ with
+    /// ⌘, ⌥ or ⌃, stay AppKit's, whose proposals still go through `expandedToEntries`.
+    func handleCardKey(_ event: NSEvent) -> Bool {
+        guard cardLayout != nil, let session, let key = event.specialKey else { return false }
+        let direction: CardNavigation.Direction
+        switch key {
+        case .downArrow: direction = .down
+        case .upArrow: direction = .up
+        default: return false
+        }
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard modifiers.isEmpty || modifiers == .shift else { return false }
+        let rows = session.rows
+        let visible = tableView.rows(in: tableView.visibleRect)
+        guard let step = CardNavigation.step(
+            direction, extending: modifiers == .shift, selection: tableView.selectedRowIndexes,
+            visibleRows: visible.location..<(visible.location + visible.length),
+            rowCount: min(rows.count, tableView.numberOfRows), entryID: { rows[$0].entryID }
+        ) else { return true }
+        if step.selection != tableView.selectedRowIndexes {
+            tableView.selectRowIndexes(step.selection, byExtendingSelection: false)
+        }
+        // Not marked programmatic: like the table's own arrow keys, reaching the bottom resumes following new
+        // logs and leaving it stops (`boundsDidChange`). The last row goes first, so a card taller than the
+        // view ends with its top showing.
+        tableView.scrollRowToVisible(step.reveal.upperBound)
+        tableView.scrollRowToVisible(step.reveal.lowerBound)
+        return true
+    }
+
+    /// `selection` with every row of each entry it touches, in card layout; unchanged in the table.
+    func expandedToEntries(_ selection: IndexSet) -> IndexSet {
+        guard cardLayout != nil, let session, selection.count <= Self.maxExpandedSelection else { return selection }
+        let rows = session.rows
+        var expanded = IndexSet()
+        var covered = -1
+        for index in selection where index < rows.count && index > covered {
+            let row = rows[index]
+            let first = max(0, index - Int(row.line))
+            var last = index
+            while last + 1 < rows.count, rows[last + 1].entryID == row.entryID { last += 1 }
+            expanded.insert(integersIn: first...last)
+            covered = last
+        }
+        return expanded
+    }
+
+    /// Debug view of a card layout: the last few cards as drawn, and a check of every visible row against
+    /// the formatter and the row height arithmetic. See `debugViewSummary`.
+    func debugCardSummary(_ session: LogSession, _ options: LogViewOptions, order: String, row0: String) -> String {
+        guard let cardLayout else { return "no cards" }
+        let messageColumn = tableView.column(withIdentifier: Column.message.identifier)
+        let visible = tableView.rows(in: tableView.visibleRect)
+        // level|tag|time|footer|message of each card, the footer filled in when the entry's last row is visible.
+        var cards: [(entryID: Int, head: String, message: String, footer: String)] = []
+        var mismatch: String?
+        func check(_ row: Int, _ what: String, _ actual: String, _ expected: String) {
+            if actual != expected, mismatch == nil { mismatch = "\(row):\(what) \"\(actual)\"!=\"\(expected)\"" }
+        }
+        for row in visible.location..<(visible.location + visible.length) where row < session.rows.count {
+            let logRow = session.rows[row]
+            guard let entry = session.entry(for: logRow),
+                  let cell = tableView.view(atColumn: messageColumn, row: row, makeIfNecessary: false) as? LogCardCellView
+            else { continue }
+            check(row, "height", String(format: "%.1f", tableView.rect(ofRow: row).height),
+                  String(format: "%.1f", cardRowHeight(row, logRow, cardLayout, session)))
+            let isLast = isLastLine(row, logRow, session)
+            check(row, "last", "\(cell.isLastLine)", "\(isLast)")
+            if entry.kind == .marker {
+                check(row, "marker", cell.messageLabel.stringValue, "——— \(entry.message) ———")
+                continue
+            }
+            check(row, "header", "\(cell.showsHeader)", "\(logRow.line == 0 && options.cardHasHeader)")
+            check(row, "footer", "\(cell.showsFooter)", "\(isLast && options.cardHasFooter)")
+            let expected = cardText(row: row, logRow: logRow, entry: entry, session: session)
+            func shown(_ label: NSTextField) -> String { label.isHidden ? "~" : label.stringValue }
+            if logRow.line == 0 {
+                check(row, "level", shown(cell.badge), expected.level ?? "~")
+                check(row, "tag", shown(cell.tagLabel), expected.tag ?? "~")
+                check(row, "time", shown(cell.timeLabel), expected.time ?? "~")
+                cards.append((
+                    logRow.entryID, "\(shown(cell.badge))|\(shown(cell.tagLabel))|\(shown(cell.timeLabel))",
+                    String(cell.messageLabel.stringValue.prefix(14)), "…"
+                ))
+            } else {
+                check(row, "headerHidden", "\(cell.badge.isHidden && cell.tagLabel.isHidden && cell.timeLabel.isHidden)", "true")
+            }
+            if isLast {
+                let footer = cell.footerLabel.isHidden ? "" : cell.footerLabel.stringValue
+                check(row, "footer", footer, expected.footer)
+                if let index = cards.lastIndex(where: { $0.entryID == logRow.entryID }) {
+                    cards[index].footer = footer.isEmpty ? "~" : footer
+                }
+            } else {
+                check(row, "footerHidden", "\(cell.footerLabel.isHidden)", "true")
+            }
+        }
+        let shownCards = cards.suffix(8).map { "\($0.head)|\($0.footer)|\($0.message)" }.joined(separator: " ; ")
+        return "view: \(options.summary) trims=\(session.trimCount) order=\(order) header=\(tableView.headerView == nil ? "no" : "yes") "
+            + "row0=\(row0) cards=[\(shownCards)] check=\(mismatch.map { "MISMATCH(\($0))" } ?? "ok")"
     }
 }
 
@@ -1172,6 +1495,10 @@ protocol LogTableDebugging: AnyObject {
     func debugScrollBenchmark(pages: Int) -> String
     /// Sends ←, →, ⌘→ and ⌘← to the table and reports the horizontal offset after each.
     func debugPressArrowKeys() -> String
+    /// Sends ↓ ↓ ↑ ↑ ⇧↓ ⇧↑ to the table from the first row of a multi-line entry, then ↓ onto the last entry,
+    /// and checks that cards move by whole entries (the table by single rows) and that reaching the end resumes
+    /// following.
+    func debugPressCardKeys() -> String
     /// The view options, the column order, and the cells on screen, checked against the formatter.
     func debugViewSummary() -> String
     /// What Copy would put on the pasteboard for the last `entries` entries, one per line, with newlines
@@ -1203,7 +1530,8 @@ extension LogTableView.Coordinator: LogTableDebugging {
         var truncated = 0
         if columnIndex >= 0 {
             for row in range where row < session.rows.count {
-                guard let label = tableView.view(atColumn: columnIndex, row: row, makeIfNecessary: false) as? NSTextField,
+                let view = tableView.view(atColumn: columnIndex, row: row, makeIfNecessary: false)
+                guard let label = (view as? LogCardCellView)?.messageLabel ?? (view as? NSTextField),
                       let cell = label.cell
                 else { continue }
                 if wrapLines {
@@ -1219,7 +1547,7 @@ extension LogTableView.Coordinator: LogTableDebugging {
         let reload = lastReload.map { "\($0.rows)/\(String(format: "%.1f", $0.milliseconds))ms" } ?? "-"
         let height = lastHeightPass.map { "\(String(format: "%.1f", Self.milliseconds($0)))ms" } ?? "-"
         let anchor = lastAnchor.map { "\($0.row):\(String(format: "%.1f", $0.before))->\(String(format: "%.1f", $0.after))" } ?? "-"
-        return "calls=\(heightCalls) docH=\(Int(tableView.frame.height)) wrap=\(wrapLines ? "on" : "off") cols=\(wrapColumns) charWidth=\(String(format: "%.2f", charWidth)) "
+        return "calls=\(heightCalls) docH=\(Int(tableView.frame.height)) wrap=\(wrapLines ? "on" : "off") layout=\(cardLayout == nil ? "table" : "cards") cols=\(wrapColumns) charWidth=\(String(format: "%.2f", charWidth)) "
             + "msgWidth=\(String(format: "%.0f", messageWidth)) widestCells=\(session.widestLineCells) "
             + "selected=\(selectedText) visible=\(range.lowerBound)-\(range.upperBound) selectedVisible=\(selectedVisible) "
             + "clipped=\(clipped) truncated=\(truncated) reload=\(reload) height=\(height) anchor=\(anchor)"
@@ -1268,6 +1596,105 @@ extension LogTableView.Coordinator: LogTableDebugging {
         return "arrow-keys wrap=\(wrapLines ? "on" : "off") \(range) " + steps.joined(separator: " ")
     }
 
+    /// Sends ↓ ↓ ↑ ↑ ⇧↓ ⇧↑ to the table from the first row of a multi-line entry, then ↓ onto the last entry,
+    /// and checks that cards move by whole entries (the table by single rows) and that reaching the end resumes
+    /// following.
+    func debugPressCardKeys() -> String {
+        guard let session else { return "card-keys no session" }
+        let rows = session.rows
+        let count = min(rows.count, tableView.numberOfRows)
+        guard count >= 4 else { return "card-keys too few rows" }
+        // A window nobody can see may not have laid out the table since its options changed.
+        scrollView.tile()
+        tableView.tile()
+        let cards = cardLayout != nil
+        // The expectations walk the rows on their own, not through `CardNavigation`, which would only test itself.
+        func card(_ row: Int) -> ClosedRange<Int> {
+            var last = row
+            while last + 1 < count, rows[last + 1].entryID == rows[row].entryID { last += 1 }
+            return max(0, row - Int(rows[row].line))...last
+        }
+        func next(_ c: ClosedRange<Int>) -> ClosedRange<Int> { c.upperBound + 1 < count ? card(c.upperBound + 1) : c }
+        func previous(_ c: ClosedRange<Int>) -> ClosedRange<Int> { c.lowerBound > 0 ? card(c.lowerBound - 1) : c }
+        func describe(_ set: IndexSet) -> String {
+            guard let first = set.first, let last = set.last else { return "-" }
+            return "\(first)-\(last)" + (set.count == last - first + 1 ? "" : "*")
+        }
+        func range(_ r: ClosedRange<Int>) -> IndexSet { IndexSet(integersIn: r) }
+        // The last multi-line entry with an entry before it and two after it, else the middle one.
+        var start = card(count / 2)
+        for row in stride(from: count - 1, through: 1, by: -1) where rows[row].line >= 1 && !rows[row].isMarker {
+            let c = card(row)
+            if c.lowerBound > 0, next(c) != c, next(next(c)) != next(c) {
+                start = c
+                break
+            }
+        }
+        let n1 = next(start)
+        let n2 = next(n1)
+        var steps: [String] = []
+        var mismatch: String?
+        func press(_ name: String, down: Bool, shift: Bool = false, expected: IndexSet?) {
+            let key = down ? NSDownArrowFunctionKey : NSUpArrowFunctionKey
+            let characters = String(Character(UnicodeScalar(UInt32(key))!))
+            let flags: NSEvent.ModifierFlags = shift ? [.numericPad, .function, .shift] : [.numericPad, .function]
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                windowNumber: tableView.window?.windowNumber ?? 0, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: down ? 125 : 126
+            ) else { return }
+            // The real path: `keyHandler` offers it to `handleKey`, and AppKit gets what that leaves.
+            tableView.keyDown(with: event)
+            let actual = tableView.selectedRowIndexes
+            steps.append("\(name):\(describe(actual))")
+            if let expected, actual != expected, mismatch == nil { mismatch = "\(name) \(describe(actual))!=\(describe(expected))" }
+        }
+
+        session.autoScroll = false
+        let s = start.lowerBound
+        // The first row only, as a click on it would select, so AppKit starts from the top of the card.
+        tableView.selectRowIndexes(IndexSet(integer: s), byExtendingSelection: false)
+        isProgrammaticScroll = true
+        tableView.scrollRowToVisible(start.upperBound)
+        tableView.scrollRowToVisible(start.lowerBound)
+        isProgrammaticScroll = false
+        if cards {
+            press("↓", down: true, expected: range(n1))
+            press("↓", down: true, expected: range(n2))
+            press("↑", down: false, expected: range(n1))
+            press("↑", down: false, expected: range(start))
+            press("⇧↓", down: true, shift: true, expected: range(start).union(range(n1)))
+            press("⇧↑", down: false, shift: true, expected: range(previous(start)).union(range(start)).union(range(n1)))
+        } else {
+            // AppKit's row-wise ⇧ selection is not checked: it depends on its own anchor.
+            press("↓", down: true, expected: IndexSet(integer: s + 1))
+            press("↓", down: true, expected: IndexSet(integer: s + 2))
+            press("↑", down: false, expected: IndexSet(integer: s + 1))
+            press("↑", down: false, expected: IndexSet(integer: s))
+            press("⇧↓", down: true, shift: true, expected: nil)
+            press("⇧↑", down: false, shift: true, expected: nil)
+        }
+
+        // ↓ onto the last entry reaches the bottom, which resumes following new logs (`boundsDidChange`). The
+        // table starts from the second-to-last row: AppKit moves one row, so that is the row before the last.
+        let last = card(count - 1)
+        let before = cards ? previous(last) : (count - 2)...(count - 2)
+        debugSelect(row: before.upperBound, at: 1, following: false)
+        press("end↓", down: true, expected: cards ? range(last) : IndexSet(integer: count - 1))
+        let clip = scrollView.contentView
+        let viewport = clip.bounds.height - clip.contentInsets.top - clip.contentInsets.bottom
+        let fits = tableView.frame.height <= viewport + 1
+        var follow = session.autoScroll ? "on" : "off"
+        if fits {
+            follow = "skipped(fits)"
+        } else if !session.autoScroll, mismatch == nil {
+            mismatch = "end↓ follow=off"
+        }
+        let check = mismatch.map { "MISMATCH(\($0))" } ?? "ok"
+        return "card-keys layout=\(cards ? "cards" : "table") start=\(start.lowerBound)-\(start.upperBound) rows=\(start.count) "
+            + steps.joined(separator: " ") + " follow=\(follow) check=\(check)"
+    }
+
     /// Scrolls through the whole log one jump per page, so every step draws a fresh page of rows (the worst
     /// case; ordinary scrolling reuses most of what is on screen), and times each step to the end of drawing.
     func debugScrollBenchmark(pages: Int) -> String {
@@ -1306,7 +1733,8 @@ extension LogTableView.Coordinator: LogTableDebugging {
     /// layout put the Process column), the tag of row 0 and the last few visible rows as they are on screen
     /// (`time|pid|tag|package|process|level|message`, `~` for a hidden column), and a check that every
     /// visible cell equals what the formatter gives now. A cell that was not reloaded after an option change,
-    /// a filter or a trim would show as MISMATCH.
+    /// a filter or a trim would show as MISMATCH. In the card layout the cells are
+    /// `cards=[level|tag|time|footer|message ; ...]`, and the check also covers each row's card parts and height.
     func debugViewSummary() -> String {
         guard let session, let options = viewOptions else { return "no session" }
         let order = tableView.tableColumns.map { ($0.isHidden ? "-" : "") + $0.identifier.rawValue }.joined(separator: ",")
@@ -1314,6 +1742,7 @@ extension LogTableView.Coordinator: LogTableDebugging {
         if let first = session.rows.first, let entry = session.entry(for: first) {
             row0 = "\"\(cellText(.tag, for: entry, row: 0, in: session))\""
         }
+        if cardLayout != nil { return debugCardSummary(session, options, order: order, row0: row0) }
         let visible = tableView.rows(in: tableView.visibleRect)
         let range = visible.location..<(visible.location + visible.length)
         func label(_ column: Column, _ row: Int) -> NSTextField? {
@@ -1346,7 +1775,7 @@ extension LogTableView.Coordinator: LogTableDebugging {
             }
         }
         let cells = shown.suffix(8).joined(separator: " ; ")
-        return "view: \(options.summary) trims=\(session.trimCount) order=\(order) row0=\(row0) cells=[\(cells)] check=\(mismatch.map { "MISMATCH(\($0))" } ?? "ok")"
+        return "view: \(options.summary) trims=\(session.trimCount) order=\(order) header=\(tableView.headerView == nil ? "no" : "yes") row0=\(row0) cells=[\(cells)] check=\(mismatch.map { "MISMATCH(\($0))" } ?? "ok")"
     }
 
     func debugCopyText(entries: Int) -> String {

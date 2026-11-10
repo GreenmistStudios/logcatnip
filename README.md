@@ -33,6 +33,14 @@ Android Studio's Logcat window.
   Copy (⌘C, or Copy in the row menu) uses the format you see: the visible columns in their order, with the
   chosen timestamp style, one line per entry, every value in full and nothing blanked as repeated. Export
   stays in `logcat -v long` format.
+- **Card layout.** View > Card Layout (also in the toolbar's More menu and in Modify View) shows each entry
+  as a card, like Wirecat: the level badge and bold tag on the first line with the time on the right, the
+  message below (always wrapped, so Soft Wrap is disabled while cards show), and the PID, TID and
+  package underneath. The card shows the fields of the visible columns, so Standard and Compact (which
+  keep the layout) choose its fields, and the timestamp and PID formats apply. Hide repeated and the
+  column widths belong to the table and apply when you switch back. A click selects a whole card, ↑ and ↓
+  move card by card, and ⇧↑/⇧↓ add the next card. Copy uses the same one-line format as the table. The
+  layout is per session, and Settings > Log View sets what new sessions start with.
 - **Find in results.** ⌘F opens a find bar that searches the tag and message of the rows shown (after the
   filter), with match case, regex and whole word options. Every match is highlighted, the current one in
   orange, with an "N of M" counter and tick marks on the scroller. Return or ⌘G goes to the next match,
@@ -81,13 +89,18 @@ times scrolling page by page in each mode. With `LOGCATNIP_DEBUG=1` every sessio
 where `clipped` counts visible wrapped lines taller than their row and `truncated` counts visible unwrapped
 lines wider than the Message column; both should stay 0.
 `LOGCATNIP_PERF_TESTS=1 swift test --filter WrapPerformance` times the line spans on 500,000 rows.
-`LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of new sessions, and
+`LOGCATNIP_VIEW=standard|compact|cards|<json>` sets the view options of new sessions, and
 `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every timestamp style, the Process
-column, hide repeated and tag colors, printing after each step what Copy would paste for the last three
-entries. With `LOGCATNIP_DEBUG=1` every session prints its options, and its table a `view:` line with the
-column order, the cells on screen and `check=ok`, a comparison of every visible cell with a fresh run of the
-formatter (`MISMATCH` means a cell was not reloaded after an option change, a filter or a trim). To pass JSON
-as a launch argument, quote it as a property-list string: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
+column, hide repeated, tag colors and the card layout, printing after each step what Copy would paste for
+the last three entries. `LOGCATNIP_LAYOUT_TOGGLE=1` makes `LOGCATNIP_WRAP_TOGGLE` switch between the table and
+cards instead of soft wrap, printing `layout-toggle:` lines. `LOGCATNIP_CARD_KEYS=1` sends ↑, ↓ and ⇧ arrows to
+the table from a multi-line entry in each layout and prints `card-keys:` with `check=ok` when cards move by
+whole entries, the table by rows, and ↓ onto the last entry resumes following. With `LOGCATNIP_DEBUG=1` every
+session prints its options, and its table a `view:` line with the column order, whether the header is shown
+(`header=`), the cells on screen (`cards=[level|tag|time|footer|message]` in the card layout) and `check=ok`, a
+comparison of every visible cell with a fresh run of the formatter, and in cards of every row's height too
+(`MISMATCH` means a cell was not reloaded after an option change, a filter or a trim). To pass JSON as a launch
+argument, quote it as a property-list string: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
 
 ## Filter reference
 
