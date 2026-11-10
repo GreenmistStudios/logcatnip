@@ -48,16 +48,17 @@ extension DeviceDescriptor {
         return (1...5).contains(port.count) && port.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
-    /// The hardware serial inside an mDNS transport name. adb names the transport
-    /// `adb-<serial>-<instance id>._adb-tls-connect._tcp`; the serial itself may contain dashes, so the
-    /// instance id is only the part after the last one.
+    /// The hardware serial inside an mDNS transport name `adb-<serial>-<instance id>._adb-tls-connect._tcp`.
     public var mdnsSerial: String? {
-        let prefix = "adb-"
         let suffix = "._adb-tls-connect._tcp"
-        guard serial.hasPrefix(prefix), serial.hasSuffix(suffix), serial.count > prefix.count + suffix.count else { return nil }
-        let middle = serial.dropFirst(prefix.count).dropLast(suffix.count)
-        guard let dash = middle.lastIndex(of: "-"), dash != middle.startIndex else { return nil }
-        return String(middle[..<dash])
+        guard serial.hasSuffix(suffix) else { return nil }
+        return MdnsService.deviceSerial(fromInstance: String(serial.dropLast(suffix.count)))
+    }
+
+    /// `adb disconnect` only finds transports named `host:port`: it appends `:5555` to anything else, so an
+    /// mDNS-named transport answers "no such device".
+    public var isDisconnectable: Bool {
+        isNetworkTransport && !Self.mdnsSuffixes.contains(where: serial.hasSuffix)
     }
 }
 

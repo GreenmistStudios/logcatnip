@@ -15,7 +15,9 @@ CONFIG=debug scripts/build-app.sh            # debug app bundle
 ```
 
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions. `LOGCATNIP_WIFI_SHEET=qr|code|ip`,
+`LOGCATNIP_WIFI_CONNECT=host:port|discovered` and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` drive the
+Connect over Wi-Fi flows without clicking; the debug report has a `wireless:` line.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`. Run all three before you call a change done.
@@ -33,6 +35,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `Devices.swift`: `adb track-devices` decoding and device properties.
   - `DeviceIdentity.swift`: device identity (serial number, AVD name, mDNS serial), transport kind, and
     matching sessions to transports.
+  - `Wireless.swift`: mDNS service parsing and tracking (`adb mdns`), the QR pairing payload, `adb pair`,
+    `connect` and `disconnect` output, and matching discovered services to devices.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
@@ -43,6 +47,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
+  - `WirelessModel.swift`, `WirelessConnectView.swift`, `QRCodeImage.swift`: the Connect over Wi-Fi sheet,
+    its QR code, and the sidebar's Discovered list.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
 - `Tests/LogcatKitTests/`: Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`). Device tests
   are gated on `LOGCATNIP_DEVICE_TESTS=1`.

@@ -24,6 +24,21 @@ struct ContentView: View {
             }
             return !urls.isEmpty
         }
+        .sheet(isPresented: Binding(
+            get: { model.wireless.isSheetPresented },
+            set: { if !$0 { model.wireless.sheetDismissed() } }
+        )) {
+            WirelessConnectView()
+                .environment(model)
+        }
+        .alert("Couldn't Disconnect", isPresented: Binding(
+            get: { model.wireless.alertMessage != nil },
+            set: { if !$0 { model.wireless.alertMessage = nil } }
+        )) {
+            Button("OK") {}
+        } message: {
+            Text(model.wireless.alertMessage ?? "")
+        }
     }
 }
 
@@ -70,7 +85,7 @@ struct SidebarView: View {
                 }
             }
 
-            Section("Devices") {
+            Section {
                 let groups = model.deviceGroups
                 if groups.isEmpty {
                     Text("No devices")
@@ -78,6 +93,30 @@ struct SidebarView: View {
                 }
                 ForEach(groups) { group in
                     DeviceRow(group: group)
+                }
+            } header: {
+                HStack {
+                    Text("Devices")
+                    Spacer()
+                    Menu {
+                        Button("Connect over Wi-Fi…") { model.wireless.presentSheet(tab: .qrCode) }
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Add a device")
+                    .disabled(model.adb == nil)
+                }
+            }
+
+            let discovered = model.wireless.discovered
+            if !discovered.isEmpty {
+                Section("Discovered") {
+                    ForEach(discovered) { service in
+                        DiscoveredRow(service: service)
+                    }
                 }
             }
 
@@ -162,6 +201,20 @@ private struct DeviceRow: View {
                     }
                 }
             }
+            // Offered in any state, so a stale offline connection can be dropped too.
+            let disconnectable = group.transports.filter { $0.descriptor.isDisconnectable }
+            if !disconnectable.isEmpty {
+                Divider()
+                if disconnectable.count == 1 {
+                    Button("Disconnect") { model.wireless.disconnect(serial: disconnectable[0].serial) }
+                } else {
+                    Menu("Disconnect") {
+                        ForEach(disconnectable) { device in
+                            Button(device.serial) { model.wireless.disconnect(serial: device.serial) }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -175,6 +228,48 @@ private struct DeviceRow: View {
     private func copy(_ serial: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(serial, forType: .string)
+    }
+}
+
+/// A device that advertises wireless debugging but isn't connected: one click connects it.
+private struct DiscoveredRow: View {
+    @Environment(AppModel.self) private var model
+    let service: MdnsService
+
+    var body: some View {
+        let wireless = model.wireless
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(service.displayName)
+                        .lineLimit(1)
+                    Text(service.address ?? service.mdnsName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if wireless.connecting.contains(service.id) {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button("Connect") { wireless.connect(service) }
+                        .buttonStyle(.borderless)
+                }
+            }
+            if let message = wireless.connectErrors[service.id] {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                    .help(message)
+            }
+        }
+        .help(service.mdnsName)
     }
 }
 

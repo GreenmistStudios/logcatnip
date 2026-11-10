@@ -12,6 +12,12 @@ Android Studio's Logcat window.
   logs and resume where they left off when it comes back, even on a new Wi-Fi port, as an emulator on
   another port, or over Wi-Fi after you unplug USB. When both USB and Wi-Fi are connected, logs stream over
   USB.
+- **Wireless debugging.** Devices › + › Connect over Wi-Fi… (⇧⌘N) pairs an Android 11 or later device with a
+  QR code or a pairing code, or connects to `host:port` (recent hosts are remembered). Devices that
+  advertise wireless debugging but aren't connected appear under Discovered with a Connect button. Devices
+  connected by address can be disconnected from their context menu; adb can't disconnect devices it
+  connected over mDNS, so turn off Wireless debugging on the device for those. If `adb server-status` shows
+  `mdns_enabled: false`, the window explains how to turn mDNS on.
 - **Android Studio filter syntax.** `tag:`, `package:`, `process:`, `message:`, `line:`, `level:`, `age:`,
   `is:crash`, `is:stacktrace`, `name:`, plus `pid:` and `tid:`. Every text key supports contains (`key:`),
   exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with `&`, `|` and parentheses.
@@ -33,6 +39,8 @@ Android Studio's Logcat window.
 - Xcode 16 / Swift 6 toolchain to build
 - `adb` from the Android SDK platform-tools. Logcatnip looks in `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`,
   `~/Library/Android/sdk`, Homebrew and `PATH`, or you can set the path in Settings.
+- Wireless pairing needs recent platform-tools with mDNS (`adb mdns check`) and the Mac and device on the
+  same network.
 
 ## Build and run
 
@@ -53,6 +61,8 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_WIFI_SHEET=qr|code|ip` opens the Connect over Wi-Fi sheet, `LOGCATNIP_WIFI_CONNECT=host:port|discovered`
+connects, and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` pairs, without clicking.
 
 ## Filter reference
 
@@ -78,7 +88,8 @@ them.
 ## Layout
 
 - `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime), the filter language, and adb
-  (device tracking, logcat streaming, process names). No UI dependencies.
+  (device tracking, logcat streaming, process names, wireless pairing and mDNS discovery). No UI
+  dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
 

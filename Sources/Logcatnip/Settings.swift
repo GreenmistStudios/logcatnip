@@ -11,6 +11,7 @@ enum SettingsKey {
     static let favoriteFilters = "favoriteFilters"
     static let autoOpenSessions = "autoOpenSessions"
     static let wrapLines = "wrapLines"
+    static let recentWifiHosts = "recentWifiHosts"
 }
 
 enum Defaults {
@@ -24,6 +25,7 @@ enum Defaults {
             SettingsKey.autoOpenSessions: true,
             SettingsKey.wrapLines: false,
             SettingsKey.logcatBuffers: "",
+            SettingsKey.recentWifiHosts: [String](),
         ])
     }
 
@@ -80,5 +82,25 @@ enum FilterLibrary {
 
     static func clearHistory() {
         UserDefaults.standard.removeObject(forKey: SettingsKey.filterHistory)
+    }
+}
+
+/// Hosts connected over Wi-Fi by address, newest first, so the Connect over Wi-Fi sheet can offer them again.
+enum WirelessHosts {
+    static let limit = 10
+
+    static var recent: [String] {
+        UserDefaults.standard.stringArray(forKey: SettingsKey.recentWifiHosts) ?? []
+    }
+
+    /// `host` is the normalized `host:port` that `adb connect` accepted.
+    static func remember(_ host: String) {
+        var items = recent.filter { $0 != host }
+        items.insert(host, at: 0)
+        UserDefaults.standard.set(Array(items.prefix(limit)), forKey: SettingsKey.recentWifiHosts)
+    }
+
+    static func forget(_ host: String) {
+        UserDefaults.standard.set(recent.filter { $0 != host }, forKey: SettingsKey.recentWifiHosts)
     }
 }
