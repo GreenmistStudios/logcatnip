@@ -67,11 +67,20 @@ public struct LogcatFileMetadata: Sendable, Equatable {
     public var filter: String
     /// In file order.
     public var projectApplicationIds: [String]
+    /// Logcatnip's own addition, for the ignore lists: tags and packages that were hidden when the file was saved.
+    /// Android Studio doesn't write these keys and ignores them on read. Empty until the ignore lists exist.
+    public var ignoredTags: [String]
+    public var ignoredPackages: [String]
 
-    public init(device: LogcatFileDevice?, filter: String, projectApplicationIds: [String]) {
+    public init(
+        device: LogcatFileDevice?, filter: String, projectApplicationIds: [String],
+        ignoredTags: [String] = [], ignoredPackages: [String] = []
+    ) {
         self.device = device
         self.filter = filter
         self.projectApplicationIds = projectApplicationIds
+        self.ignoredTags = ignoredTags
+        self.ignoredPackages = ignoredPackages
     }
 
     /// `package:mine` in a shared file meant the sender's packages, which are not the reader's. This is a port of
@@ -100,7 +109,8 @@ public enum LogcatFile {
         let file = try JSONDecoder().decode(FileDTO.self, from: data)
         let metadata = file.metadata.map {
             LogcatFileMetadata(
-                device: $0.device?.device, filter: $0.filter ?? "", projectApplicationIds: $0.projectApplicationIds ?? []
+                device: $0.device?.device, filter: $0.filter ?? "", projectApplicationIds: $0.projectApplicationIds ?? [],
+                ignoredTags: $0.ignoredTags ?? [], ignoredPackages: $0.ignoredPackages ?? []
             )
         }
         var entries: [LogEntry] = []
@@ -122,6 +132,8 @@ public enum LogcatFile {
         var device: DeviceDTO?
         var filter: String?
         var projectApplicationIds: [String]?
+        var ignoredTags: [String]?
+        var ignoredPackages: [String]?
     }
 
     private struct DeviceDTO: Decodable {
