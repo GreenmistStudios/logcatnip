@@ -150,6 +150,44 @@ import Testing
     }
 }
 
+@Suite struct YearInferenceTests {
+    private let utc = TimeZone(identifier: "UTC")!
+
+    private func millis(_ date: String, _ time: String, reference: Double) -> Int64? {
+        LogcatTime.parse(date: date, time: time, timeZone: utc, referenceDate: Date(timeIntervalSince1970: reference))
+            .map(LogcatTime.milliseconds)
+    }
+
+    @Test func missingYearUsesReferenceYear() {
+        // Reference 2026-11-10 12:00 UTC.
+        #expect(millis("11-09", "13:11:17.123", reference: 1794312000) == 1794229877123)
+    }
+
+    @Test func timeMoreThanADayAfterReferenceIsPreviousYear() {
+        // Reference 2027-01-05 12:00 UTC: a Dec 31 time is last year's.
+        #expect(millis("12-31", "23:59:59.000", reference: 1799150400) == 1798761599000)
+    }
+
+    @Test func timeWithinADayAfterReferenceKeepsYear() {
+        // Reference 2027-01-01 00:00 UTC.
+        #expect(millis("01-01", "20:00:00.000", reference: 1798761600) == 1798833600000)
+        // Exactly one day after is not "more than a day".
+        #expect(millis("01-02", "00:00:00.000", reference: 1798761600) == 1798848000000)
+        #expect(millis("01-02", "00:00:00.001", reference: 1798761600) == 1767312000001)
+    }
+
+    @Test func explicitYearIsHonored() {
+        // Reference 2027-01-05 12:00 UTC; a year in the text is never moved.
+        #expect(millis("2027-03-01", "00:00:00.000", reference: 1799150400) == 1803859200000)
+        #expect(millis("2025-12-31", "23:59:59.000", reference: 1799150400) == 1767225599000)
+    }
+
+    @Test func leapDayFallsBackToLeapYear() {
+        // 02-29 does not exist in 2029; it normalizes to Mar 1 2029, which is after the reference, so 2028 wins.
+        #expect(millis("02-29", "12:00:00.000", reference: 1862697600) == 1835438400000)
+    }
+}
+
 @Suite struct ThreadtimeParserTests {
     @Test func parsesThreadtimeLine() throws {
         let entry = try #require(LogcatThreadtimeFormat.parseLine("11-09 13:11:17.123  1234  5678 I ActivityManager: Start proc 4321:com.example/u0a123"))
@@ -181,6 +219,47 @@ import Testing
     @Test func importerDetectsFormat() {
         #expect(LogFileImporter.parse("[ 1.000  1: 2 I/Tag ]\nhello\n\n").first?.tag == "Tag")
         #expect(LogFileImporter.parse("11-09 13:11:17.123  1  2 I Tag: hello").first?.message == "hello")
+    }
+
+    /// 2027-01-05 12:00 in the Mac's time zone, so the expectations below hold wherever the tests run.
+    private var januaryReference: Date {
+        Date(timeIntervalSince1970: LogcatTime.parse(date: "2027-01-05", time: "12:00:00.000")!)
+    }
+
+    private let newYearText = """
+    12-31 23:59:59.000  1234  1234 I Tag: last of the year
+    01-01 00:00:01.000  1234  1234 I Tag: first of the year
+    """
+
+    @Test func importsDecemberLineFromJanuaryFileAsPreviousYear() throws {
+        let entries = LogcatThreadtimeFormat.parse(newYearText, referenceDate: januaryReference)
+        #expect(entries.count == 2)
+        #expect(entries.first?.timestamp == LogcatTime.parse(date: "2026-12-31", time: "23:59:59.000"))
+        #expect(entries.last?.timestamp == LogcatTime.parse(date: "2027-01-01", time: "00:00:01.000"))
+    }
+
+    @Test func honorsYearColumn() throws {
+        let entry = try #require(LogcatThreadtimeFormat.parseLine(
+            "2025-12-31 23:59:59.000  1234  1234 I Tag: old", referenceDate: januaryReference))
+        #expect(entry.timestamp == LogcatTime.parse(date: "2025-12-31", time: "23:59:59.000"))
+    }
+
+    @Test func importerInfersYearForLegacyLongHeaders() {
+        let entries = LogFileImporter.parse("[ 12-31 23:59:59.000  1234: 1234 I/Tag ]\nmsg\n\n", referenceDate: januaryReference)
+        #expect(entries.count == 1)
+        #expect(entries.first?.timestamp == LogcatTime.parse(date: "2026-12-31", time: "23:59:59.000"))
+    }
+
+    @Test func importerUsesFileModificationDate() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("logcatnip-\(UUID().uuidString).txt").path
+        try newYearText.write(toFile: path, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try FileManager.default.setAttributes([.modificationDate: januaryReference], ofItemAtPath: path)
+        // A fresh URL: resource values are cached per URL instance.
+        let entries = try LogFileImporter.load(contentsOf: URL(fileURLWithPath: path))
+        #expect(entries.count == 2)
+        #expect(entries.first?.timestamp == LogcatTime.parse(date: "2026-12-31", time: "23:59:59.000"))
     }
 }
 

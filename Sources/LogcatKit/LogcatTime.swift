@@ -7,22 +7,28 @@ public enum LogcatTime {
         Double(text)
     }
 
-    /// Parses `MM-DD` or `YYYY-MM-DD` plus `HH:MM:SS.mmm` into seconds since 1970, in the local time zone.
-    /// When the year is missing, the current year is assumed.
-    public static func parse<S: StringProtocol>(date: S, time: S, timeZone: TimeZone = .current) -> Double? {
+    /// Parses `MM-DD` or `YYYY-MM-DD` plus `HH:MM:SS.mmm` into seconds since 1970, in `timeZone`.
+    ///
+    /// Threadtime and legacy long lines carry no year. It comes from `referenceDate`, the file's modification
+    /// date for an import or now for a live stream: a log can't be written after it was saved, so a time more
+    /// than a day after the reference belongs to the year before. The day of slack absorbs clock and time zone
+    /// differences between the device and the Mac. A year in the text (`-v year`) is used as is.
+    public static func parse<S: StringProtocol>(
+        date: S, time: S, timeZone: TimeZone = .current, referenceDate: Date = Date()
+    ) -> Double? {
         let dateParts = date.split(separator: "-")
-        let year: Int
+        let explicitYear: Int?
         let month: Int
         let day: Int
         switch dateParts.count {
         case 2:
             guard let m = Int(dateParts[0]), let d = Int(dateParts[1]) else { return nil }
-            year = Calendar(identifier: .gregorian).component(.year, from: Date())
+            explicitYear = nil
             month = m
             day = d
         case 3:
             guard let y = Int(dateParts[0]), let m = Int(dateParts[1]), let d = Int(dateParts[2]) else { return nil }
-            year = y
+            explicitYear = y
             month = m
             day = d
         default:
@@ -37,9 +43,20 @@ public enum LogcatTime {
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
-        let components = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute)
-        guard let base = calendar.date(from: components) else { return nil }
-        return base.timeIntervalSince1970 + seconds
+        func epoch(year: Int) -> Double? {
+            let components = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute)
+            return calendar.date(from: components).map { $0.timeIntervalSince1970 + seconds }
+        }
+
+        if let explicitYear { return epoch(year: explicitYear) }
+        let referenceYear = calendar.component(.year, from: referenceDate)
+        guard let result = epoch(year: referenceYear) else { return nil }
+        // Feb 29 needs no special case: in a common year it normalizes to Mar 1, which lands past the reference
+        // and falls back to the previous year, a leap year when the log really has a Feb 29.
+        if result > referenceDate.timeIntervalSince1970 + 86_400 {
+            return epoch(year: referenceYear - 1) ?? result
+        }
+        return result
     }
 
     /// Whole milliseconds, rounded. Every printed time goes through this, so the table, Copy and Export agree
