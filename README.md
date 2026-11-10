@@ -15,7 +15,8 @@ Android Studio's Logcat window.
   Without operators, same-key terms are ORed and everything else is ANDed, as in Android Studio.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
-  traces, column hiding (right-click the header), and follow mode that stops when you scroll up.
+  traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
+  lines scroll horizontally, or turn on Wrap Lines in the toolbar to wrap them to the window width.
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or set the
   minimum level.
 - **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker.
