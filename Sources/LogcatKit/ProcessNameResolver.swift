@@ -12,6 +12,7 @@ public struct ProcessNameResolver: Sendable {
         /// Entries with a lower sequence number were ingested before the request started.
         public let startSeq: Int
         let previousStartSeq: Int?
+        let hadTentativeRetry: Bool
     }
 
     /// A name for a pid whose entries were waiting, valid for its entries from `firstSeq` on.
@@ -77,12 +78,24 @@ public struct ProcessNameResolver: Sendable {
         }
     }
 
+    /// What `ps` shows for a process that was forked from a zygote (or taken from its pre-forked pool)
+    /// and has not renamed itself to the app yet. Seen in a snapshot, such a name says nothing about
+    /// which app the pid will be.
+    static let forkNames: Set<String> = [
+        "zygote", "zygote32", "zygote64", "webview_zygote", "usap32", "usap64", "<pre-initialized>",
+    ]
+
     private struct Pending: Sendable { var oldest: Int; var newest: Int; var strikes: Int }
     private struct Dead: Sendable { var strikes: Int; var retryAt: Double }
 
     private var running: [Int32: Binding] = [:]
     private var pending: [Int32: Pending] = [:]
     private var dead: [Int32: Dead] = [:]
+    /// Pids that one snapshot showed under a `forkNames` name. They stay unnamed until a later snapshot
+    /// shows the pid again: the same name means it really is a zygote, another name is the app.
+    private var tentative: Set<Int32> = []
+    /// Set while a tentative pid has waiting entries that no new entry will prompt a lookup for.
+    private var tentativeRetry = false
     private var lastLookupStart: Int?
     private var newestPendingSeq: Int?
     private let retryDelays: [Double]
@@ -98,8 +111,11 @@ public struct ProcessNameResolver: Sendable {
 
     public var stats: Stats { Stats(running: running.count, pending: pending.count, unresolvable: dead.count) }
 
-    /// Whether some waiting entry arrived after the last lookup started, so another `ps` could name it.
+    /// Whether another `ps` could name a waiting entry: one arrived after the last lookup started, or a
+    /// pid is waiting for a second look at its zygote name. The owner spaces lookups out (the session
+    /// throttles to 1.5 s), which is what gives a forked process time to rename itself.
     public var needsLookup: Bool {
+        if tentativeRetry { return true }
         guard let newestPendingSeq else { return false }
         guard let lastLookupStart else { return true }
         return newestPendingSeq >= lastLookupStart
@@ -133,14 +149,16 @@ public struct ProcessNameResolver: Sendable {
 
     /// Call when a `ps` request starts. `seq` is the sequence number the next ingested entry will get.
     public mutating func beginLookup(seq: Int) -> Lookup {
-        let lookup = Lookup(startSeq: seq, previousStartSeq: lastLookupStart)
+        let lookup = Lookup(startSeq: seq, previousStartSeq: lastLookupStart, hadTentativeRetry: tentativeRetry)
         lastLookupStart = seq
+        tentativeRetry = false
         return lookup
     }
 
     /// Call when a lookup failed, so the pids it covered still count as needing one.
     public mutating func cancelLookup(_ lookup: Lookup) {
         if lastLookupStart == lookup.startSeq { lastLookupStart = lookup.previousStartSeq }
+        if lookup.hadTentativeRetry { tentativeRetry = true }
     }
 
     /// Applies a complete pid -> name snapshot taken by `lookup`. The snapshot is authoritative for
@@ -150,10 +168,19 @@ public struct ProcessNameResolver: Sendable {
         for (pid, binding) in running where names[pid] == nil && binding.isSuperseded(byLookupStartingAt: start) {
             running[pid] = nil
         }
+        tentative = tentative.filter { names[$0] != nil }
         var update = Update()
         for (pid, name) in names {
             if let binding = running[pid], !binding.isSuperseded(byLookupStartingAt: start) { continue }
+            if Self.forkNames.contains(name), !(tentative.contains(pid) || running[pid]?.name == name) {
+                // First sighting under a zygote name: wait for a second look instead of trusting it.
+                running[pid] = nil
+                tentative.insert(pid)
+                dead[pid] = nil
+                continue
+            }
             running[pid] = Binding(name: name, since: start, fromEvent: false)
+            tentative.remove(pid)
             dead[pid] = nil
             if let waiting = pending.removeValue(forKey: pid) {
                 update.assignments[pid] = Assignment(name: name, firstSeq: waiting.oldest)
@@ -162,12 +189,13 @@ public struct ProcessNameResolver: Sendable {
         // Entries ingested before the request started were written by processes that already existed
         // when `ps` ran, so a pid missing from the snapshot had exited. Newer entries might come from a
         // process that started after `ps` read /proc; they wait for the next snapshot.
-        for (pid, waiting) in pending where waiting.newest < start {
+        for (pid, waiting) in pending where waiting.newest < start && !tentative.contains(pid) {
             pending[pid] = nil
             let strikes = waiting.strikes + 1
             dead[pid] = Dead(strikes: strikes, retryAt: now + retryDelays[min(strikes, retryDelays.count) - 1])
         }
         newestPendingSeq = pending.values.map(\.newest).max()
+        tentativeRetry = tentative.contains { pending[$0] != nil }
         return update
     }
 
@@ -175,11 +203,13 @@ public struct ProcessNameResolver: Sendable {
     /// on and fills in its waiting entries.
     public mutating func processStarted(pid: Int32, name: String, seq: Int) -> Update {
         running[pid] = Binding(name: name, since: seq, fromEvent: true)
+        tentative.remove(pid)
         dead[pid] = nil
         var update = Update()
         if let waiting = pending.removeValue(forKey: pid) {
             update.assignments[pid] = Assignment(name: name, firstSeq: waiting.oldest)
             newestPendingSeq = pending.values.map(\.newest).max()
+            tentativeRetry = tentative.contains { pending[$0] != nil }
         }
         return update
     }

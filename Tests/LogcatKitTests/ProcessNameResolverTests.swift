@@ -145,6 +145,74 @@ private struct Harness {
         #expect(h.name(e) == "com.b")
     }
 
+    @Test func forkedAppIsNotNamedAfterItsZygote() {
+        // `ps` shows a freshly forked app under its zygote's name until it renames itself.
+        var h = Harness()
+        let lookup = h.begin()
+        let e1 = h.log(500)
+        h.finish(lookup, [500: "zygote64"])
+        #expect(h.name(e1) == nil)
+        #expect(h.resolver.stats.running == 0)
+        #expect(h.resolver.stats.unresolvable == 0)
+        #expect(h.resolver.needsLookup)
+
+        let e2 = h.log(500)
+        #expect(h.name(e2) == nil)
+        h.snapshot([500: "com.app"])
+        #expect(h.name(e1) == "com.app")
+        #expect(h.name(e2) == "com.app")
+        let e3 = h.log(500)
+        #expect(h.name(e3) == "com.app")
+    }
+
+    @Test func zygoteNameIsTrustedOnceASecondSnapshotRepeatsIt() {
+        var h = Harness()
+        let e1 = h.log(384)
+        h.snapshot([384: "zygote64"])
+        #expect(h.name(e1) == nil)
+        #expect(h.resolver.needsLookup)
+
+        h.snapshot([384: "zygote64"])
+        #expect(h.name(e1) == "zygote64")
+        let e2 = h.log(384)
+        #expect(h.name(e2) == "zygote64")
+        #expect(!h.resolver.needsLookup)
+    }
+
+    @Test func reusedPidCaughtInForkWindowDropsOldName() {
+        var h = Harness()
+        h.snapshot([9: "com.a"])
+        let a = h.log(9)
+        h.snapshot([9: "zygote64"])
+        #expect(h.resolver.stats.running == 0)
+        let b = h.log(9)
+        #expect(h.name(b) == nil)
+        h.snapshot([9: "com.b"])
+        #expect(h.name(a) == "com.a")
+        #expect(h.name(b) == "com.b")
+    }
+
+    @Test func forkedProcessThatExitsBeforeRenamingIsMarkedUnresolvable() {
+        var h = Harness()
+        let e = h.log(500)
+        h.snapshot([500: "zygote64"])
+        h.snapshot([:])
+        #expect(h.name(e) == nil)
+        #expect(h.resolver.stats.unresolvable == 1)
+        #expect(!h.resolver.needsLookup)
+    }
+
+    @Test func zygoteNameLookupIsRequestedOnceWithoutNewEntries() {
+        var h = Harness()
+        h.log(500)
+        h.snapshot([500: "zygote64"])
+        #expect(h.resolver.needsLookup)
+        let lookup = h.begin()
+        #expect(!h.resolver.needsLookup)
+        h.resolver.cancelLookup(lookup)
+        #expect(h.resolver.needsLookup)
+    }
+
     @Test func cancelledLookupStillNeedsLookup() {
         var h = Harness()
         h.log(42)
