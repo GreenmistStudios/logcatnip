@@ -121,6 +121,66 @@ enum LogFileFixtures {
     }
     """#
 
+    /// A bug report trimmed from a real API 37 emulator: header, dumpsys process lines, SYSTEM, EVENT and RADIO
+    /// logs with a uid column, an empty STATS LOG, a failed LAST LOGCAT, properties and the second SYSTEM LOG
+    /// (`-T`) whose first lines repeat the end of the first.
+    static let bugreport = #"""
+    ========================================================
+    == dumpstate: 2026-11-10 08:01:48
+    ========================================================
+
+    Build: CE2A.260420.051.A2
+    Build fingerprint: 'google/sdk_gphone64_arm64/emu64a:17/CE2A.260420.051.A2/16418371:user/release-keys'
+    Bootloader: unknown
+    Radio: 1.0.0.0
+    Network: T-Mobile
+    Module Metadata version: 370518000
+    Android SDK version: 37
+    ------ DUMPSYS CRITICAL (/system/bin/dumpsys -t 100 -T 10000 --priority CRITICAL --proto) ------
+            app=ProcessRecord{4ffbd8a 1038:com.google.android.apps.nexuslauncher/u0a196}
+      VisibleActivityProcess:[ ProcessRecord{4ffbd8a 1038:com.google.android.apps.nexuslauncher/u0a196}]
+    --------- 0.128s was the duration of dumpsys activity, ending at: 2026-11-10 08:01:50
+    ------ SYSTEM LOG (logcat -v threadtime -v printable -v uid -d *:v) ------
+    --------- beginning of system
+    11-10 06:03:21.874  root   254   254 I vold    : Vold 3.0 (the awakening) firing up
+    11-10 06:03:21.874  root   254   254 D vold    : Detected support for: ext4 f2fs vfat
+    --------- beginning of main
+    11-10 08:01:51.178 10196  1038  1038 D Launcher: first line
+    11-10 08:01:51.178 10196  1038  1038 D Launcher: second line
+    11-10 08:01:51.186 10163 26351 26367 D WM-GreedyScheduler: Cancelling work ID ad32dabf
+    ------ 0.606s was the duration of 'SYSTEM LOG' ------
+    ------ EVENT LOG (logcat -b events -v threadtime -v printable -v uid -d *:v) ------
+    --------- beginning of events
+    11-10 06:03:21.851  1000   244   244 I auditd  : SELinux: Loaded service context from:
+    11-10 06:03:22.002  1000   612   612 I am_proc_start: [0,1038,10196,com.google.android.apps.nexuslauncher,top-activity]
+    ------ 0.016s was the duration of 'EVENT LOG' ------
+    ------ STATS LOG (logcat -b stats -v threadtime -v printable -v uid -d *:v) ------
+    ------ 0.002s was the duration of 'STATS LOG' ------
+    ------ RADIO LOG (logcat -b radio -v threadtime -v printable -v uid -d *:v) ------
+    --------- beginning of radio
+    11-10 06:03:34.594  1000   608   608 D TelephonyRegistry: listen oscl: no callback
+    11-10 08:01:31.591 radio  1029  1029 D DN-101-C: ConnectedState: Capabilities not changed.
+    ------ 0.018s was the duration of 'RADIO LOG' ------
+    ------ LAST LOGCAT (logcat -L -b all -v threadtime -v printable -v uid -d *:v) ------
+    *** command 'logcat -L -b all -v threadtime -v printable -v uid -d *:v' failed: exit code 1
+    ------ 0.003s was the duration of 'LAST LOGCAT' ------
+    ------ SYSTEM PROPERTIES (getprop) ------
+    [ro.boot.qemu.avd_name]: [Medium_Phone_API_37.0]
+    [ro.build.version.release]: [17]
+    [ro.build.version.sdk]: [37]
+    [ro.product.manufacturer]: [Google]
+    [ro.product.model]: [sdk_gphone64_arm64]
+    [ro.serialno]: [EMULATOR37X2X12X0]
+    ------ 0.005s was the duration of 'SYSTEM PROPERTIES' ------
+    ------ SYSTEM LOG (logcat -v threadtime -v printable -v uid -d *:v -T 2026-11-10 08:01:51.000) ------
+    --------- beginning of main
+    11-10 08:01:51.178 10196  1038  1038 D Launcher: first line
+    11-10 08:01:51.178 10196  1038  1038 D Launcher: second line
+    11-10 08:01:51.186 10163 26351 26367 D WM-GreedyScheduler: Cancelling work ID ad32dabf
+    11-10 08:02:07.409 shell 32542 32542 D dumpstate: Duration of 'DUMPSTATE': 13.67s
+    ------ 0.021s was the duration of 'SYSTEM LOG' ------
+    """#
+
     /// The first five lines of Android Studio's `logcat-firebase.txt`, the first two of its expected messages.
     static let firebase = #"""
     05-16 07:39:26.519: D/AOC(1054): A3:MSG: window_orientation.c, 697: [WO] Proposed rotation: 1, flat angle threshold: 40
@@ -428,5 +488,110 @@ enum LogFileFixtures {
     @Test func mineMatchingMyPackages() {
         #expect(filter("foo package:mine tag:Bar", ["package1", "package2"], my: ["package2", "package1"])
             == "foo package:mine tag:Bar")
+    }
+}
+
+// MARK: Bug reports
+
+@Suite struct BugreportParserTests {
+    let fallback = Date(timeIntervalSince1970: LogcatTime.parse(date: "2030-01-01", time: "00:00:00.000")!)
+
+    private func parse(_ text: String = LogFileFixtures.bugreport) -> (
+        entries: [LogFileSection: [LogEntry]], info: LogFileInfo, processNames: [Int32: String]
+    ) {
+        BugreportParser.parse(text, fallbackReference: fallback)
+    }
+
+    @Test func splitsLogSections() {
+        let result = parse()
+        let main = result.entries[.main] ?? []
+        #expect(main.map(\.tag) == ["vold", "vold", "Launcher", "WM-GreedyScheduler", "dumpstate"])
+        #expect(main[2].message == "first line\nsecond line")
+        let events = result.entries[.events] ?? []
+        #expect(events.map(\.tag) == ["auditd", "am_proc_start"])
+        let radio = result.entries[.radio] ?? []
+        #expect(radio.map(\.tag) == ["TelephonyRegistry", "DN-101-C"])
+    }
+
+    @Test func readsUidColumn() throws {
+        let main = try #require(parse().entries[.main])
+        #expect(main[0].uid == "root")
+        #expect(main[0].pid == 254)
+        #expect(main[0].tid == 254)
+        #expect(main[0].level == .info)
+        #expect(main[4].uid == "shell")
+        #expect(main[3].uid == "10163")
+    }
+
+    @Test func readsHeaderAndProperties() {
+        let info = parse().info
+        #expect(info.fingerprint == "google/sdk_gphone64_arm64/emu64a:17/CE2A.260420.051.A2/16418371:user/release-keys")
+        #expect(info.build == "CE2A.260420.051.A2")
+        #expect(info.deviceName == "Medium Phone API 37.0")
+        #expect(info.release == "17")
+        #expect(info.apiLevel == 37)
+        #expect(info.serial == "EMULATOR37X2X12X0")
+        #expect(info.capturedAt?.timeIntervalSince1970 == LogcatTime.parse(date: "2026-11-10", time: "08:01:48.000"))
+        #expect(info.summary.hasPrefix("Medium Phone API 37.0 · Android 17, API 37 · google/"))
+    }
+
+    @Test func takesYearFromDumpstateTime() throws {
+        let main = try #require(parse().entries[.main])
+        #expect(LogcatTime.milliseconds(main[0].timestamp)
+            == LogcatTime.milliseconds(LogcatTime.parse(date: "2026-11-10", time: "06:03:21.874")!))
+
+        let newYear = """
+        ========================================================
+        == dumpstate: 2027-01-02 00:10:00
+        ========================================================
+        ------ SYSTEM LOG (logcat -v threadtime -d *:v) ------
+        12-31 23:59:00.000  1000  1  1 I Tag: x
+        ------ 0.1s was the duration of 'SYSTEM LOG' ------
+        """
+        let entry = try #require(parse(newYear).entries[.main]?.first)
+        #expect(entry.timestamp == LogcatTime.parse(date: "2026-12-31", time: "23:59:00.000"))
+    }
+
+    @Test func collectsProcessNamesFromDumpsys() {
+        #expect(parse().processNames == [1038: "com.google.android.apps.nexuslauncher"])
+    }
+
+    @Test func readsOldBugreportWithoutUidOrEndLines() {
+        let text = """
+        ------ SYSTEM LOG (logcat -v threadtime -d *:v) ------
+        11-09 13:11:17.123  1234  5678 I Tag: one
+        11-09 13:11:17.124  1234  5678 I Tag: two
+        ------ EVENT LOG (logcat -b events -v threadtime -d *:v) ------
+        11-09 13:11:17.125  1234  5678 I am_x: [1]
+        """
+        let result = parse(text)
+        #expect(result.entries[.main]?.count == 2)
+        #expect(result.entries[.events]?.count == 1)
+    }
+
+    @Test func doesNotMergeAcrossSections() {
+        let text = """
+        ------ SYSTEM LOG (logcat -v threadtime -d *:v) ------
+        11-09 13:11:17.123  1234  5678 I Tag: same
+        ------ 0.1s was the duration of 'SYSTEM LOG' ------
+        ------ RADIO LOG (logcat -b radio -v threadtime -d *:v) ------
+        11-09 13:11:17.123  1234  5678 I Tag: same
+        ------ 0.1s was the duration of 'RADIO LOG' ------
+        """
+        let result = parse(text)
+        #expect(result.entries[.main]?.map(\.message) == ["same"])
+        #expect(result.entries[.radio]?.map(\.message) == ["same"])
+    }
+
+    @Test func importerReadsTheSystemLogOfABugreport() {
+        let entries = LogFileImporter.parse(LogFileFixtures.bugreport)
+        #expect(entries.map(\.tag) == ["vold", "vold", "Launcher", "WM-GreedyScheduler", "dumpstate"])
+    }
+
+    @Test func dropsTheRepeatedSystemLogButKeepsLaterEntries() throws {
+        // The fixture's second SYSTEM LOG repeats three entries and adds the dumpstate line.
+        let main = try #require(parse().entries[.main])
+        #expect(main.filter { $0.tag == "Launcher" }.count == 1)
+        #expect(main.filter { $0.tag == "WM-GreedyScheduler" }.count == 1)
     }
 }
