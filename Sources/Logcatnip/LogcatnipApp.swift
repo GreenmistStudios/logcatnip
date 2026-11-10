@@ -92,16 +92,16 @@ struct LogcatCommands: Commands {
             .disabled(session == nil)
         }
         CommandGroup(after: .saveItem) {
-            Button("Export Visible Logs…") {
-                if let session { FilePanels.export(session, visibleOnly: true) }
+            Button("Save Visible Logs As…") {
+                if let session { FilePanels.save(session, visibleOnly: true) }
             }
             .keyboardShortcut("s")
-            .disabled(session == nil)
-            Button("Export All Logs…") {
-                if let session { FilePanels.export(session, visibleOnly: false) }
+            .disabled(session == nil || session?.isSaving == true)
+            Button("Save All Logs As…") {
+                if let session { FilePanels.save(session, visibleOnly: false) }
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(session == nil)
+            .disabled(session == nil || session?.isSaving == true)
         }
         CommandMenu("Logcat") {
             Button(session?.isPaused == true ? "Resume" : "Pause") { session?.isPaused.toggle() }
@@ -142,28 +142,109 @@ enum FilePanels {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.plainText, .log, .data]
+        panel.allowedContentTypes = [.logcatFile, .plainText, .log, .data]
         guard panel.runModal() == .OK else { return }
         for url in panel.urls {
             model.openFile(url)
         }
     }
 
-    static func export(_ session: LogSession, visibleOnly: Bool) {
+    /// Save As…: the panel offers the format and whether to save what is visible or everything. The format is
+    /// remembered for next time; the entries preset follows the menu item that was used.
+    static func save(_ session: LogSession, visibleOnly: Bool) {
+        guard !session.isSaving else { return }
+        let remembered = LogSaveFormat(rawValue: UserDefaults.standard.string(forKey: SettingsKey.saveFormat) ?? "") ?? .logcat
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        let stamp = LogcatTime.format(Date().timeIntervalSince1970).replacingOccurrences(of: ":", with: "-")
-        panel.nameFieldStringValue = "\(session.baseTitle) \(stamp).logcat.txt"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let text = session.exportText(visibleOnly: visibleOnly)
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            NSAlert(error: error).runModal()
-        }
+        panel.title = visibleOnly ? "Save Visible Logs" : "Save All Logs"
+        panel.allowedContentTypes = [remembered.contentType]
+        panel.isExtensionHidden = false
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = remembered.suggestedFileName(base: session.baseTitle, date: Date())
+        let accessory = SaveOptionsAccessory(
+            panel: panel, format: remembered, visibleOnly: visibleOnly,
+            visibleCount: session.visibleCount, totalCount: session.totalCount
+        )
+        panel.accessoryView = accessory.view
+        let response = withExtendedLifetime(accessory) { panel.runModal() }
+        guard response == .OK, let url = panel.url else { return }
+        UserDefaults.standard.set(accessory.format.rawValue, forKey: SettingsKey.saveFormat)
+        session.save(to: url, format: accessory.format, visibleOnly: accessory.visibleOnly)
+    }
+}
+
+/// The Format and Entries popups under the save panel. Changing the format switches the panel's file type and the
+/// extension of the name typed so far.
+@MainActor
+final class SaveOptionsAccessory: NSObject {
+    let view: NSView
+    private(set) var format: LogSaveFormat
+    private(set) var visibleOnly: Bool
+    private weak var panel: NSSavePanel?
+    private let formatPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let entriesPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+
+    init(panel: NSSavePanel, format: LogSaveFormat, visibleOnly: Bool, visibleCount: Int, totalCount: Int) {
+        self.panel = panel
+        self.format = format
+        self.visibleOnly = visibleOnly
+
+        formatPopup.addItems(withTitles: LogSaveFormat.allCases.map(\.title))
+        formatPopup.selectItem(at: LogSaveFormat.allCases.firstIndex(of: format) ?? 0)
+        entriesPopup.addItems(withTitles: [
+            "Visible entries (\(visibleCount.formatted()))", "All entries (\(totalCount.formatted()))",
+        ])
+        entriesPopup.selectItem(at: visibleOnly ? 0 : 1)
+
+        let grid = NSGridView(views: [
+            [NSTextField(labelWithString: "Format:"), formatPopup],
+            [NSTextField(labelWithString: "Entries:"), entriesPopup],
+        ])
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 8
+        grid.columnSpacing = 8
+        grid.column(at: 0).xPlacement = .trailing
+        grid.rowAlignment = .firstBaseline
+
+        let container = NSView()
+        container.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            grid.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            grid.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            grid.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+        ])
+        container.frame = NSRect(origin: .zero, size: container.fittingSize)
+        view = container
+
+        super.init()
+        formatPopup.target = self
+        formatPopup.action = #selector(formatChanged(_:))
+        entriesPopup.target = self
+        entriesPopup.action = #selector(entriesChanged(_:))
+    }
+
+    @objc private func formatChanged(_ sender: NSPopUpButton) {
+        guard LogSaveFormat.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
+        format = LogSaveFormat.allCases[sender.indexOfSelectedItem]
+        guard let panel else { return }
+        panel.allowedContentTypes = [format.contentType]
+        panel.nameFieldStringValue = format.fileName(switching: panel.nameFieldStringValue)
+    }
+
+    @objc private func entriesChanged(_ sender: NSPopUpButton) {
+        visibleOnly = sender.indexOfSelectedItem == 0
+    }
+}
+
+extension LogSaveFormat {
+    var contentType: UTType {
+        self == .logcat ? .logcatFile : .plainText
     }
 }
 
 extension UTType {
     static let log = UTType(filenameExtension: "log") ?? .plainText
+    /// Android Studio's `.logcat` JSON. Inside the app bundle this is the type declared in Info.plist; without it
+    /// (`swift run`) it is a dynamic type that still carries the extension.
+    static let logcatFile = UTType(filenameExtension: "logcat", conformingTo: .json) ?? .json
 }

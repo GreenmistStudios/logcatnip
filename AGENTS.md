@@ -21,6 +21,9 @@ Connect over Wi-Fi flows without clicking; the debug report has a `wireless:` li
 `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch; the debug report then prints each file's
 first and last times, as displayed and as exported, and a `file:` line per file (format, load progress, first
 process, device). The report also has `mainLagMax`, the longest main-thread stall since the last report.
+`LOGCATNIP_SAVE=/path/out.logcat` saves the selected session once after `LOGCATNIP_SAVE_DELAY` seconds (default 5),
+with `LOGCATNIP_SAVE_FORMAT=logcat|long|threadtime|plainText` and `LOGCATNIP_SAVE_SCOPE=all|visible`; the debug
+report then has a `save:` line (format, scope, progress, entries, bytes).
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`. Run all three before you call a change done.
@@ -47,6 +50,10 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `LogFileReader.swift`: reads a file in chunks off the main actor and hands it over as events, with
     progress and cancellation.
   - `LogcatFile.swift`: Android Studio `.logcat` JSON (device, filter, messages) and `safeGetFilter`.
+  - `LogcatFileWriter.swift`: Gson-exact `.logcat` writing, device descriptions for saving, AVD lookup. Its
+    tests compare against files Android Studio itself wrote.
+  - `LogSaveFormat.swift`: the save formats, threadtime and plain text lines, suggested file names.
+  - `LogFileWriter.swift`: streaming save off the main actor with progress and cancellation.
   - `Bugreport.swift`: bug report text split into system, event and radio logs, and the `adb bugreport`
     zip (extracted with `/usr/bin/unzip`).
   - `LogFileInfo.swift`: device, build and capture time of a saved log, for the status bar.
@@ -58,6 +65,7 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
   - `FileLoader.swift`: loads one log file into its sessions (one per bug report buffer) and exposes
     progress and Cancel for the status bar.
+  - `FileSaver.swift`: one save of a session to a file, with the same progress and Cancel.
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.

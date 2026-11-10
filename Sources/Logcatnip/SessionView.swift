@@ -70,8 +70,10 @@ private struct SessionToolbar: ToolbarContent {
             Menu {
                 Toggle("Show Date", isOn: $showDate)
                 Divider()
-                Button("Export Visible Logs…") { FilePanels.export(session, visibleOnly: true) }
-                Button("Export All Logs…") { FilePanels.export(session, visibleOnly: false) }
+                Button("Save Visible Logs As…") { FilePanels.save(session, visibleOnly: true) }
+                    .disabled(session.isSaving)
+                Button("Save All Logs As…") { FilePanels.save(session, visibleOnly: false) }
+                    .disabled(session.isSaving)
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
             }
@@ -262,10 +264,26 @@ struct StatusBar: View {
         .padding(.vertical, 4)
     }
 
-    /// The status, or while a file loads, how far it has got, with a progress bar and Cancel for big files.
+    /// The status, or while a file loads or a save runs, how far it has got, with a progress bar and Cancel for big files.
     @ViewBuilder
     private var statusText: some View {
-        if let loader = session.fileLoader, loader.state == .running {
+        if let saver = session.fileSaver, saver.state == .running {
+            if saver.showsProgress {
+                ProgressView(value: saver.fraction)
+                    .progressViewStyle(.linear)
+                    .controlSize(.small)
+                    .frame(width: 120)
+                Button("Cancel") { saver.cancel() }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+            Text("Saving… \(Int(saver.fraction * 100))%")
+                .foregroundStyle(.secondary)
+        } else if let saver = session.fileSaver, saver.showsSavedNotice {
+            Text("Saved “\(saver.url.lastPathComponent)”")
+                .foregroundStyle(.secondary)
+                .help(saver.url.path)
+        } else if let loader = session.fileLoader, loader.state == .running {
             if loader.showsProgress {
                 ProgressView(value: loader.progress?.fraction)
                     .progressViewStyle(.linear)

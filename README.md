@@ -34,7 +34,10 @@ Android Studio's Logcat window.
   separate sessions, with the device and build fingerprint in the status bar), Firebase Crashlytics logs, and
   threadtime, `-v long`, `-v time` and `-v brief` text. Drop files on the window or use File › Open Log File…
   (⌘O). Large files load in the background with a progress bar and Cancel; Logcatnip keeps the newest entries
-  up to Settings › Logcat › Keep up to. Export writes `logcat -v long` format. Threadtime and old `-v long`
+  up to Settings › Logcat › Keep up to. File › Save Visible Logs As… (⌘S) and Save All Logs As… (⇧⌘S) save in
+  Android Studio's `.logcat` format, which keeps process names, the device, the filter and My packages and
+  opens in Android Studio; or as `logcat -v long`, threadtime, or plain text as the table shows it. Big saves
+  run in the background with a progress bar and Cancel. Threadtime and old `-v long`
   lines have no year, so Logcatnip takes it from the file's modification date, and a time more than a day
   after that date belongs to the year before. Lines that carry a year (`-v year`) keep it.
 - Pause, clear the view, clear the device buffer (`logcat -c`), and restart logcat.
@@ -78,6 +81,9 @@ connects, and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` pairs, without c
 file's first and last times as the table shows them and as Export writes them. With `LOGCATNIP_DEBUG=1` the
 report also shows `mainLagMax`, the longest main-thread stall in the last few seconds, and a `file:` line per
 opened file (format, load progress, device).
+`LOGCATNIP_SAVE=/path/out.logcat` saves the selected session once after `LOGCATNIP_SAVE_DELAY` seconds (default 5),
+as `LOGCATNIP_SAVE_FORMAT=logcat|long|threadtime|plainText` and `LOGCATNIP_SAVE_SCOPE=all|visible`; the debug
+report then shows a `save:` line.
 
 ## Filter reference
 
@@ -102,8 +108,8 @@ them.
 
 ## Layout
 
-- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, `-v brief`), reading saved logs (Android Studio
-  `.logcat` files, bug reports, chunked and off the main thread), the filter language, and adb
+- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, `-v brief`), reading and writing saved logs
+  (Android Studio `.logcat` files, bug reports, chunked and off the main thread), the filter language, and adb
   (device tracking, logcat streaming, process names, wireless pairing and mDNS discovery). No UI
   dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
