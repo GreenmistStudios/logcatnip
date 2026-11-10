@@ -22,11 +22,17 @@ Android Studio's Logcat window.
   and an invalid query underlines the failing part in red with the error as its tooltip. Turn on Settings ›
   Filtering › Include filter history in autocomplete to also suggest favorite and recent filters.
 - **package:mine.** List your app's packages in Settings.
+- **Ignore lists and a default filter.** Right-click a line › Ignore Tag “X” Everywhere or Ignore Package “p”
+  Everywhere hides it in every open and future session. The match is exact and case-sensitive, and it applies
+  before the query, as in Android Studio. Settings › Filtering lists both and removes entries, and the status bar
+  shows “N ignored”; click it to show them in that session. New device sessions start with Settings › Filtering ›
+  Default filter (`package:mine` when My packages is set, until you change it), or with the most recently used
+  filter when that option is on. Opened files start unfiltered.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
   lines scroll horizontally, or turn on Wrap Lines in the toolbar to wrap them to the window width.
-- **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or to show its
-  level and above. The new term applies to the whole query: Show Only replaces the query's top-level terms
+- **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, to show its
+  level and above, or to ignore its tag or package everywhere. The new term applies to the whole query: Show Only replaces the query's top-level terms
   for that key instead of ORing with them, and a query with a top-level `|` is wrapped in parentheses first.
 - **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker that edits
   the top-level `level:` term and shows Mixed when the level comes from `is:<level>` or from inside a group.
@@ -59,7 +65,7 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 ```
 
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, overriding the default filter.
 `LOGCATNIP_COMPLETE='tag:Net'` (with `LOGCATNIP_DEBUG=1`) also prints the suggestions for that query.
 
 ## Filter reference

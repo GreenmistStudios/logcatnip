@@ -70,6 +70,13 @@ final class LogSession: Identifiable {
     private(set) var filterError: FilterError?
     private(set) var totalCount = 0
     private(set) var visibleCount = 0
+    /// Entries that match the query but are hidden by the ignore lists, so it is how many rows `showIgnored`
+    /// would add.
+    private(set) var ignoredCount = 0
+    /// Shows entries on the ignore lists in this session only. Temporary: new sessions start hiding them.
+    var showIgnored = false {
+        didSet { if showIgnored != oldValue { refilter() } }
+    }
     /// Incremented to ask the filter field to take focus.
     var focusFilterRequest = 0
 
@@ -83,6 +90,9 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var firstID = 0
     @ObservationIgnored private var nextID = 0
     @ObservationIgnored private var lastFilteredID = -1
+    /// Ids of the entries counted in `ignoredCount`, ascending like `rows`, so trimming the buffer can drop the
+    /// ones that went away.
+    @ObservationIgnored private var ignoredIDs: [Int] = []
     @ObservationIgnored private var filterGeneration = 0
     @ObservationIgnored private var refilterInFlight = false
     @ObservationIgnored private var flushScheduled = false
@@ -300,7 +310,12 @@ final class LogSession: Identifiable {
         let drop = entries.count - limit * 9 / 10
         entries.removeFirst(drop)
         firstID += drop
-        let removedRows = firstRowIndex(atOrAfter: firstID)
+        let removedIgnored = Self.firstIndex(in: ignoredIDs, atOrAfter: firstID, by: \.self)
+        if removedIgnored > 0 {
+            ignoredIDs.removeFirst(removedIgnored)
+            ignoredCount = ignoredIDs.count
+        }
+        let removedRows = Self.firstIndex(in: rows, atOrAfter: firstID, by: \.entryID)
         guard removedRows > 0 else { return }
         var removedEntries = 0
         var lastID = -1
@@ -313,13 +328,13 @@ final class LogSession: Identifiable {
         onRowsChanged?(.reloaded(removedFront: removedRows))
     }
 
-    /// Binary search over `rows`, which are sorted by entry id.
-    private func firstRowIndex(atOrAfter entryID: Int) -> Int {
+    /// Binary search over elements sorted by entry id (`rows`, `ignoredIDs`).
+    private static func firstIndex<Element>(in elements: [Element], atOrAfter entryID: Int, by id: (Element) -> Int) -> Int {
         var low = 0
-        var high = rows.count
+        var high = elements.count
         while low < high {
             let mid = (low + high) / 2
-            if rows[mid].entryID < entryID { low = mid + 1 } else { high = mid }
+            if id(elements[mid]) < entryID { low = mid + 1 } else { high = mid }
         }
         return low
     }
@@ -342,19 +357,47 @@ final class LogSession: Identifiable {
         let startID = max(lastFilteredID + 1, firstID)
         let startIndex = startID - firstID
         guard startIndex < entries.count else { return }
-        let context = filterContext()
         var newRows: [Row] = []
-        var matched = 0
-        for entry in entries[startIndex...] where filter.matches(entry, context: context) {
-            matched += 1
-            Self.appendRows(for: entry, to: &newRows)
-        }
+        let matched = Self.collect(
+            entries[startIndex...], filter: filter, context: filterContext(), showIgnored: showIgnored,
+            rows: &newRows, ignoredIDs: &ignoredIDs
+        )
         lastFilteredID = nextID - 1
+        if ignoredCount != ignoredIDs.count { ignoredCount = ignoredIDs.count }
         guard !newRows.isEmpty else { return }
         let start = rows.count
         rows.append(contentsOf: newRows)
         visibleCount += matched
         onRowsChanged?(.appended(start..<rows.count))
+    }
+
+    /// Runs the filter over `entries`, appending the rows of those to show and the ids of those the ignore lists
+    /// hide. Returns how many entries were shown. Shared by the incremental flush and the full refilter.
+    nonisolated private static func collect(
+        _ entries: ArraySlice<LogEntry>,
+        filter: LogFilter,
+        context: FilterContext,
+        showIgnored: Bool,
+        rows: inout [Row],
+        ignoredIDs: inout [Int]
+    ) -> Int {
+        var shown = 0
+        for entry in entries {
+            switch filter.evaluate(entry, context: context) {
+            case .shown:
+                shown += 1
+                appendRows(for: entry, to: &rows)
+            case .ignored:
+                ignoredIDs.append(entry.id)
+                if showIgnored {
+                    shown += 1
+                    appendRows(for: entry, to: &rows)
+                }
+            case .filteredOut:
+                break
+            }
+        }
+        return shown
     }
 
     nonisolated private static func appendRows(for entry: LogEntry, to rows: inout [Row]) {
@@ -370,8 +413,24 @@ final class LogSession: Identifiable {
     // MARK: Filtering
 
     private func filterContext() -> FilterContext {
-        FilterContext(processNames: processNames, myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970)
+        FilterContext(
+            processNames: processNames,
+            myPackages: Defaults.myPackages,
+            now: Date().timeIntervalSince1970,
+            ignoreList: ignoreList
+        )
     }
+
+    /// The lists shared by every session; empty once the app model is gone.
+    var ignoreList: IgnoreList { model?.ignoreList ?? IgnoreList() }
+
+    /// Called by the app model after a list changed. Every session refilters, as Android Studio reloads its tabs.
+    func ignoreListDidChange() { refilter() }
+
+    func ignoreTagEverywhere(_ tag: String) { model?.ignoreTag(tag) }
+    func ignorePackageEverywhere(_ package: String) { model?.ignorePackage(package) }
+    func stopIgnoringTag(_ tag: String) { model?.unignoreTag(tag) }
+    func stopIgnoringPackage(_ package: String) { model?.unignorePackage(package) }
 
     private func scheduleFilterUpdate() {
         filterDebounce?.cancel()
@@ -392,6 +451,8 @@ final class LogSession: Identifiable {
             filterError = error
             return
         }
+        // Only valid queries, so a session opened from the most recently used filter never starts with an error.
+        FilterLibrary.noteMostRecentlyUsed(filterQuery)
         refilter()
         scheduleAgeRefresh()
     }
@@ -403,18 +464,19 @@ final class LogSession: Identifiable {
         let snapshot = entries
         let filter = filter
         let context = filterContext()
+        let showIgnored = showIgnored
         let lastID = nextID - 1
         refilterInFlight = true
 
         Task { [weak self] in
-            let (rows, visible) = await Task.detached(priority: .userInitiated) {
+            let (rows, visible, ignored) = await Task.detached(priority: .userInitiated) {
                 var rows: [Row] = []
-                var visible = 0
-                for entry in snapshot where filter.matches(entry, context: context) {
-                    visible += 1
-                    LogSession.appendRows(for: entry, to: &rows)
-                }
-                return (rows, visible)
+                var ignored: [Int] = []
+                let visible = LogSession.collect(
+                    snapshot[...], filter: filter, context: context, showIgnored: showIgnored,
+                    rows: &rows, ignoredIDs: &ignored
+                )
+                return (rows, visible, ignored)
             }.value
             guard let self, generation == self.filterGeneration else { return }
             self.refilterInFlight = false
@@ -422,6 +484,9 @@ final class LogSession: Identifiable {
             let firstValid = rows.firstIndex { $0.entryID >= self.firstID } ?? rows.count
             self.rows = firstValid == 0 ? rows : Array(rows[firstValid...])
             self.visibleCount = firstValid == 0 ? visible : Set(self.rows.map(\.entryID)).count
+            let firstIgnored = Self.firstIndex(in: ignored, atOrAfter: self.firstID, by: \.self)
+            self.ignoredIDs = firstIgnored == 0 ? ignored : Array(ignored[firstIgnored...])
+            self.ignoredCount = self.ignoredIDs.count
             self.lastFilteredID = lastID
             self.onRowsChanged?(.reloaded(removedFront: 0))
             self.flushRows()
@@ -444,6 +509,7 @@ final class LogSession: Identifiable {
     func clear() {
         entries.removeAll(keepingCapacity: true)
         rows.removeAll(keepingCapacity: true)
+        ignoredIDs.removeAll(keepingCapacity: true)
         resetCompletionStats()
         firstID = nextID
         lastFilteredID = nextID - 1
@@ -451,6 +517,7 @@ final class LogSession: Identifiable {
         refilterInFlight = false
         totalCount = 0
         visibleCount = 0
+        ignoredCount = 0
         onRowsChanged?(.reloaded(removedFront: 0))
     }
 
@@ -505,12 +572,14 @@ final class LogSession: Identifiable {
         // Fill in recent entries that arrived before their process was known; give up on pids that have
         // already exited so they don't trigger refreshes forever.
         var stillUnknown: Set<Int32> = []
+        var resolvedAny = false
         var index = entries.count - 1
         let stop = max(0, entries.count - 50_000)
         while index >= stop {
             if entries[index].processName == nil, entries[index].pid > 0 {
                 if let name = names[entries[index].pid] {
                     entries[index].processName = name
+                    resolvedAny = true
                 } else {
                     stillUnknown.insert(entries[index].pid)
                 }
@@ -518,7 +587,8 @@ final class LogSession: Identifiable {
             index -= 1
         }
         unresolvablePids.formUnion(stillUnknown)
-        if filter.dependsOnProcessNames {
+        // An entry logged before its process was known can now be ignored by package.
+        if filter.dependsOnProcessNames || (resolvedAny && !ignoreList.packages.isEmpty) {
             refilter()
         } else {
             onRowsChanged?(.refreshVisible)

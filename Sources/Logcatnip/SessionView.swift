@@ -266,6 +266,9 @@ struct StatusBar: View {
                 Text("Not following")
                     .foregroundStyle(.secondary)
             }
+            if session.ignoredCount > 0 || session.showIgnored {
+                ignoredButton
+            }
             Text(session.status.label)
                 .foregroundStyle(statusColor)
             Text(countText)
@@ -277,9 +280,27 @@ struct StatusBar: View {
         .padding(.vertical, 4)
     }
 
+    /// Shows or hides the entries on the ignore lists in this session only.
+    private var ignoredButton: some View {
+        let count = session.ignoredCount.formatted()
+        return Button {
+            session.showIgnored.toggle()
+        } label: {
+            Label(
+                session.showIgnored ? "Showing \(count) ignored" : "\(count) ignored",
+                systemImage: session.showIgnored ? "eye" : "eye.slash"
+            )
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(session.showIgnored ? Color.orange : Color.secondary)
+        .help(session.showIgnored
+            ? "Hide entries on the ignore lists again"
+            : "Entries hidden by the ignore lists in Settings › Filtering. Click to show them in this session.")
+    }
+
     private var countText: String {
         let total = session.totalCount.formatted()
-        if session.filter.matchesEverything {
+        if session.filter.matchesEverything, session.ignoredCount == 0 || session.showIgnored {
             return "\(total) entries"
         }
         return "\(session.visibleCount.formatted()) of \(total) entries"
@@ -343,7 +364,7 @@ struct FilterHelpView: View {
                     }
                 }
             }
-            Text("Spaces separate terms with the lowest precedence: `foo bar tag:a | tag:b` means `\"foo bar\" & (tag:a | tag:b)`. Among them, terms with the same key are ORed and the rest ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to show only or hide its tag, package or process; the new term applies to the whole query.")
+            Text("Spaces separate terms with the lowest precedence: `foo bar tag:a | tag:b` means `\"foo bar\" & (tag:a | tag:b)`. Among them, terms with the same key are ORed and the rest ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to show only or hide its tag, package or process; the new term applies to the whole query. Ignore Tag or Package Everywhere hides it in every session; manage the lists in Settings › Filtering.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

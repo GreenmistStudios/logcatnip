@@ -15,7 +15,8 @@ CONFIG=debug scripts/build-app.sh            # debug app bundle
 ```
 
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions. `LOGCATNIP_COMPLETE='tag:Net'` (with
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, overriding the default filter. The debug
+output includes the ignore lists and each session's `ignored=` count. `LOGCATNIP_COMPLETE='tag:Net'` (with
 `LOGCATNIP_DEBUG=1`) also prints the suggestions for that query.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
@@ -39,6 +40,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `FilterSyntax.swift`: highlighting spans for the filter field (from a lexer that keeps going past errors) and
     `FilterTextOffsets`, which maps `Character` offsets to the UTF-16 offsets AppKit uses.
   - `FilterCompletion.swift`: `completionContext(query:cursor:)` and the suggestions for keys, values and history.
+  - `IgnoreList.swift`: `IgnoreList` (global ignored tags and packages), `FilterOutcome` (shown, ignored or filtered
+    out, so the status bar can count what the lists hide) and `DefaultFilter` (the query new sessions start with).
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
 - `Sources/Logcatnip/`: the app.
