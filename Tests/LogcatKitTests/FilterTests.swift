@@ -335,3 +335,205 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
         #expect(try !LogFilter("tag:foo level:W").dependsOnProcessNames)
     }
 }
+
+@Suite struct FilterQueryEditorTests {
+    private func add(_ term: String, _ query: String) -> String {
+        FilterQueryEditor.adding(term, to: query)
+    }
+
+    private func level(_ level: LogLevel?, _ query: String) -> String {
+        FilterQueryEditor.settingMinimumLevel(level, in: query)
+    }
+
+    @Test func hideTagAppliesToEveryOrBranch() throws {
+        let result = add("-tag=:NetCache", "tag:Net | tag:Http")
+        #expect(result == "(tag:Net | tag:Http) & -tag=:NetCache")
+        #expect(try matches(result, entry(tag: "Net")))
+        #expect(try matches(result, entry(tag: "Http")))
+        #expect(try !matches(result, entry(tag: "NetCache")))
+    }
+
+    @Test func showOnlyTagReplacesTheSameKey() throws {
+        let result = add("tag=:Http", "tag:Net")
+        #expect(result == "tag=:Http")
+        #expect(try matches(result, entry(tag: "Http")))
+        #expect(try !matches(result, entry(tag: "Net")))
+        #expect(try !matches(result, entry(tag: "NetHttp")))
+
+        #expect(add("tag=:c", "tag:a tag:b level:W") == "tag=:c level:W")
+        #expect(add("tag=:FA", "is:firebase") == "tag=:FA")
+        #expect(add("package=:com.x", "package:mine level:W") == "package=:com.x level:W")
+        #expect(add("pid:2", "pid:1") == "pid:2")
+        #expect(add("tid:2", "tid:1 tag:a") == "tid:2 tag:a")
+    }
+
+    @Test func showOnlyNeverOrs() throws {
+        let cases: [(query: String, term: String, expected: String, narrowed: LogEntry)] = [
+            ("tag:Net | tag:Http", "tag=:NetCache", "(tag:Net | tag:Http) & tag=:NetCache", entry(tag: "Http")),
+            ("tag:a & level:W", "tag=:b", "tag:a & level:W tag=:b", entry(tag: "a", level: .error)),
+            ("-tag:a", "tag=:b", "-tag:a tag=:b", entry(tag: "other")),
+            ("(tag:a | tag:b)", "tag=:c", "(tag:a | tag:b) tag=:c", entry(tag: "b")),
+        ]
+        let probes = ["a", "b", "c", "Net", "Http", "NetCache", "other"].flatMap { tag in
+            [LogLevel.debug, .error].map { entry(tag: tag, level: $0) }
+        }
+        for (query, term, expected, narrowed) in cases {
+            let result = add(term, query)
+            #expect(result == expected, "\(query)")
+            // The new term only narrows: nothing the original rejects shows up, and something it accepted goes.
+            for probe in probes {
+                #expect(try !matches(result, probe) || matches(query, probe), "\(query) vs \(probe.tag) \(probe.level)")
+            }
+            #expect(try matches(query, narrowed), "\(query)")
+            #expect(try !matches(result, narrowed), "\(query)")
+        }
+    }
+
+    @Test func minimumLevelAppliesToEveryOrBranch() throws {
+        let result = level(.warn, "tag:Net | tag:Http")
+        #expect(result == "(tag:Net | tag:Http) & level:WARN")
+        for tag in ["Net", "Http"] {
+            #expect(try !matches(result, entry(tag: tag, level: .debug)))
+            #expect(try matches(result, entry(tag: tag, level: .warn)))
+            #expect(try matches(result, entry(tag: tag, level: .error)))
+        }
+    }
+
+    @Test func levelPickerLeavesNestedLevelTermsAlone() throws {
+        #expect(try LogFilter("(level:E | tag:x)").levelSelection == .mixed)
+        let warn = level(.warn, "(level:E | tag:x)")
+        #expect(warn == "(level:E | tag:x) level:WARN")
+        #expect(try LogFilter(warn).levelSelection == .minimum(.warn))
+        // Picking again replaces the top-level term instead of adding another.
+        #expect(level(.error, warn) == "(level:E | tag:x) level:ERROR")
+        #expect(level(nil, warn) == "(level:E | tag:x)")
+        #expect(level(nil, "(level:E | tag:x)") == "(level:E | tag:x)")
+    }
+
+    @Test func levelPickerReplacesTopLevelLevelTerms() throws {
+        #expect(level(.error, "level:W tag:a") == "level:ERROR tag:a")
+        #expect(level(.warn, "is:error tag:a") == "level:WARN tag:a")
+        #expect(level(.info, "level:E is:debug") == "level:INFO")
+        #expect(level(.warn, "is:crash") == "is:crash level:WARN")
+        #expect(level(nil, "tag:a level:W") == "tag:a")
+        #expect(level(.warn, "") == "level:WARN")
+        #expect(level(nil, "level:W") == "")
+        #expect(level(.error, "tag:Net | tag:Http level:WARN") == "tag:Net | tag:Http level:ERROR")
+        // A `level:` inside an `&` chain is not edited, so a new top-level term is added. The picker keeps
+        // showing the floor that is still true.
+        let chained = level(.info, "level:W & tag:a")
+        #expect(chained == "level:W & tag:a level:INFO")
+        #expect(try LogFilter(chained).levelSelection == .minimum(.warn))
+    }
+
+    @Test func levelSelectionReflectsTheParsedFilter() throws {
+        let cases: [(String, LevelSelection)] = [
+            ("tag:a", .any),
+            ("", .any),
+            ("level:W tag:a", .minimum(.warn)),
+            ("tag:Net | tag:Http level:WARN", .minimum(.warn)),
+            ("(level:E | tag:x)", .mixed),
+            ("(level:E | tag:x) level:WARN", .minimum(.warn)),
+            ("is:error", .mixed),
+            ("level:E is:debug", .mixed),
+            ("level:W | tag:a", .mixed),
+            ("-level:W", .mixed),
+            ("level:W & level:E", .minimum(.error)),
+            ("is:crash", .any),
+        ]
+        for (query, expected) in cases {
+            #expect(try LogFilter(query).levelSelection == expected, "\(query)")
+        }
+    }
+
+    @Test func simpleQueriesStayFreeOfParentheses() {
+        let cases: [(query: String, edit: (String) -> String, expected: String)] = [
+            ("tag:a", { add("-tag=:b", $0) }, "tag:a -tag=:b"),
+            ("tag:a", { level(.warn, $0) }, "tag:a level:WARN"),
+            ("level:W tag:a", { level(.error, $0) }, "level:ERROR tag:a"),
+            ("package:mine", { add("-package=:com.x", $0) }, "package:mine -package=:com.x"),
+            ("", { add("tag=:a", $0) }, "tag=:a"),
+            ("tag:a & level:W", { add("-tag=:b", $0) }, "tag:a & level:W -tag=:b"),
+            ("foo bar", { add("pid:3", $0) }, "foo bar pid:3"),
+        ]
+        for (query, edit, expected) in cases {
+            let result = edit(query)
+            #expect(result == expected, "\(query)")
+            #expect(!result.contains("("), "\(query)")
+        }
+    }
+
+    @Test func repeatedEditsAreNoOps() {
+        #expect(add("-tag=:b", "tag:a -tag=:b") == "tag:a -tag=:b")
+        #expect(add("-tag=:NetCache", "(tag:Net | tag:Http) & -tag=:NetCache") == "(tag:Net | tag:Http) & -tag=:NetCache")
+        #expect(add("tag=:NetCache", "(tag:Net | tag:Http) & tag=:NetCache") == "(tag:Net | tag:Http) & tag=:NetCache")
+        #expect(level(.warn, "level:w") == "level:w")
+        #expect(add("tag=:Http", "tag=:Http") == "tag=:Http")
+    }
+
+    @Test func removingTermsKeepsFreeTextPhrasesApart() throws {
+        let removed = level(nil, "foo level:W bar")
+        #expect(removed == "foo \"bar\"")
+        #expect(try sameMeaning(removed, "foo & bar"))
+        #expect(level(.error, "foo level:W bar") == "foo level:ERROR bar")
+        #expect(add("tag=:c", "foo tag:a bar tag:b baz qux") == "foo tag=:c bar \"baz qux\"")
+        #expect(level(nil, "\"foo\" level:W bar") == "\"foo\" bar")
+    }
+
+    @Test func editsKeepNamesQuotesAndSpacing() throws {
+        #expect(add("tag=:b", "name:\"My filter\" tag:a") == "name:\"My filter\" tag=:b")
+        #expect(add("-tag=:b", "tag:a  ") == "tag:a -tag=:b")
+        let hidden = add("-tag=:" + FilterQueryEditor.quoted("My Tag"), "tag:a")
+        #expect(hidden == "tag:a -tag=:\"My Tag\"")
+        #expect(try !matches(hidden, entry(tag: "My Tag")))
+        #expect(try matches(hidden, entry(tag: "a")))
+        // A quoted `|` is not a top-level `|`.
+        #expect(level(.warn, "message:\"x | y\"") == "message:\"x | y\" level:WARN")
+    }
+
+    @Test func invalidQueriesStayInvalid() {
+        #expect(add("-tag=:b", "tag:a |") == "(tag:a |) & -tag=:b")
+        #expect(add("-tag=:b", "(tag:a") == "((tag:a) & -tag=:b")
+        #expect(level(nil, "tag:a |") == "tag:a |")
+        #expect(level(.warn, "tag:a |") == "(tag:a |) & level:WARN")
+        for query in ["tag:a |", "(tag:a"] {
+            #expect(throws: FilterError.self) { try LogFilter(add("-tag=:b", query)) }
+        }
+    }
+
+    @Test func quotedValues() throws {
+        #expect(FilterQueryEditor.quoted("plain") == "plain")
+        #expect(FilterQueryEditor.quoted("My Tag") == "\"My Tag\"")
+        #expect(FilterQueryEditor.quoted("a\"b") == "\"a\\\"b\"")
+        #expect(FilterQueryEditor.quoted("a\\b") == "\"a\\\\b\"")
+        #expect(FilterQueryEditor.quoted("") == "\"\"")
+        for value in ["x|y", "(x)", "a&b", "it's"] {
+            #expect(FilterQueryEditor.quoted(value).hasPrefix("\""), "\(value)")
+        }
+        for value in ["plain", "My Tag", "a\"b", "a\\b", "x|y", "(x)", "a&b", "it's"] {
+            #expect(try matches("tag=:" + FilterQueryEditor.quoted(value), entry(tag: value)), "\(value)")
+        }
+    }
+
+    @Test func hidingIsAlwaysAndedWithTheWholeQuery() throws {
+        // None of these has a lone top-level level term, which the picker would replace instead.
+        let queries = [
+            "", "tag:a", "tag:a tag:b", "tag:a | tag:b", "foo bar", "(level:E | tag:x)", "tag:a & level:W",
+            "is:crash is:stacktrace", "name:n tag:a | tag:b",
+        ]
+        for query in queries {
+            for term in ["-tag=:z", "-package=:com.z"] {
+                let result = add(term, query)
+                #expect(throws: Never.self) { try LogFilter(result) }
+                if !query.isEmpty {
+                    #expect(try sameMeaning(result, "(\(query)) & \(term)"), "\(query) + \(term) = \(result)")
+                }
+            }
+            let warn = level(.warn, query)
+            #expect(throws: Never.self) { try LogFilter(warn) }
+            if !query.isEmpty {
+                #expect(try sameMeaning(warn, "(\(query)) & level:WARN"), "\(query) + WARN = \(warn)")
+            }
+        }
+    }
+}
