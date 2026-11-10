@@ -32,6 +32,11 @@ Android Studio's Logcat window.
 - **Import and export.** Export in `logcat -v long` format. Open long or threadtime (`adb logcat` default,
   bug report) files, or drop them on the window.
 - Pause, clear the view, clear the device buffer (`logcat -c`), and restart logcat.
+- Android 6.0 and older: their logcat has no `-v epoch` or `-v uid`, so Logcatnip reads device-local times
+  (in the Mac's time zone) and shows no uid. It switches automatically when getprop or logcat reports an old
+  release.
+- If logcat rejects an option, for example an unknown buffer in Settings › Logcat › Buffers, the status bar
+  shows logcat's message. Fix the setting and choose Restart Logcat.
 
 ## Requirements
 
