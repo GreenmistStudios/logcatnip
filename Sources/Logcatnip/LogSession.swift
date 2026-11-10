@@ -525,41 +525,23 @@ final class LogSession: Identifiable {
 
     // MARK: Query editing
 
-    static func quoted(_ value: String) -> String {
-        let needsQuotes = value.isEmpty || value.contains { $0.isWhitespace || "\"'()&|\\".contains($0) }
-        guard needsQuotes else { return value }
-        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        return "\"\(escaped)\""
-    }
+    /// Kept so the table's context menu keeps building its terms the same way.
+    static func quoted(_ value: String) -> String { FilterQueryEditor.quoted(value) }
 
-    /// Appends a term such as `tag=:Foo` to the query and applies it immediately.
+    /// Adds a term such as `tag=:Foo` or `-tag=:Foo` to the whole query and applies it immediately.
     func addTerm(_ term: String) {
-        let base = filterQuery.trimmingCharacters(in: .whitespaces)
-        filterQuery = base.isEmpty ? term : "\(base) \(term)"
+        filterQuery = FilterQueryEditor.adding(term, to: filterQuery)
         applyFilterNow()
         FilterLibrary.remember(filterQuery)
     }
 
-    private static let levelTermPattern = try! NSRegularExpression(pattern: #"(^|\s)level:(\S+)"#, options: [.caseInsensitive])
+    /// What the level picker shows, from the applied filter rather than the query text. While the field holds an
+    /// invalid query this is the level of the filter that is actually applied.
+    var levelSelection: LevelSelection { filter.levelSelection }
 
-    /// The level of a `level:` term in the query, if there is exactly one.
-    var minimumLevel: LogLevel? {
-        let range = NSRange(filterQuery.startIndex..., in: filterQuery)
-        let matches = Self.levelTermPattern.matches(in: filterQuery, range: range)
-        guard matches.count == 1, let valueRange = Range(matches[0].range(at: 2), in: filterQuery) else { return nil }
-        return LogLevel(name: String(filterQuery[valueRange]))
-    }
-
-    /// Replaces any `level:` terms in the query.
+    /// Replaces the query's top-level level terms, or removes them for `nil`.
     func setMinimumLevel(_ level: LogLevel?) {
-        let range = NSRange(filterQuery.startIndex..., in: filterQuery)
-        var query = Self.levelTermPattern.stringByReplacingMatches(in: filterQuery, range: range, withTemplate: "$1")
-            .trimmingCharacters(in: .whitespaces)
-        query = query.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
-        if let level {
-            query = query.isEmpty ? "level:\(level.name)" : "\(query) level:\(level.name)"
-        }
-        filterQuery = query
+        filterQuery = FilterQueryEditor.settingMinimumLevel(level, in: filterQuery)
         applyFilterNow()
     }
 
