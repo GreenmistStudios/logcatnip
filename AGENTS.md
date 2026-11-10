@@ -38,6 +38,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `ProcessEvents.swift`: ActivityManager `Start proc`, `Killing` and `has died` lines and the events
     buffer's `am_proc_start`, `am_proc_died`, `am_kill` and `am_crash` entries, which name a pid before `ps`
     can and mark where processes end.
+  - `JDWP.swift`: `adb track-jdwp` decoding and stream: debuggable pids, whose disappearance ends their
+    process markers.
   - `ProcessMarkers.swift`: PROCESS STARTED / ENDED markers: which to insert from ActivityManager events,
     crash lines and `ps` snapshot diffs, and the marker filter scope.
   - `PackageUIDs.swift`: `pm list packages -U` parsing, uid -> package map and when to refresh it.

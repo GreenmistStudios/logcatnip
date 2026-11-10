@@ -453,6 +453,44 @@ private func fatalException(pid: Int32) -> LogEntry {
         #expect(tracker.ended(pid: 77, process: "com.a", reason: nil, seq: 2)?.marker == .ended(.crashed))
     }
 
+    // MARK: jdwp
+
+    /// `adb track-jdwp` knows only pids, and reports them after a grace period, so `observedAt` carries the
+    /// sequence number at which the pid disappeared.
+    @Test func jdwpEndEndsKnownProcess() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 50, process: "com.mine", uid: nil, seq: 10)
+        let ended = tracker.ended(pid: 50, process: nil, reason: nil, seq: 30, observedAt: 20)
+        #expect(ended?.text == "PROCESS ENDED (50) for package com.mine")
+    }
+
+    @Test func jdwpEndSkipsProcessStartedAfterObservation() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 51, process: "com.mine", uid: nil, seq: 25)
+        #expect(tracker.ended(pid: 51, process: nil, reason: nil, seq: 30, observedAt: 20) == nil)
+        #expect(tracker.ended(pid: 51, process: "com.mine", reason: nil, seq: 40) != nil)
+    }
+
+    @Test func jdwpEndAfterActivityManagerEndIsDeduped() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 52, process: "com.mine", uid: nil, seq: 10)
+        #expect(tracker.ended(pid: 52, process: "com.mine", reason: .forceStopped, seq: 12) != nil)
+        #expect(tracker.ended(pid: 52, process: nil, reason: nil, seq: 20, observedAt: 11) == nil)
+    }
+
+    @Test func jdwpEndKeepsCrashFlag() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 53, process: "com.mine", uid: nil, seq: 10)
+        tracker.note(fatalException(pid: 53))
+        let ended = tracker.ended(pid: 53, process: nil, reason: nil, seq: 30, observedAt: 20)
+        #expect(ended?.marker == .ended(.crashed))
+    }
+
+    @Test func jdwpEndOfUnknownPidIsIgnored() {
+        var tracker = ProcessMarkerTracker()
+        #expect(tracker.ended(pid: 54, process: nil, reason: nil, seq: 5, observedAt: 4) == nil)
+    }
+
     private func eventMap(_ batch: [LogEntry]) -> [Int: ProcessEvent] {
         var events: [Int: ProcessEvent] = [:]
         for (index, entry) in batch.enumerated() {

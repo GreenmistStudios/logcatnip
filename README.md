@@ -22,8 +22,8 @@ Android Studio's Logcat window.
   where each run of an app starts and ends, with `(crashed)` or `(force stopped)` when the log says. They come
   from ActivityManager's lines in the system buffer (one of logcat's default buffers), from its
   `am_proc_start`, `am_proc_died` and `am_kill` events when you add `events` to the logcat buffers in Settings,
-  and, for your packages, from `ps` when those are missing. Settings shows them for your packages (the default)
-  or for all apps.
+  and, for your packages, from `ps` when those are missing. `adb track-jdwp` ends a debuggable app's run as
+  soon as its process goes away. Settings shows them for your packages (the default) or for all apps.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header; the Process and UID columns start hidden, and the Package
   column shows the base package of a `:remote` process), and follow mode that stops when you scroll up. Long

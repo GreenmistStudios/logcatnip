@@ -181,9 +181,20 @@ public struct ProcessMarkerTracker: Sendable {
 
     /// An end report. `process` may be nil when the source knows only the pid. Nil is returned for a pid already
     /// reported dead, and for a pid nothing is known about when `process` is nil.
-    public mutating func ended(pid: Int32, process: String?, reason: ProcessEndReason?, seq: Int) -> Marker? {
+    ///
+    /// `observedAt` is the sequence number at which the source saw the end, for a source that reports later
+    /// (jdwp waits for logcat to say why). A record started at or after it belongs to a reused pid and is left
+    /// alone.
+    public mutating func ended(
+        pid: Int32,
+        process: String?,
+        reason: ProcessEndReason?,
+        seq: Int,
+        observedAt: Int? = nil
+    ) -> Marker? {
         let record = records[pid]
         if let record, !record.alive { return nil }
+        if let observedAt, let record, record.since >= observedAt { return nil }
         guard let name = process ?? record?.process else { return nil }
         return end(pid: pid, record: Record(process: name, uid: record?.uid, since: seq, alive: true),
                    reason: reason, seq: seq)

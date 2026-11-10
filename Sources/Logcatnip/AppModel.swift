@@ -85,6 +85,7 @@ final class AppModel {
                         + "unresolved=\(stats.unresolvable) "
                         + "ps=\(session.processLookupCount) pm=\(session.packageLookupCount) "
                         + "packages=\(session.packageOwnerCount) markers=\(session.processMarkerCount) "
+                        + "jdwp=\(session.jdwpPidCount.map(String.init) ?? "-") "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
                     FileHandle.standardError.write(Data(line.utf8))
                 }

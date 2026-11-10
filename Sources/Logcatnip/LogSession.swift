@@ -119,6 +119,17 @@ final class LogSession: Identifiable {
     /// processes announced in the stream never cost a `ps`.
     private static let processStartGrace = 0.3
 
+    @ObservationIgnored private var jdwpTask: Task<Void, Never>?
+    @ObservationIgnored private var jdwpPids = JDWPProcessSet()
+    /// How many debuggable processes `adb track-jdwp` listed last; nil when it is not running. For debug output.
+    @ObservationIgnored private(set) var jdwpPidCount: Int?
+
+    /// How long a jdwp report waits: an end for ActivityManager's line, which says why and arrives through
+    /// logcat, and a start for the app to rename itself before `ps` looks.
+    private static let jdwpGrace = 1.0
+    /// `track-jdwp` runs that delivered no list before it is given up on until the next `start()`.
+    private static let jdwpMaxIdleRuns = 3
+
     init(source: Source, adb: ADB?, model: AppModel) {
         self.source = source
         self.adb = adb
@@ -181,6 +192,7 @@ final class LogSession: Identifiable {
         let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
         let token = UUID()
         streamToken = token
+        startJDWPTracking(token: token)
         requestProcessNames(force: true)
         packageTracker.reset()
         requestPackages(force: true)
@@ -208,6 +220,7 @@ final class LogSession: Identifiable {
         streamToken = nil
         streamTask?.cancel()
         streamTask = nil
+        stopJDWPTracking()
         ageRefresh?.cancel()
         if isLive { status = .stopped }
     }
@@ -228,6 +241,7 @@ final class LogSession: Identifiable {
         guard serial != nil, status != .disconnected, status != .stopped else { return }
         streamToken = nil
         streamTask?.cancel()
+        stopJDWPTracking()
         status = .disconnected
         appendMarker("Device disconnected")
     }
@@ -241,6 +255,7 @@ final class LogSession: Identifiable {
 
     private func logcatEnded(status exitStatus: Int32, error: String, receivedAny: Bool, modernFormat: Bool) {
         streamToken = nil
+        stopJDWPTracking()
         let message = error.trimmingCharacters(in: .whitespacesAndNewlines)
         if !receivedAny, modernFormat, exitStatus != 0, !useLegacyFormat {
             // Pre-Nougat logcat rejects -v epoch / -v uid.
@@ -289,6 +304,79 @@ final class LogSession: Identifiable {
                 self.status = .failed(error.localizedDescription)
             }
         }
+    }
+
+    // MARK: jdwp
+
+    /// Follows `adb track-jdwp` for the life of the logcat stream. It ends the markers of debuggable apps as
+    /// soon as their process goes away, which neither `ps` (polled on demand) nor logcat (when its buffers
+    /// lack ActivityManager's lines) can do. Restarts when adb drops it, and gives up after a few runs that
+    /// never delivered a list, so a device that lacks the service costs nothing.
+    private func startJDWPTracking(token: UUID) {
+        jdwpTask?.cancel()
+        jdwpTask = nil
+        jdwpPids = JDWPProcessSet()
+        jdwpPidCount = nil
+        guard let serial, let adb else { return }
+        jdwpTask = Task { [weak self] in
+            var idleRuns = 0
+            while !Task.isCancelled, idleRuns < Self.jdwpMaxIdleRuns {
+                var received = false
+                for await event in adb.trackJDWP(serial: serial) {
+                    guard let self, self.streamToken == token else { return }
+                    if case let .pids(list) = event {
+                        received = true
+                        self.applyJDWP(list, token: token)
+                    }
+                }
+                guard let self, self.streamToken == token, !Task.isCancelled else { return }
+                // A new run starts with a new baseline: what changed while adb was away is not known.
+                self.jdwpPids = JDWPProcessSet()
+                self.jdwpPidCount = nil
+                idleRuns = received ? 0 : idleRuns + 1
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    private func stopJDWPTracking() {
+        jdwpTask?.cancel()
+        jdwpTask = nil
+        jdwpPidCount = nil
+    }
+
+    /// A new debuggable pid asks `ps` for its name once the app has had time to rename itself; a pid that
+    /// went away is ended after the grace period, unless an ActivityManager or events line reported it first.
+    private func applyJDWP(_ list: Set<Int32>, token: UUID) {
+        let change = jdwpPids.apply(list)
+        jdwpPidCount = jdwpPids.pids.count
+        if !change.added.isEmpty {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(Self.jdwpGrace))
+                guard let self, self.streamToken == token else { return }
+                self.requestProcessNames(force: true)
+            }
+        }
+        guard !change.removed.isEmpty else { return }
+        let observed = nextID
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.jdwpGrace))
+            guard let self, self.streamToken == token else { return }
+            self.jdwpEnded(change.removed, observedAt: observed)
+        }
+    }
+
+    private func jdwpEnded(_ pids: [Int32], observedAt: Int) {
+        var markers: [ProcessMarkerTracker.Marker] = []
+        for pid in pids {
+            processResolver.processEnded(pid: pid, seq: observedAt)
+            // `observedAt` keeps a pid that was reused during the grace period from being ended.
+            if let marker = markerTracker.ended(
+                pid: pid, process: nil, reason: nil, seq: nextID, observedAt: observedAt) {
+                markers.append(marker)
+            }
+        }
+        appendProcessMarkers(markers, at: lastTimestamp ?? Date().timeIntervalSince1970, source: "jdwp")
     }
 
     // MARK: Ingestion
