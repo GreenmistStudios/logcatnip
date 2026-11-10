@@ -63,6 +63,15 @@ struct LogTableView: NSViewRepresentable {
         /// `session.widestLineCells` as of the last column sizing, so appends only resize when it grew.
         private var appliedWidestCells = 0
         private var messageWidthUpdatePending = false
+        /// How far the Message column's text is scrolled sideways while lines do not wrap. The table itself
+        /// never scrolls sideways, so the other columns stay put (see `MessageCellView`).
+        private var messageScroll = MessageScroll()
+        /// Which axis the scroll gesture in progress belongs to, so a sideways swipe never also moves the rows.
+        private var axisLock = ScrollAxisLock()
+        private var scrollMonitor: Any?
+        /// True while the Message scroller is being set from `messageScroll`, so that is not taken for the user
+        /// dragging it.
+        private var isSyncingScroller = false
         /// Whether the delegate answers `tableView(_:heightOfRow:)`. A table that has it may ask for the
         /// height of many rows when it reloads, which is wasted work for 500,000 equal rows, so it is hidden
         /// unless lines wrap. Lock-guarded because `responds(to:)` is nonisolated.
@@ -157,7 +166,10 @@ struct LogTableView: NSViewRepresentable {
 
             scrollView.documentView = tableView
             scrollView.hasVerticalScroller = true
+            // The table is as wide as the view, so this scroller only shows when the window is narrower than
+            // the pinned columns; the Message column has its own (see `LogScrollView`).
             scrollView.hasHorizontalScroller = true
+            scrollView.horizontalScrollElasticity = .none
             scrollView.autohidesScrollers = true
             scrollView.borderType = .noBorder
             scrollView.contentView.postsBoundsChangedNotifications = true
@@ -174,6 +186,19 @@ struct LogTableView: NSViewRepresentable {
                 name: NSView.frameDidChangeNotification,
                 object: scrollView.contentView
             )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(messageScrollerDidScroll(_:)),
+                name: NSView.boundsDidChangeNotification,
+                object: scrollView.messageScroller.contentView
+            )
+            // Sideways gestures are taken here rather than in a `scrollWheel(with:)` override of the scroll
+            // view, because a subclass that overrides it loses responsive scrolling, which keeps 500,000 rows
+            // smooth.
+            scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self, MainActor.assumeIsolated({ self.handleScrollWheel(event) }) else { return event }
+                return nil
+            }
             return scrollView
         }
 
@@ -210,9 +235,9 @@ struct LogTableView: NSViewRepresentable {
             }
             if self.wrapLines != wrapLines {
                 self.wrapLines = wrapLines
-                scrollView.hasHorizontalScroller = !wrapLines
                 setHeightOfRowEnabled(wrapLines)
-                // Wrapped text has no sideways extent, and the unwrapped column starts at its left edge.
+                // Wrapped text has no sideways extent, and the unwrapped text starts at its left edge.
+                setMessageOffset(0, flash: false)
                 let clipView = scrollView.contentView
                 clipView.scroll(to: NSPoint(x: 0, y: clipView.bounds.origin.y))
                 scrollView.reflectScrolledClipView(clipView)
@@ -249,6 +274,8 @@ struct LogTableView: NSViewRepresentable {
         func unbind() {
             unbindSession()
             NotificationCenter.default.removeObserver(self)
+            if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+            scrollMonitor = nil
         }
 
         private func unbindSession() {
@@ -448,9 +475,11 @@ struct LogTableView: NSViewRepresentable {
             updateMessageColumnWidth()
         }
 
-        /// Makes the Message column as wide as its widest line, and at least wide enough to fill the view.
-        /// The width comes from the session's line widths, so a line is readable in full by scrolling before
-        /// it has ever been drawn; lines whose width is only an estimate can widen it further once drawn.
+        /// Sizes the Message column to fill what the other columns leave, so the table is exactly as wide as the
+        /// view and never scrolls sideways. The text is as wide as the session's widest line, and scrolls inside
+        /// the column (see `messageScroll`). The width comes from the session's line widths, so a line is
+        /// readable in full by scrolling before it has ever been drawn; lines whose width is only an estimate
+        /// can widen it further once drawn.
         private func updateMessageColumnWidth() {
             guard let message = tableView.tableColumn(withIdentifier: Column.message.identifier) else { return }
             appliedWidestCells = session?.widestLineCells ?? 0
@@ -458,15 +487,154 @@ struct LogTableView: NSViewRepresentable {
             let others = tableView.tableColumns.reduce(CGFloat(0)) { sum, column in
                 column === message || column.isHidden ? sum : sum + column.width + spacing
             }
-            let fill = scrollView.contentView.bounds.width - others - spacing
+            // Rounded down so a fraction of a point never makes the table wider than the view, which would
+            // bring back the whole-table scroller.
+            let fill = floor(scrollView.contentView.bounds.width - others - spacing)
             let cap = CGFloat(Self.maxMessageCells) * charWidth
             let content = max(CGFloat(min(appliedWidestCells, Self.maxMessageCells)) * charWidth, min(widestMessage, cap))
             // Text fields inset their text by a few points on each side.
-            let width = wrapLines ? max(fill, 100) : max(content + 8, fill, 100)
+            let textWidth = content + 8
+            // A window narrower than the other columns plus 100 points has no room to pin them. The table then
+            // overflows, and the whole table scrolls sideways with a Message column as wide as its text.
+            let pinsColumns = fill >= Self.minimumMessageWidth
+            let width = pinsColumns ? fill : wrapLines ? Self.minimumMessageWidth : max(textWidth, Self.minimumMessageWidth)
             if abs(message.width - width) >= 0.5 {
                 message.width = width
             }
+            setMessageContent(width: wrapLines || !pinsColumns ? 0 : textWidth, viewport: width)
             if wrapLines { wrapWidthDidChange() }
+            updateMessageScrollerSpan()
+        }
+
+        /// The least the Message column is given before the other columns stop being pinned.
+        private static let minimumMessageWidth: CGFloat = 100
+
+        // MARK: Sideways scrolling
+
+        /// Takes the new text and column widths. The offset is pulled back into range, and the Message
+        /// scroller follows.
+        private func setMessageContent(width: CGFloat, viewport: CGFloat) {
+            let oldOffset = messageScroll.offset
+            let oldWidth = messageScroll.contentWidth
+            let wasScrollable = messageScroll.isScrollable
+            messageScroll.resize(contentWidth: Double(width), viewportWidth: Double(viewport))
+            if messageScroll.contentWidth != oldWidth {
+                forEachMessageCell { $0.contentWidth = width }
+            }
+            if messageScroll.offset != oldOffset {
+                applyMessageOffset()
+                syncMessageScroller()
+            }
+            // Legacy scrollers take a band of their own at the bottom, which changes what the last row has.
+            if wasScrollable != messageScroll.isScrollable, session?.autoScroll == true {
+                DispatchQueue.main.async { [weak self] in
+                    if self?.session?.autoScroll == true { self?.scrollToEnd() }
+                }
+            }
+        }
+
+        /// The Message cells that exist now (the ones on screen, plus a few the table keeps ready).
+        private func forEachMessageCell(_ body: (MessageCellView) -> Void) {
+            let index = tableView.column(withIdentifier: Column.message.identifier)
+            guard index >= 0 else { return }
+            tableView.enumerateAvailableRowViews { rowView, _ in
+                if let cell = rowView.view(atColumn: index) as? MessageCellView { body(cell) }
+            }
+        }
+
+        private func applyMessageOffset() {
+            let offset = CGFloat(messageScroll.offset)
+            forEachMessageCell { $0.offset = offset }
+        }
+
+        /// Moves the message text to `x` points from its start, kept within its range. Only the text moves:
+        /// no row is redrawn and no cell is made.
+        private func setMessageOffset(_ x: Double, flash: Bool) {
+            guard messageScroll.scroll(to: x) else { return }
+            applyMessageOffset()
+            syncMessageScroller()
+            if flash { scrollView.messageScroller.flashScrollers() }
+        }
+
+        /// Sets the Message scroller's position to the offset without taking that for a drag.
+        private func syncMessageScroller() {
+            let strip = scrollView.messageScroller
+            let target = NSPoint(x: messageScroll.offset, y: 0)
+            guard abs(strip.contentView.bounds.origin.x - target.x) > 0.01 else { return }
+            isSyncingScroller = true
+            strip.contentView.scroll(to: target)
+            strip.reflectScrolledClipView(strip.contentView)
+            isSyncingScroller = false
+        }
+
+        /// The Message scroller was dragged or paged: move the text with it.
+        @objc private func messageScrollerDidScroll(_ notification: Notification) {
+            guard !isSyncingScroller else { return }
+            if messageScroll.scroll(to: scrollView.messageScroller.contentView.bounds.minX) {
+                applyMessageOffset()
+            }
+        }
+
+        /// Shows the Message scroller under the column when its text can scroll, and sets how far.
+        private func updateMessageScrollerSpan() {
+            let strip = scrollView.messageScroller
+            let column = tableView.column(withIdentifier: Column.message.identifier)
+            guard !wrapLines, messageScroll.isScrollable, column >= 0 else {
+                scrollView.messageSpan = nil
+                return
+            }
+            strip.setTravel(CGFloat(messageScroll.maxOffset))
+            let rect = tableView.rect(ofColumn: column)
+            scrollView.messageSpan = LogScrollView.MessageSpan(minX: rect.minX, width: rect.width)
+            syncMessageScroller()
+        }
+
+        /// The Message column moved (dragged to another position), and the scroller moves with it.
+        func tableViewColumnDidMove(_ notification: Notification) {
+            updateMessageScrollerSpan()
+        }
+
+        /// Sideways trackpad and shift-wheel gestures over the log move the message text, not the table.
+        /// Returns whether it took the event; everything else goes on to the scroll view untouched.
+        private func handleScrollWheel(_ event: NSEvent) -> Bool {
+            guard let window = scrollView.window, event.window === window else { return false }
+            let inside = scrollView.bounds.contains(scrollView.convert(event.locationInWindow, from: nil))
+            return handleScroll(
+                dx: Double(event.scrollingDeltaX), dy: Double(event.scrollingDeltaY),
+                precise: event.hasPreciseScrollingDeltas, phase: Self.lockPhase(event.phase),
+                momentum: Self.lockPhase(event.momentumPhase), inside: inside
+            )
+        }
+
+        private static func lockPhase(_ phase: NSEvent.Phase) -> ScrollAxisLock.Phase {
+            if phase.contains(.mayBegin) { return .mayBegin }
+            if phase.contains(.began) { return .began }
+            if phase.contains(.changed) { return .changed }
+            if phase.contains(.stationary) { return .stationary }
+            if phase.contains(.ended) { return .ended }
+            if phase.contains(.cancelled) { return .cancelled }
+            return .none
+        }
+
+        /// The scroll decision for one event, apart from the event itself so the debug helper can drive it.
+        /// A gesture that began over the log keeps moving the text after the pointer leaves it.
+        fileprivate func handleScroll(
+            dx: Double, dy: Double, precise: Bool, phase: ScrollAxisLock.Phase, momentum: ScrollAxisLock.Phase, inside: Bool
+        ) -> Bool {
+            let phased = phase != .none || momentum != .none
+            if !inside, !(phased && axisLock.locked == .horizontal) {
+                if phase == .began { axisLock = ScrollAxisLock() }
+                return false
+            }
+            if wrapLines || !messageScroll.isScrollable {
+                axisLock = ScrollAxisLock()
+                return false
+            }
+            guard axisLock.axis(deltaX: dx, deltaY: dy, phase: phase, momentumPhase: momentum) == .horizontal else { return false }
+            // A mouse wheel reports lines; three characters per line, like a text view.
+            let points = precise ? dx : dx * 3 * Double(charWidth)
+            setMessageOffset(messageScroll.offset - points, flash: true)
+            return true
         }
 
         // MARK: View options
@@ -682,18 +850,20 @@ struct LogTableView: NSViewRepresentable {
             guard let entry = session.entry(for: logRow) else { return nil }
 
             if entry.kind == .marker {
-                let label = makeLabel(column.identifier)
                 if column == .message {
+                    let cell = makeMessageCell()
+                    let label = cell.label
                     setWrapping(label)
                     label.stringValue = "——— \(entry.message) ———"
                     label.font = italicFont ?? label.font
                     label.textColor = .secondaryLabelColor
                     // The decoration around a marker's text is not in its span.
                     noteMessageWidth(of: label)
-                } else {
-                    label.stringValue = column == .time ? cellText(.time, for: entry, row: row, in: session) : ""
-                    label.textColor = .tertiaryLabelColor
+                    return cell
                 }
+                let label = makeLabel(column.identifier)
+                label.stringValue = column == .time ? cellText(.time, for: entry, row: row, in: session) : ""
+                label.textColor = .tertiaryLabelColor
                 return label
             }
 
@@ -709,6 +879,20 @@ struct LogTableView: NSViewRepresentable {
                 } else {
                     badge.isHidden = true
                 }
+                return cell
+            }
+
+            if column == .message {
+                let cell = makeMessageCell()
+                let label = cell.label
+                label.toolTip = nil
+                setWrapping(label)
+                let text = logRow.text(in: entry.message)
+                label.stringValue = text
+                label.textColor = LogColors.text(for: entry.level)
+                if !wrapLines, logRow.span.cells > 120 { label.toolTip = text }
+                highlightMatches(in: label, text: text, row: row, style: wrapLines ? wrappingStyle : truncatingStyle)
+                if !logRow.span.isASCII { noteMessageWidth(of: label) }
                 return cell
             }
 
@@ -734,15 +918,7 @@ struct LogTableView: NSViewRepresentable {
                 label.stringValue = isFirstLine ? cellText(.process, for: entry, row: row, in: session) : ""
                 label.textColor = .secondaryLabelColor
                 label.toolTip = isFirstLine ? session.processName(for: entry) : nil
-            case .message:
-                setWrapping(label)
-                let text = logRow.text(in: entry.message)
-                label.stringValue = text
-                label.textColor = LogColors.text(for: entry.level)
-                if !wrapLines, logRow.span.cells > 120 { label.toolTip = text }
-                highlightMatches(in: label, text: text, row: row, style: wrapLines ? wrappingStyle : truncatingStyle)
-                if !logRow.span.isASCII { noteMessageWidth(of: label) }
-            case .level:
+            case .message, .level:
                 break
             }
             return label
@@ -771,8 +947,25 @@ struct LogTableView: NSViewRepresentable {
             label.toolTip = process
         }
 
+        /// The Message cell, set up for the current mode and sideways position. Its label is configured by the
+        /// caller, and reuse never hands back a stale font, tooltip or offset.
+        private func makeMessageCell() -> MessageCellView {
+            let cell: MessageCellView
+            if let reused = tableView.makeView(withIdentifier: Column.message.identifier, owner: nil) as? MessageCellView {
+                cell = reused
+            } else {
+                cell = MessageCellView()
+                cell.identifier = Column.message.identifier
+            }
+            if let font { cell.label.font = font }
+            cell.wraps = wrapLines
+            cell.contentWidth = CGFloat(messageScroll.contentWidth)
+            cell.offset = wrapLines ? 0 : CGFloat(messageScroll.offset)
+            return cell
+        }
+
         /// Tags are cut in the middle and package and process names at the front, so the part that tells them
-        /// apart stays visible (Android Studio does the same).
+        /// apart stays visible (Android Studio does the same). The Message column has its own cell.
         private func makeLabel(_ identifier: NSUserInterfaceItemIdentifier) -> NSTextField {
             let label: NSTextField
             if let reused = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTextField {
@@ -859,25 +1052,44 @@ struct LogTableView: NSViewRepresentable {
 
         // MARK: Keyboard
 
-        /// ←/→ scroll sideways by eight characters, ⌘←/⌘→ to the left and right edges, when long lines scroll
-        /// instead of wrapping and the table has focus. Returns whether it handled the key.
+        /// ←/→ move the message text sideways by eight characters, ⌘←/⌘→ to its start and end, when long lines
+        /// scroll instead of wrapping and the table has focus. In a window too narrow to pin the other columns
+        /// they scroll the whole table instead. Returns whether it handled the key.
         func handleKey(_ event: NSEvent) -> Bool {
-            let clip = scrollView.contentView
-            guard !wrapLines, tableView.frame.width > clip.bounds.width + 0.5, let key = event.specialKey else { return false }
+            guard !wrapLines, let key = event.specialKey else { return false }
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            let move: MessageScroll.Move
+            switch (key, modifiers) {
+            case (.leftArrow, []): move = .left
+            case (.rightArrow, []): move = .right
+            case (.leftArrow, .command): move = .start
+            case (.rightArrow, .command): move = .end
+            default: return false
+            }
+            let step = Double(8 * charWidth)
+            if messageScroll.isScrollable {
+                setMessageOffset(messageScroll.offset(after: move, step: step), flash: true)
+                return true
+            }
+            let clip = scrollView.contentView
+            guard !tableFits else { return false }
             let maxX = tableView.frame.width - clip.bounds.width
             var x = clip.bounds.origin.x
-            switch (key, modifiers) {
-            case (.leftArrow, []): x -= 8 * charWidth
-            case (.rightArrow, []): x += 8 * charWidth
-            case (.leftArrow, .command): x = 0
-            case (.rightArrow, .command): x = maxX
-            default: return false
+            switch move {
+            case .left: x -= step
+            case .right: x += step
+            case .start: x = 0
+            case .end: x = maxX
             }
             let target = NSRect(x: min(max(0, x), maxX), y: clip.bounds.origin.y, width: clip.bounds.width, height: clip.bounds.height)
             clip.scroll(to: clip.constrainBoundsRect(target).origin)
             scrollView.reflectScrolledClipView(clip)
             return true
+        }
+
+        /// Whether the table is no wider than the view, so it has no sideways scrolling of its own.
+        fileprivate var tableFits: Bool {
+            tableView.frame.width <= scrollView.contentView.bounds.width + 0.5
         }
 
         // MARK: Copy and menus
@@ -1111,8 +1323,8 @@ extension LogTableView.Coordinator: FindTableNavigating {
     var selectedRowIndexes: IndexSet { tableView.selectedRowIndexes }
 
     /// Selects the row alone, stops following new logs, and scrolls it to the vertical centre unless it is
-    /// fully visible already. Without wrapping, also scrolls sideways when the first highlight is out of
-    /// sight.
+    /// fully visible already. Without wrapping, it also moves the message text sideways when the first
+    /// highlight is out of sight.
     func revealFindMatch(row: Int, highlight: NSRange?) {
         guard let session, row >= 0, row < tableView.numberOfRows else { return }
         session.autoScroll = false
@@ -1132,15 +1344,24 @@ extension LogTableView.Coordinator: FindTableNavigating {
             // A line whose width is only an estimate may not have been drawn yet, so widen the column
             // first or the scroll would stop at the old edge.
             noteMessageWidth(ofRow: session.rows[row])
-            let column = tableView.column(withIdentifier: Column.message.identifier)
-            if column >= 0 {
-                let prefix = (line as NSString).substring(to: highlight.location)
-                let matched = (line as NSString).substring(with: highlight)
-                // The text starts a few points inside its cell.
-                let x = tableView.rect(ofColumn: column).minX + 4 + charWidth * CGFloat(MessageLines.cells(prefix))
-                let width = charWidth * CGFloat(MessageLines.cells(matched))
-                if x < bounds.minX || x + width > bounds.maxX {
-                    origin.x = max(0, x - 40)
+            let prefix = (line as NSString).substring(to: highlight.location)
+            let matched = (line as NSString).substring(with: highlight)
+            // The text starts a few points inside its cell, and while the other columns are pinned the table itself
+            // does not scroll sideways.
+            let x = 4 + Double(charWidth) * Double(MessageLines.cells(prefix))
+            let width = Double(charWidth) * Double(MessageLines.cells(matched))
+            if messageScroll.isScrollable {
+                if let target = messageScroll.offsetRevealing(x: x, width: width, margin: 40) {
+                    setMessageOffset(target, flash: false)
+                }
+            } else if !tableFits {
+                // Too narrow to pin the other columns: the whole table scrolls, as the column is as wide as the text.
+                let column = tableView.column(withIdentifier: Column.message.identifier)
+                if column >= 0 {
+                    let left = tableView.rect(ofColumn: column).minX + CGFloat(x)
+                    if left < bounds.minX || left + CGFloat(width) > bounds.maxX {
+                        origin.x = max(0, left - 40)
+                    }
                 }
             }
         }
@@ -1170,8 +1391,14 @@ protocol LogTableDebugging: AnyObject {
     /// `following` keeps follow mode.
     func debugSelect(row: Int, at fraction: Double, following: Bool)
     func debugScrollBenchmark(pages: Int) -> String
-    /// Sends ←, →, ⌘→ and ⌘← to the table and reports the horizontal offset after each.
+    /// Sends ←, →, ⌘→ and ⌘← to the table and reports the message offset after each, and whether the other
+    /// columns stayed put.
     func debugPressArrowKeys() -> String
+    /// Drives sideways scroll gestures, a mouse wheel and a drag of the Message scroller through the same
+    /// code the real events use, and reports what each did to the message offset.
+    func debugMessageScroll() -> String
+    /// `pinned=ok`, or the first way the other columns moved with the message.
+    func debugPinned() -> String
     /// The view options, the column order, and the cells on screen, checked against the formatter.
     func debugViewSummary() -> String
     /// What Copy would put on the pasteboard for the last `entries` entries, one per line, with newlines
@@ -1203,9 +1430,7 @@ extension LogTableView.Coordinator: LogTableDebugging {
         var truncated = 0
         if columnIndex >= 0 {
             for row in range where row < session.rows.count {
-                guard let label = tableView.view(atColumn: columnIndex, row: row, makeIfNecessary: false) as? NSTextField,
-                      let cell = label.cell
-                else { continue }
+                guard let label = messageLabel(row: row), let cell = label.cell else { continue }
                 if wrapLines {
                     let needed = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: label.bounds.width, height: 1e7)).height
                     if needed > label.bounds.height + 0.5 { clipped += 1 }
@@ -1222,7 +1447,63 @@ extension LogTableView.Coordinator: LogTableDebugging {
         return "calls=\(heightCalls) docH=\(Int(tableView.frame.height)) wrap=\(wrapLines ? "on" : "off") cols=\(wrapColumns) charWidth=\(String(format: "%.2f", charWidth)) "
             + "msgWidth=\(String(format: "%.0f", messageWidth)) widestCells=\(session.widestLineCells) "
             + "selected=\(selectedText) visible=\(range.lowerBound)-\(range.upperBound) selectedVisible=\(selectedVisible) "
-            + "clipped=\(clipped) truncated=\(truncated) reload=\(reload) height=\(height) anchor=\(anchor)"
+            + "clipped=\(clipped) truncated=\(truncated) reload=\(reload) height=\(height) anchor=\(anchor) "
+            + "hscroll=\(Int(messageScroll.offset))/\(Int(messageScroll.maxOffset)) viewW=\(Int(clip.bounds.width)) fits=\(tableFits ? "yes" : "no") "
+            + "clipX=\(Int(clip.bounds.origin.x)) scroller=\(scrollerSummary())"
+    }
+
+    /// The Message scroller: hidden, or the style, where it is (x + width), how wide its document is, where
+    /// its clip view is scrolled, and how much of the track the knob takes. In legacy style it also checks
+    /// that the strip does not cover any of the rows (`band=ok`).
+    fileprivate func scrollerSummary() -> String {
+        let strip = scrollView.messageScroller
+        guard !strip.isHidden else { return "hidden" }
+        let legacy = scrollView.scrollerStyle == .legacy
+        let document = Int(strip.documentView?.frame.width ?? 0)
+        var text = "\(legacy ? "legacy" : "overlay"):\(Int(strip.frame.minX))+\(Int(strip.frame.width))/doc\(document)/at\(Int(strip.contentView.bounds.minX))"
+        if let scroller = strip.horizontalScroller {
+            text += "/knob\(String(format: "%.3f", scroller.knobProportion))@\(String(format: "%.3f", scroller.doubleValue))\(scroller.isHidden ? "(hidden)" : "")"
+        }
+        let column = tableView.column(withIdentifier: Column.message.identifier)
+        if column >= 0 { text += "/col\(Int(tableView.rect(ofColumn: column).minX))" }
+        if legacy {
+            text += strip.frame.intersects(scrollView.contentView.frame.insetBy(dx: 0, dy: 0.5)) ? "/band=OVERLAP" : "/band=ok"
+        }
+        return text
+    }
+
+    /// `ok`, or the first way the other columns moved with the message: the table scrolled sideways while it
+    /// fits, a visible column outside the visible rect, or a Message label that is not where the offset says.
+    fileprivate func pinCheck() -> String {
+        let clip = scrollView.contentView
+        let fits = tableFits
+        if fits, abs(clip.bounds.origin.x) > 0.01 { return "MOVED(clipX=\(clip.bounds.origin.x))" }
+        if fits {
+            let visible = tableView.visibleRect
+            for column in tableView.tableColumns where !column.isHidden && column.identifier != Column.message.identifier {
+                let rect = tableView.rect(ofColumn: tableView.column(withIdentifier: column.identifier))
+                if rect.minX < visible.minX - 0.5 || rect.maxX > visible.maxX + 0.5 { return "OFFSCREEN(\(column.identifier.rawValue))" }
+            }
+        }
+        let want = wrapLines ? 0 : -messageScroll.offset
+        var failure: String?
+        let index = tableView.column(withIdentifier: Column.message.identifier)
+        if index >= 0 {
+            tableView.enumerateAvailableRowViews { rowView, row in
+                guard failure == nil, let cell = rowView.view(atColumn: index) as? MessageCellView else { return }
+                if abs(Double(cell.label.frame.minX) - want) > 0.01 {
+                    failure = "LABEL(\(row) x=\(cell.label.frame.minX) want=\(want))"
+                }
+            }
+        }
+        return failure ?? "ok"
+    }
+
+    /// The label of a Message cell that is on screen now.
+    fileprivate func messageLabel(row: Int) -> NSTextField? {
+        let index = tableView.column(withIdentifier: Column.message.identifier)
+        guard index >= 0 else { return nil }
+        return (tableView.view(atColumn: index, row: row, makeIfNecessary: false) as? MessageCellView)?.label
     }
 
     func debugSelect(row: Int, at fraction: Double, following: Bool) {
@@ -1245,9 +1526,13 @@ extension LogTableView.Coordinator: LogTableDebugging {
         // A window nobody can see may not have laid out the table since its column was resized.
         scrollView.tile()
         tableView.tile()
+        // In a window too narrow to pin the other columns the whole table scrolls instead of the message.
+        let wholeTable = !wrapLines && !messageScroll.isScrollable && !tableFits
         let clip = scrollView.contentView
-        let range = "range=0..\(Int(max(0, tableView.frame.width - clip.bounds.width)))"
+        func position() -> Double { wholeTable ? clip.bounds.origin.x : messageScroll.offset }
+        let range = "range=0..\(Int(wholeTable ? tableView.frame.width - clip.bounds.width : messageScroll.maxOffset))"
         var steps: [String] = []
+        var pinned = "ok"
         let presses: [(String, Int, NSEvent.ModifierFlags)] = [
             ("→", NSRightArrowFunctionKey, []), ("→", NSRightArrowFunctionKey, []),
             ("⌘→", NSRightArrowFunctionKey, .command), ("←", NSLeftArrowFunctionKey, []),
@@ -1261,11 +1546,112 @@ extension LogTableView.Coordinator: LogTableDebugging {
                 charactersIgnoringModifiers: characters, isARepeat: false, keyCode: key == NSLeftArrowFunctionKey ? 123 : 124
             )
             guard let event else { continue }
-            let before = clip.bounds.origin.x
+            let before = position()
             let handled = handleKey(event)
-            steps.append("\(name):\(handled ? "scrolled" : "ignored")@\(Int(before))->\(Int(clip.bounds.origin.x))")
+            steps.append("\(name):\(handled ? "scrolled" : "ignored")@\(Int(before))->\(Int(position()))")
+            let check = pinCheck()
+            if pinned == "ok" { pinned = check }
         }
-        return "arrow-keys wrap=\(wrapLines ? "on" : "off") \(range) " + steps.joined(separator: " ")
+        let result = "arrow-keys wrap=\(wrapLines ? "on" : "off")\(wholeTable ? " table" : "") \(range) " + steps.joined(separator: " ") + " pinned=\(pinned)"
+        if wholeTable {
+            clip.scroll(to: NSPoint(x: 0, y: clip.bounds.origin.y))
+            scrollView.reflectScrolledClipView(clip)
+        }
+        return result
+    }
+
+    func debugPinned() -> String {
+        "pinned=\(pinCheck())"
+    }
+
+    func debugMessageScroll() -> String {
+        scrollView.tile()
+        tableView.tile()
+        axisLock = ScrollAxisLock()
+        setMessageOffset(0, flash: false)
+        var pinned = "ok"
+        func check() {
+            let result = pinCheck()
+            if pinned == "ok" { pinned = result }
+        }
+        func send(_ dx: Double, _ dy: Double, _ phase: ScrollAxisLock.Phase, _ momentum: ScrollAxisLock.Phase = .none, precise: Bool = true) -> Bool {
+            handleScroll(dx: dx, dy: dy, precise: precise, phase: phase, momentum: momentum, inside: true)
+        }
+        // A sideways swipe with a little vertical wobble, then its momentum.
+        let horizontal = [
+            send(-30, 2, .began), send(-30, -5, .changed), send(0, 0, .ended),
+            send(-10, 0, .none, .began), send(-10, 0, .none, .changed), send(0, 0, .none, .ended),
+        ]
+        let afterHorizontal = Int(messageScroll.offset)
+        check()
+        // A mostly vertical swipe that wanders sideways stays the table's.
+        let vertical = [send(2, -30, .began), send(-20, -10, .changed), send(0, 0, .ended)]
+        let afterVertical = Int(messageScroll.offset)
+        // A mouse wheel turned sideways (shift) reports lines, not points.
+        let wheel = send(-2, 0, .none, .none, precise: false)
+        let afterWheel = Int(messageScroll.offset)
+        check()
+        // A drag of the Message scroller's knob, which moves its clip view.
+        var scroller = "n/a"
+        let strip = scrollView.messageScroller
+        if !wrapLines, messageScroll.isScrollable {
+            isSyncingScroller = false
+            strip.contentView.scroll(to: NSPoint(x: min(100, messageScroll.maxOffset), y: 0))
+            strip.reflectScrolledClipView(strip.contentView)
+            scroller = "\(Int(min(100, messageScroll.maxOffset)))->\(Int(messageScroll.offset))"
+            check()
+        }
+        setMessageOffset(0, flash: false)
+        axisLock = ScrollAxisLock()
+        check()
+        let pixels = pixelCheck()
+        return "message-scroll wrap=\(wrapLines ? "on" : "off") max=\(Int(messageScroll.maxOffset)) "
+            + "h=consumed\(horizontal.filter { $0 }.count)/\(horizontal.count)@0->\(afterHorizontal) "
+            + "v=passed\(vertical.filter { !$0 }.count)/\(vertical.count)@\(afterHorizontal)->\(afterVertical) "
+            + "wheel=\(wheel ? "consumed" : "passed")@\(afterVertical)->\(afterWheel) scroller=\(scroller) pinned=\(pinned) pixels=\(pixels)"
+    }
+
+    /// Draws the log into a bitmap at offset 0 and again with the text moved, and compares what the other
+    /// columns and the Message column show: the columns left of the message must not change by a pixel,
+    /// whatever the text does (`pinned-same`), and the message must change (`moved`). `n/a` when the text does
+    /// not scroll. This draws the views directly, so it shows where the text is drawn but not what the window
+    /// server composites; clipping to the column (`clipsToBounds` on the cell) is a manual check.
+    private func pixelCheck() -> String {
+        let column = tableView.column(withIdentifier: Column.message.identifier)
+        guard !wrapLines, messageScroll.isScrollable, column >= 0 else { return "n/a" }
+        func render() -> NSBitmapImageRep? {
+            scrollView.layoutSubtreeIfNeeded()
+            guard let rep = scrollView.bitmapImageRepForCachingDisplay(in: scrollView.bounds) else { return nil }
+            scrollView.cacheDisplay(in: scrollView.bounds, to: rep)
+            return rep
+        }
+        setMessageOffset(0, flash: false)
+        guard let before = render() else { return "no-bitmap" }
+        setMessageOffset(min(1000, messageScroll.maxOffset), flash: false)
+        guard let after = render() else { return "no-bitmap" }
+        setMessageOffset(0, flash: false)
+        guard let a = before.bitmapData, let b = after.bitmapData, before.bytesPerRow == after.bytesPerRow,
+              before.pixelsHigh == after.pixelsHigh, before.bitsPerPixel == 32, after.bitsPerPixel == 32
+        else { return "no-bitmap" }
+        let scale = Double(before.pixelsWide) / Double(scrollView.bounds.width)
+        let content = scrollView.contentView.frame
+        let messageLeft = Int((content.minX + tableView.rect(ofColumn: column).minX - scrollView.contentView.bounds.minX) * scale)
+        let messageRight = min(before.pixelsWide, Int(content.maxX * scale))
+        let pinnedLeft = Int(content.minX * scale)
+        // Everything but the bottom rows, where the scroller may be drawn, and the top, where the header is.
+        let rows = before.pixelsHigh
+        var pinnedDiffs = 0
+        var messageDiffs = 0
+        for y in 0..<rows {
+            let row = y * before.bytesPerRow
+            for x in pinnedLeft..<max(pinnedLeft, messageLeft) where memcmp(a + row + x * 4, b + row + x * 4, 4) != 0 {
+                pinnedDiffs += 1
+            }
+            for x in messageLeft..<max(messageLeft, messageRight) where memcmp(a + row + x * 4, b + row + x * 4, 4) != 0 {
+                messageDiffs += 1
+            }
+        }
+        return "\(pinnedDiffs == 0 ? "pinned-same" : "PINNED-CHANGED(\(pinnedDiffs))"),\(messageDiffs > 0 ? "moved" : "UNMOVED")"
     }
 
     /// Scrolls through the whole log one jump per page, so every step draws a fresh page of rows (the worst
@@ -1298,8 +1684,31 @@ extension LogTableView.Coordinator: LogTableDebugging {
         times.sort()
         let average = times.reduce(0, +) / Double(max(1, times.count))
         let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
-        return "scroll-bench wrap=\(wrapLines ? "on" : "off") rows=\(count) pages=\(times.count) "
+        var text = "scroll-bench wrap=\(wrapLines ? "on" : "off") rows=\(count) pages=\(times.count) "
             + "avg=\(String(format: "%.2f", average))ms p95=\(String(format: "%.2f", p95))ms max=\(String(format: "%.2f", times.last ?? 0))ms"
+        text += sidewaysBenchmark(steps: 50)
+        return text
+    }
+
+    /// Times moving the message text across its whole range in `steps` jumps, each to the end of drawing, and
+    /// leaves the offset where it was. Empty when the text does not scroll.
+    private func sidewaysBenchmark(steps: Int) -> String {
+        guard !wrapLines, messageScroll.isScrollable else { return "" }
+        let saved = messageScroll.offset
+        let travel = messageScroll.maxOffset
+        let clock = ContinuousClock()
+        var times: [Double] = []
+        for step in 1...steps {
+            let started = clock.now
+            setMessageOffset(travel * Double(step) / Double(steps), flash: false)
+            scrollView.displayIfNeeded()
+            times.append(Self.milliseconds(clock.now - started))
+        }
+        setMessageOffset(saved, flash: false)
+        times.sort()
+        let average = times.reduce(0, +) / Double(times.count)
+        let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
+        return " sideways steps=\(steps) avg=\(String(format: "%.2f", average))ms p95=\(String(format: "%.2f", p95))ms max=\(String(format: "%.2f", times.last ?? 0))ms"
     }
 
     /// One line: the options, the column order (hidden columns included, which shows where an autosaved
@@ -1340,7 +1749,7 @@ extension LogTableView.Coordinator: LogTableDebugging {
                 fields.append(actual ?? "?")
             }
             let level = options.isVisible(.level) ? ((tableView.view(atColumn: tableView.column(withIdentifier: Column.level.identifier), row: row, makeIfNecessary: false) as? BadgeCellView)?.badge.stringValue ?? "?") : "~"
-            let message = label(.message, row)?.stringValue ?? "?"
+            let message = messageLabel(row: row)?.stringValue ?? "?"
             if logRow.line == 0 {
                 shown.append((fields + [level, String(message.prefix(14))]).joined(separator: "|"))
             }

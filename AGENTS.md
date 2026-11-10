@@ -22,7 +22,9 @@ with that query (the debug output then includes `find=... check=ok|MISMATCH`, a 
 line spans). With `LOGCATNIP_DEBUG=1` each session also prints a `table:` line (soft wrap state, the Message
 column, the selection, `clipped` and `truncated` counts); `LOGCATNIP_WRAP_TOGGLE=<seconds>` toggles soft wrap
 four times and prints it after each (`LOGCATNIP_WRAP_SELECT=middle|end|none|<row>`, `LOGCATNIP_WRAP_RESIZE=<points>`
-and `LOGCATNIP_WRAP_KEYS=1` add a selection, a window resize and the arrow keys), and
+and `LOGCATNIP_WRAP_KEYS=1` add a selection, a window resize and the arrow keys; `LOGCATNIP_WRAP_KEYS=1`
+also prints a `message-scroll` line ending in `pinned=ok`, and `LOGCATNIP_WINDOW_WIDTH=<points>` sets the
+window width, since the Message column needs room beside the other columns), and
 `LOGCATNIP_SCROLL_BENCH=<pages>` times scrolling in each mode. Use them to check wrapping from a terminal,
 since screenshots of the Mac are off limits. `LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of
 new sessions and `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every style; with
@@ -55,6 +57,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `MessageLines.swift`: per-line spans and display widths of a message, computed once per row so the
     table sizes wrapped rows and the Message column without touching the text.
   - `ViewportAnchor.swift`: which row to hold still, and where to scroll, when row heights change.
+  - `MessageScroll.swift`: the Message column's sideways offset and the per-gesture axis lock, so only the
+    message scrolls sideways while the other columns stay in place.
   - `LogViewOptions.swift`: a session's view (columns, timestamp and PID style, widths, hide repeated, tag
     colors), the Standard and Compact presets, and lenient JSON for the saved default. `LogcatTime` formats
     the timestamp styles.
@@ -67,7 +71,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
   - `FindController.swift`, `FindBar.swift`: the find bar, its state, and incremental off-main scans.
   - `ScrollMarkers.swift`: the tick marks drawn over the table's vertical scroller, one layer per kind of
-    mark.
+    mark. `LogScrollView` also places the Message column's scroller.
+  - `MessageScroller.swift`: the clipping Message cell and the Message column's own horizontal scroller.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
   - `ViewOptionsView.swift`: the Modify View form and sheet, the preset picker and menu items.
