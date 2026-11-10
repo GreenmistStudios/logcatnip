@@ -81,7 +81,6 @@ private struct SessionToolbar: ToolbarContent {
 
 struct FilterBar: View {
     @Bindable var session: LogSession
-    @FocusState private var focused: Bool
     @State private var showingHelp = false
     @State private var libraryVersion = 0
 
@@ -96,23 +95,25 @@ struct FilterBar: View {
             .fixedSize()
             .help("Favorite and recent filters")
 
-            TextField("Filter: tag:MyTag level:WARN package:mine is:crash -tag:Noisy …", text: $session.filterQuery)
-                .textFieldStyle(.plain)
-                .font(.system(.body, design: .monospaced))
-                .focused($focused)
-                .onSubmit {
+            FilterField(
+                text: $session.filterQuery,
+                placeholder: "Filter: tag:MyTag level:WARN package:mine is:crash -tag:Noisy … (⌃Space for suggestions)",
+                focusRequest: session.focusFilterRequest,
+                suggestions: { session.completionSuggestions(query: $0, cursor: $1) },
+                onSubmit: {
                     session.applyFilterNow()
                     FilterLibrary.remember(session.filterQuery)
                     libraryVersion += 1
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: .textBackgroundColor)))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(session.filterError == nil ? Color(nsColor: .separatorColor) : .red, lineWidth: 1)
-                )
-                .help(session.filterError?.message ?? "Android Studio logcat query syntax. Click ? for help.")
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(session.filterError == nil ? Color(nsColor: .separatorColor) : .red, lineWidth: 1)
+            )
 
             if !session.filterQuery.isEmpty {
                 Button {
@@ -172,7 +173,6 @@ struct FilterBar: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .onChange(of: session.focusFilterRequest) { focused = true }
     }
 
     private var isFavorite: Bool {
@@ -328,6 +328,7 @@ struct FilterHelpView: View {
         ("name:\"My filter\"", "Names the filter"),
         ("foo bar  \"foo bar\"", "Free text anywhere in the line"),
         ("&  |  ( )", "AND, OR and grouping; & binds tighter than |, spaces loosest"),
+        ("⌃Space  ⌥Esc", "Suggest keys and values; ↑↓ choose, Tab or Return accept"),
     ]
 
     var body: some View {

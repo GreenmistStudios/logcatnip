@@ -272,6 +272,7 @@ final class LogSession: Identifiable {
             }
             lastTimestamp = entry.timestamp
             entries.append(entry)
+            noteForCompletion(entry)
         }
         trimIfNeeded()
         if sawUnknownPid { requestProcessNames() }
@@ -443,6 +444,7 @@ final class LogSession: Identifiable {
     func clear() {
         entries.removeAll(keepingCapacity: true)
         rows.removeAll(keepingCapacity: true)
+        resetCompletionStats()
         firstID = nextID
         lastFilteredID = nextID - 1
         filterGeneration += 1
@@ -543,6 +545,73 @@ final class LogSession: Identifiable {
     func setMinimumLevel(_ level: LogLevel?) {
         filterQuery = FilterQueryEditor.settingMinimumLevel(level, in: filterQuery)
         applyFilterNow()
+    }
+
+    // MARK: Completion
+
+    /// How active a pid has been and its latest entry, so a pid's process name can be looked up when the user
+    /// asks for suggestions instead of being kept for every entry.
+    private struct PidActivity {
+        var count: Int
+        var lastID: Int
+    }
+
+    /// Entries seen per tag and per pid. They describe the session, so they survive buffer trimming and reset
+    /// with Clear and Restart.
+    @ObservationIgnored private var tagCounts: [String: Int] = [:]
+    @ObservationIgnored private var pidActivity: [Int32: PidActivity] = [:]
+
+    /// One dictionary update per tag and pid per entry; nothing here touches the table path.
+    private func noteForCompletion(_ entry: LogEntry) {
+        guard entry.kind == .log else { return }
+        if !entry.tag.isEmpty { tagCounts[entry.tag, default: 0] += 1 }
+        if entry.pid > 0 {
+            var activity = pidActivity[entry.pid] ?? PidActivity(count: 0, lastID: entry.id)
+            activity.count += 1
+            activity.lastID = entry.id
+            pidActivity[entry.pid] = activity
+        }
+    }
+
+    private func resetCompletionStats() {
+        tagCounts.removeAll()
+        pidActivity.removeAll()
+    }
+
+    /// The entry with this sequence number, if it is still in the buffer.
+    private func entry(withID id: Int) -> LogEntry? {
+        let index = id - firstID
+        guard index >= 0, index < entries.count else { return nil }
+        return entries[index]
+    }
+
+    /// Process names from the latest `ps`. The only place completion reads `processNames`.
+    private var runningProcessNames: [String] { Array(Set(processNames.values)) }
+
+    /// Distinct tags seen, for the debug output.
+    var distinctTagCount: Int { tagCounts.count }
+
+    func completionSource() -> FilterCompletionSource {
+        var processCounts: [String: Int] = [:]
+        var pids: [FilterPidInfo] = []
+        pids.reserveCapacity(pidActivity.count)
+        for (pid, activity) in pidActivity {
+            let name = entry(withID: activity.lastID).flatMap(processName(for:))
+            if let name { processCounts[name, default: 0] += activity.count }
+            pids.append(FilterPidInfo(pid: pid, count: activity.count, processName: name))
+        }
+        return FilterCompletionSource(
+            tagCounts: tagCounts,
+            processCounts: processCounts,
+            runningProcesses: runningProcessNames,
+            pids: pids,
+            myPackages: Defaults.myPackages.sorted(),
+            history: []
+        )
+    }
+
+    func completionSuggestions(query: String, cursor: Int) -> [FilterSuggestion] {
+        FilterCompletion.suggestions(query: query, cursor: cursor, source: completionSource())
     }
 
     // MARK: Text output

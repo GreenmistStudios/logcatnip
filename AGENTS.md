@@ -15,7 +15,8 @@ CONFIG=debug scripts/build-app.sh            # debug app bundle
 ```
 
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions. `LOGCATNIP_COMPLETE='tag:Net'` (with
+`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`. Run all three before you call a change done.
@@ -43,6 +44,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
+  - `FilterField.swift`: the filter field, a single-line `NSTextView` (TextKit 1) that colors the query, underlines
+    the failing token and drives completion from the keyboard. `CompletionPanel.swift` is its suggestion popup.
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.

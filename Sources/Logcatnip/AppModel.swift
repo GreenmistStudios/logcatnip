@@ -73,6 +73,8 @@ final class AppModel {
 
     /// Prints session state to stderr every few seconds, for diagnosing the app from a terminal.
     private func startDebugReporting() {
+        // `LOGCATNIP_COMPLETE='tag:Net'` also prints the suggestions for that query, with the cursor at its end.
+        let completeQuery = ProcessInfo.processInfo.environment["LOGCATNIP_COMPLETE"]
         Task { [weak self] in
             while let self {
                 let devices = self.devices.map { "\($0.serial)[\($0.descriptor.state.description)]" }.joined(separator: ",")
@@ -83,6 +85,14 @@ final class AppModel {
                         + "rows=\(session.rows.count) processes=\(session.processNames.count) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
                     FileHandle.standardError.write(Data(line.utf8))
+                }
+                if let completeQuery {
+                    for session in self.sessions {
+                        let suggestions = session.completionSuggestions(query: completeQuery, cursor: completeQuery.count)
+                        let line = "[logcatnip]   complete \"\(completeQuery)\" tags=\(session.distinctTagCount) -> "
+                            + "\(Array(suggestions.prefix(15).map(\.insertion)))\n"
+                        FileHandle.standardError.write(Data(line.utf8))
+                    }
                 }
                 try? await Task.sleep(for: .seconds(3))
             }
