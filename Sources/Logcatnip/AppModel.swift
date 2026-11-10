@@ -78,9 +78,11 @@ final class AppModel {
                 let devices = self.devices.map { "\($0.serial)[\($0.descriptor.state.description)]" }.joined(separator: ",")
                 FileHandle.standardError.write(Data("[logcatnip] devices=\(devices) sessions=\(self.sessions.count)\n".utf8))
                 for session in self.sessions {
+                    let stats = session.processNameStats
                     let line = "[logcatnip]   \(session.title): status=\(session.status.label) paused=\(session.isPaused) "
                         + "follow=\(session.autoScroll) total=\(session.totalCount) visible=\(session.visibleCount) "
-                        + "rows=\(session.rows.count) processes=\(session.processNames.count) "
+                        + "rows=\(session.rows.count) processes=\(stats.running) pending=\(stats.pending) "
+                        + "unresolved=\(stats.unresolvable) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
                     FileHandle.standardError.write(Data(line.utf8))
                 }
