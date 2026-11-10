@@ -289,6 +289,7 @@ struct FilterHelpView: View {
         Example(query: "tag~:^(Okhttp|Retrofit)", description: "tag regex"),
         Example(query: "age:5m", description: "logged in the last 5 minutes"),
         Example(query: "(tag:Net | tag:Http) & level:ERROR", description: "operators and grouping"),
+        Example(query: "level:ERROR tag:Net | tag:Http", description: "errors from either tag"),
     ]
 
     private let rows: [(String, String)] = [
@@ -305,7 +306,7 @@ struct FilterHelpView: View {
         ("pid:123  tid:456", "Process or thread id"),
         ("name:\"My filter\"", "Names the filter"),
         ("foo bar  \"foo bar\"", "Free text anywhere in the line"),
-        ("&  |  ( )", "AND, OR and grouping; & binds tighter than |"),
+        ("&  |  ( )", "AND, OR and grouping; & binds tighter than |, spaces loosest"),
     ]
 
     var body: some View {
@@ -320,7 +321,7 @@ struct FilterHelpView: View {
                     }
                 }
             }
-            Text("Without operators, terms with the same key are ORed and everything else is ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to filter by its tag, package or process.")
+            Text("Spaces separate terms with the lowest precedence: `foo bar tag:a | tag:b` means `\"foo bar\" & (tag:a | tag:b)`. Among them, terms with the same key are ORed and the rest ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to filter by its tag, package or process.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -18,6 +18,11 @@ private func matches(_ query: String, _ entry: LogEntry, caseSensitive: Bool = f
     try LogFilter(query, caseSensitive: caseSensitive).matches(entry, context: context)
 }
 
+/// Whether two queries parse to the same tree, after flattening and ordering `&`/`|` operands.
+private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) throws -> Bool {
+    try LogFilter(a, caseSensitive: caseSensitive).root?.canonical == LogFilter(b, caseSensitive: caseSensitive).root?.canonical
+}
+
 @Suite struct FilterTests {
     @Test func emptyQueryMatchesEverything() throws {
         let filter = try LogFilter("   ")
@@ -158,6 +163,78 @@ private func matches(_ query: String, _ entry: LogEntry, caseSensitive: Bool = f
         #expect(throws: FilterError.self) { try LogFilter("tag~:[unclosed") }
         #expect(throws: FilterError.self) { try LogFilter("message:\"open") }
         #expect(throws: FilterError.self) { try LogFilter("tag:a |") }
+    }
+
+    @Test func whitespaceHasLowestPrecedence() throws {
+        #expect(try sameMeaning("foo bar tag:bar1 | tag:bar2", "'foo bar' & (tag:bar1 | tag:bar2)"))
+        let query = "foo bar tag:bar1 | tag:bar2"
+        // The case from the issue: Android Studio does not show a bar2 entry that lacks "foo bar".
+        #expect(try !matches(query, entry(tag: "bar2", message: "unrelated")))
+        #expect(try matches(query, entry(tag: "bar2", message: "foo bar")))
+        #expect(try matches(query, entry(tag: "bar1", message: "foo bar")))
+        #expect(try !matches(query, entry(tag: "bar1", message: "unrelated")))
+    }
+
+    @Test func androidStudioDocExamples() throws {
+        #expect(try sameMeaning("tag:foo tag:bar package:myapp", "(tag:foo | tag:bar) & package:myapp"))
+        #expect(try matches("tag:foo tag:bar package:myapp", entry(tag: "bar", process: "myapp")))
+        #expect(try !matches("tag:foo tag:bar package:myapp", entry(tag: "baz", process: "myapp")))
+        #expect(try !matches("tag:foo tag:bar package:myapp", entry(tag: "foo", process: "other")))
+
+        #expect(try sameMeaning("tag:foo -tag:bar package:myapp", "tag:foo & -tag:bar & package:myapp"))
+        #expect(try matches("tag:foo -tag:bar package:myapp", entry(tag: "foo", process: "myapp")))
+        #expect(try !matches("tag:foo -tag:bar package:myapp", entry(tag: "foobar", process: "myapp")))
+
+        let mixed = "tag:foo | level:ERROR & package:mine"
+        #expect(try sameMeaning(mixed, "tag:foo | (level:ERROR & package:mine)"))
+        let context = FilterContext(myPackages: ["com.example.app"], now: 1_000_000)
+        #expect(try matches(mixed, entry(tag: "foo", level: .verbose, process: "other"), context: context))
+        #expect(try matches(mixed, entry(tag: "x", level: .error), context: context))
+        #expect(try !matches(mixed, entry(tag: "x", level: .error, process: "other"), context: context))
+    }
+
+    @Test func operatorOperandsAreNotGroupedOrJoined() throws {
+        #expect(try sameMeaning("tag:a tag:b & level:E", "tag:a & tag:b & level:E"))
+        #expect(try sameMeaning("foo bar | baz", "foo & (bar | baz)"))
+        #expect(try sameMeaning("foo bar & baz", "foo & bar & baz"))
+        #expect(try sameMeaning("tag:Net | tag:Http level:WARN", "(tag:Net | tag:Http) & level:WARN"))
+    }
+
+    @Test func implicitOrGroupsFollowAndroidStudio() throws {
+        // Non-negated terms with the same key are ORed.
+        #expect(try sameMeaning("is:crash is:stacktrace", "is:crash | is:stacktrace"))
+        #expect(try sameMeaning("tag:a tag=:b tag~:c", "tag:a | tag=:b | tag~:c"))
+        #expect(try sameMeaning("line:x line:y", "line:x | line:y"))
+        #expect(try sameMeaning("age:1m age:5m", "age:1m | age:5m"))
+        #expect(try sameMeaning("pid:1 pid:2", "pid:1 | pid:2"))
+        // Everything else is ANDed.
+        #expect(try sameMeaning("package:mine package:foo", "package:mine & package:foo"))
+        #expect(try sameMeaning("-tag:a -tag:b", "-tag:a & -tag:b"))
+        #expect(try sameMeaning("foo \"bar\"", "foo & \"bar\""))
+        #expect(try sameMeaning("tag:a message:b", "tag:a & message:b"))
+    }
+
+    @Test func parenthesesHoldSequences() throws {
+        #expect(try sameMeaning("(tag:a tag:b level:E) | tag:c", "((tag:a | tag:b) & level:E) | tag:c"))
+        #expect(try LogFilter("()").matchesEverything)
+        #expect(try matches("tag:Tag & ()", entry()))
+        #expect(try !matches("tag:Zed & ()", entry()))
+    }
+
+    @Test func nameTermsDropOut() throws {
+        #expect(try sameMeaning("tag:a name:x tag:b", "tag:a | tag:b"))
+        #expect(try sameMeaning("foo name:x bar", "foo & bar"))
+        #expect(try LogFilter("name:N foo bar | baz").name == "N")
+        // A name inside an operator expression is an always-true operand, as in Android Studio.
+        let filter = try LogFilter("tag:a | name:x")
+        #expect(!filter.matchesEverything)
+        #expect(filter.matches(entry(tag: "zzz"), context: FilterContext()))
+    }
+
+    @Test func errorsUnderTheNewGrammar() {
+        for query in ["| tag:a", "tag:a &", "tag:a & | tag:b", "(tag:a", "tag:a )", "tag:a ) (", "is:bad"] {
+            #expect(throws: FilterError.self, "\(query)") { try LogFilter(query) }
+        }
     }
 
     @Test func markersAlwaysMatch() throws {

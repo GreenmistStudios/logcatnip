@@ -12,7 +12,7 @@ Android Studio's Logcat window.
 - **Android Studio filter syntax.** `tag:`, `package:`, `process:`, `message:`, `line:`, `level:`, `age:`,
   `is:crash`, `is:stacktrace`, `name:`, plus `pid:` and `tid:`. Every text key supports contains (`key:`),
   exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with `&`, `|` and parentheses.
-  Without operators, same-key terms are ORed and everything else is ANDed, as in Android Studio.
+  Spaces have the lowest precedence, and same-key terms are ORed, as in Android Studio.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
@@ -71,6 +71,14 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 
 Unquoted values end at whitespace, `&` or `|` (regex values only at whitespace). Quote values that contain
 them.
+
+### Precedence
+
+Spaces separate terms with the lowest precedence, as in Android Studio, so `foo bar tag:a | tag:b` means
+`"foo bar" & (tag:a | tag:b)`. Among the space-separated terms, non-negated terms with the same key are
+ORed and the rest are ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`, and negated terms
+are always ANDed. `package:mine` is never ORed, so `package:mine package:foo` needs both. Parentheses may
+hold a whole sequence, and `()` matches everything.
 
 ## Layout
 
