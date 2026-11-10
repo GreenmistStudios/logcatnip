@@ -883,15 +883,17 @@ struct LogTableView: NSViewRepresentable {
         // MARK: Copy and menus
 
         func copySelection() {
-            guard let session else { return }
-            let indexes = tableView.selectedRowIndexes
-            guard !indexes.isEmpty else { return }
+            guard !tableView.selectedRowIndexes.isEmpty, let text = copyText(forRows: tableView.selectedRowIndexes) else { return }
             NSPasteboard.general.clearContents()
-            // The visible columns in the order they are shown, so a pasted line reads like the table.
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+
+        /// The text Copy puts on the pasteboard: the visible columns in the order they are shown, so a pasted
+        /// line reads like the table.
+        fileprivate func copyText(forRows rows: IndexSet) -> String? {
+            guard let session else { return nil }
             let columns = tableView.tableColumns.filter { !$0.isHidden }.compactMap { Column(rawValue: $0.identifier.rawValue) }
-            NSPasteboard.general.setString(
-                session.text(forRows: indexes, columns: columns, formatter: formatter), forType: .string
-            )
+            return session.text(forRows: rows, columns: columns, formatter: formatter)
         }
 
         func menuNeedsUpdate(_ menu: NSMenu) {
@@ -1170,6 +1172,11 @@ protocol LogTableDebugging: AnyObject {
     func debugScrollBenchmark(pages: Int) -> String
     /// Sends ←, →, ⌘→ and ⌘← to the table and reports the horizontal offset after each.
     func debugPressArrowKeys() -> String
+    /// The view options, the column order, and the cells on screen, checked against the formatter.
+    func debugViewSummary() -> String
+    /// What Copy would put on the pasteboard for the last `entries` entries, one per line, with newlines
+    /// inside a message written as `\n`.
+    func debugCopyText(entries: Int) -> String
 }
 
 extension LogTableView.Coordinator: LogTableDebugging {
@@ -1293,5 +1300,68 @@ extension LogTableView.Coordinator: LogTableDebugging {
         let p95 = times[min(times.count - 1, Int(Double(times.count) * 0.95))]
         return "scroll-bench wrap=\(wrapLines ? "on" : "off") rows=\(count) pages=\(times.count) "
             + "avg=\(String(format: "%.2f", average))ms p95=\(String(format: "%.2f", p95))ms max=\(String(format: "%.2f", times.last ?? 0))ms"
+    }
+
+    /// One line: the options, the column order (hidden columns included, which shows where an autosaved
+    /// layout put the Process column), the tag of row 0 and the last few visible rows as they are on screen
+    /// (`time|pid|tag|package|process|level|message`, `~` for a hidden column), and a check that every
+    /// visible cell equals what the formatter gives now. A cell that was not reloaded after an option change,
+    /// a filter or a trim would show as MISMATCH.
+    func debugViewSummary() -> String {
+        guard let session, let options = viewOptions else { return "no session" }
+        let order = tableView.tableColumns.map { ($0.isHidden ? "-" : "") + $0.identifier.rawValue }.joined(separator: ",")
+        var row0 = "-"
+        if let first = session.rows.first, let entry = session.entry(for: first) {
+            row0 = "\"\(cellText(.tag, for: entry, row: 0, in: session))\""
+        }
+        let visible = tableView.rows(in: tableView.visibleRect)
+        let range = visible.location..<(visible.location + visible.length)
+        func label(_ column: Column, _ row: Int) -> NSTextField? {
+            let index = tableView.column(withIdentifier: column.identifier)
+            guard index >= 0, !tableView.tableColumns[index].isHidden else { return nil }
+            return tableView.view(atColumn: index, row: row, makeIfNecessary: false) as? NSTextField
+        }
+        var shown: [String] = []
+        var mismatch: String?
+        for row in range where row < session.rows.count {
+            let logRow = session.rows[row]
+            guard let entry = session.entry(for: logRow) else { continue }
+            var fields: [String] = []
+            for column in [Column.time, .pid, .tag, .package, .process] {
+                guard options.isVisible(column) else {
+                    fields.append("~")
+                    continue
+                }
+                let actual = label(column, row)?.stringValue
+                let expected = logRow.line == 0 ? cellText(column, for: entry, row: row, in: session) : ""
+                // Markers show a time and the message only.
+                let wanted = entry.kind == .marker && column != .time ? "" : expected
+                if let actual, actual != wanted, mismatch == nil { mismatch = "\(row):\(column.rawValue) \"\(actual)\"!=\"\(wanted)\"" }
+                fields.append(actual ?? "?")
+            }
+            let level = options.isVisible(.level) ? ((tableView.view(atColumn: tableView.column(withIdentifier: Column.level.identifier), row: row, makeIfNecessary: false) as? BadgeCellView)?.badge.stringValue ?? "?") : "~"
+            let message = label(.message, row)?.stringValue ?? "?"
+            if logRow.line == 0 {
+                shown.append((fields + [level, String(message.prefix(14))]).joined(separator: "|"))
+            }
+        }
+        let cells = shown.suffix(8).joined(separator: " ; ")
+        return "view: \(options.summary) trims=\(session.trimCount) order=\(order) row0=\(row0) cells=[\(cells)] check=\(mismatch.map { "MISMATCH(\($0))" } ?? "ok")"
+    }
+
+    func debugCopyText(entries: Int) -> String {
+        guard let session else { return "" }
+        var lines: [String] = []
+        var seen = Set<Int>()
+        for index in session.rows.indices.reversed() {
+            let row = session.rows[index]
+            guard seen.insert(row.entryID).inserted else { continue }
+            guard seen.count <= entries else { break }
+            let first = index - Int(row.line)
+            if let text = copyText(forRows: IndexSet(integer: first)) {
+                lines.append(text.replacingOccurrences(of: "\n", with: "\\n"))
+            }
+        }
+        return lines.reversed().joined(separator: " ⏎ ")
     }
 }

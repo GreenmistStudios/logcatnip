@@ -103,6 +103,8 @@ final class LogSession: Identifiable {
     /// Timestamp of the first log entry received since the session opened or was last cleared: "since start"
     /// times count from it. For a live session it is the oldest line logcat replayed; for a file, its first.
     @ObservationIgnored private(set) var startTimestamp: Double?
+    /// How many times buffer trimming dropped rows, for the debug summary.
+    @ObservationIgnored private(set) var trimCount = 0
 
     @ObservationIgnored private let adb: ADB?
     @ObservationIgnored private weak var model: AppModel?
@@ -363,6 +365,7 @@ final class LogSession: Identifiable {
             removedEntries += 1
         }
         visibleCount = max(0, visibleCount - removedEntries)
+        trimCount += 1
         rows.removeFirst(removedRows)
         find.rowsRemovedFront(removedRows)
         onRowsChanged?(.reloaded(removedFront: removedRows))
