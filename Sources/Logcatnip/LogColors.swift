@@ -75,4 +75,15 @@ enum LogColors {
         }
         return tagPalette[Int(hash % UInt32(tagPalette.count))]
     }
+
+    // MARK: Find
+
+    /// Background of find matches. Black text stays readable on it in both appearances.
+    static let findMatch = NSColor.findHighlightColor
+    /// Background of the matches in the current match's row.
+    static let currentFindMatch = NSColor.systemOrange
+    static let findMatchText = NSColor.black
+
+    static let findMarker = ScrollMarkersView.Style(color: findMatch, minLength: 2)
+    static let currentFindMarker = ScrollMarkersView.Style(color: currentFindMatch, minLength: 3)
 }

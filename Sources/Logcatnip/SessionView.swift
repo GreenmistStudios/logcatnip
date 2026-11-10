@@ -11,6 +11,10 @@ struct SessionView: View {
         VStack(spacing: 0) {
             FilterBar(session: session)
             Divider()
+            if session.find.isVisible {
+                FindBar(find: session.find)
+                Divider()
+            }
             LogTableView(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
             Divider()
             StatusBar(session: session)
