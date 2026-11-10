@@ -14,6 +14,8 @@ enum SettingsKey {
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
     static let filterHistoryAutocomplete = "filterHistoryAutocomplete"
+    static let ignoredTags = "ignoredTags"
+    static let ignoredPackages = "ignoredPackages"
 }
 
 enum Defaults {
@@ -44,6 +46,15 @@ enum Defaults {
 
     static var maxEntriesValue: Int {
         max(10_000, UserDefaults.standard.integer(forKey: SettingsKey.maxEntries))
+    }
+
+    /// The saved ignore lists, for code that has no `AppModel` (and for the `.logcat` metadata to read).
+    static var ignoreList: IgnoreList {
+        let defaults = UserDefaults.standard
+        return IgnoreList(
+            tags: defaults.stringArray(forKey: SettingsKey.ignoredTags) ?? [],
+            packages: defaults.stringArray(forKey: SettingsKey.ignoredPackages) ?? []
+        )
     }
 }
 

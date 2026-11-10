@@ -45,6 +45,8 @@ final class AppModel {
     private(set) var devices: [Device] = []
     private(set) var sessions: [LogSession] = []
     var selectedSessionID: LogSession.ID?
+    /// Tags and packages hidden in every session. Exposed with their order so exports can describe what was hidden.
+    private(set) var ignoreList = Defaults.ignoreList
 
     @ObservationIgnored private var trackingTask: Task<Void, Never>?
     @ObservationIgnored private var propertyRequests: Set<String> = []
@@ -78,11 +80,13 @@ final class AppModel {
         Task { [weak self] in
             while let self {
                 let devices = self.devices.map { "\($0.serial)[\($0.descriptor.state.description)]" }.joined(separator: ",")
-                FileHandle.standardError.write(Data("[logcatnip] devices=\(devices) sessions=\(self.sessions.count)\n".utf8))
+                let ignored = "ignoredTags=\(self.ignoreList.tags) ignoredPackages=\(self.ignoreList.packages)"
+                FileHandle.standardError.write(
+                    Data("[logcatnip] devices=\(devices) sessions=\(self.sessions.count) \(ignored)\n".utf8))
                 for session in self.sessions {
                     let line = "[logcatnip]   \(session.title): status=\(session.status.label) paused=\(session.isPaused) "
                         + "follow=\(session.autoScroll) total=\(session.totalCount) visible=\(session.visibleCount) "
-                        + "rows=\(session.rows.count) processes=\(session.processNames.count) "
+                        + "ignored=\(session.ignoredCount) showIgnored=\(session.showIgnored) rows=\(session.rows.count) processes=\(session.processNames.count) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
                     FileHandle.standardError.write(Data(line.utf8))
                 }
@@ -179,6 +183,38 @@ final class AppModel {
         autoOpenedSerials.insert(serial)
         if sessions.isEmpty {
             openSession(serial: serial)
+        }
+    }
+
+    // MARK: Ignore lists
+
+    func ignoreTag(_ tag: String) { updateIgnoreList(ignoreList.addingTag(tag)) }
+    func ignorePackage(_ package: String) { updateIgnoreList(ignoreList.addingPackage(package)) }
+    func unignoreTag(_ tag: String) { updateIgnoreList(ignoreList.removingTag(tag)) }
+    func unignorePackage(_ package: String) { updateIgnoreList(ignoreList.removingPackage(package)) }
+
+    func setIgnoredTags(_ tags: [String]) {
+        updateIgnoreList(IgnoreList(tags: tags, packages: ignoreList.packages))
+    }
+
+    func setIgnoredPackages(_ packages: [String]) {
+        updateIgnoreList(IgnoreList(tags: ignoreList.tags, packages: packages))
+    }
+
+    /// Saves the lists and refilters every open session, like Android Studio reloading all Logcat tabs.
+    private func updateIgnoreList(_ list: IgnoreList) {
+        guard list != ignoreList else { return }
+        ignoreList = list
+        let defaults = UserDefaults.standard
+        for (key, values) in [(SettingsKey.ignoredTags, list.tags), (SettingsKey.ignoredPackages, list.packages)] {
+            if values.isEmpty {
+                defaults.removeObject(forKey: key)
+            } else {
+                defaults.set(values, forKey: key)
+            }
+        }
+        for session in sessions {
+            session.ignoreListDidChange()
         }
     }
 
