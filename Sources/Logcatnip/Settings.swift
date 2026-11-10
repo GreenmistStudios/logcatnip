@@ -17,6 +17,8 @@ enum SettingsKey {
     static let precedenceChangedFilters = "precedenceChangedFilters"
     /// Owned by `UpdateController`, which also reads when it last checked and which version was skipped.
     static let checkForUpdates = UpdateController.Keys.automaticChecks
+    /// The `LogSaveFormat` the Save panel last used. It has no settings UI: the panel remembers it.
+    static let saveFormat = "saveFormat"
 }
 
 enum Defaults {
@@ -34,6 +36,7 @@ enum Defaults {
             SettingsKey.recentWifiHosts: [String](),
             SettingsKey.filterPrecedenceChecked: false,
             SettingsKey.checkForUpdates: true,
+            SettingsKey.saveFormat: LogSaveFormat.logcat.rawValue,
         ])
     }
 
