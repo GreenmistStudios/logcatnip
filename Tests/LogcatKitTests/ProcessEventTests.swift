@@ -75,12 +75,87 @@ private func activityManager(_ message: String, tag: String = "ActivityManager")
             "Start proc abc",
             "Start proc 12:/u0a1 for x",
             "Start proc 0:com.a/u0a1 for x",
-            "Killing 123:com.a/u0a5 (adj 0): stop",
-            "Process com.a (pid 1) has died",
             "Start proc ",
+            "Process com.a (pid 1) early provider death",
+            "Process ProcessRecord{1 2:com.a/u0a1} failed to attach",
+            "Process com.a has crashed too many times: killing!",
+            "Killing processes Low memory at adjustment 9",
+            "Killing 12:/u0a1 (adj 0): x",
+            "Killing abc:com.a/u0a1 (adj 0): x",
+            "Force stopping com.a appid=10001 user=0: from pid 5",
+            "Process com.a (pid 0) has died",
         ] {
             #expect(ProcessEvent(activityManager(text)) == nil, "\(text)")
         }
+        let kill = "Killing 123:com.a/u0a5 (adj 0): stop com.a"
+        #expect(ProcessEvent(activityManager(kill, tag: "MyApp")) == nil)
+        #expect(ProcessEvent(LogEntry.marker(kill)) == nil)
+    }
+
+    /// Real API 37 captures from `logcat -b system`.
+    @Test func parsesKillingOnCurrentAndroid() {
+        let stopped = activityManager(
+            "Killing 4758:studio.greenmist.test.lane2/u0a233 (adj 900): stop studio.greenmist.test.lane2 due to from pid 4795")
+        #expect(ProcessEvent(stopped) == .ended(pid: 4758, process: "studio.greenmist.test.lane2", reason: .forceStopped))
+
+        let frozen = activityManager(
+            "Killing 2342:com.google.android.googlequicksearchbox:search/u0a163 (adj 935): Async binder space running out while frozen")
+        #expect(ProcessEvent(frozen)
+            == .ended(pid: 2342, process: "com.google.android.googlequicksearchbox:search", reason: nil))
+    }
+
+    /// Real API 37 captures. The trailing space after the process state is in the device output.
+    @Test func parsesHasDiedOnCurrentAndroid() {
+        let main = activityManager("Process studio.greenmist.test.lane2crash (pid 25015) has died: fg  CEM ")
+        #expect(ProcessEvent(main) == .ended(pid: 25015, process: "studio.greenmist.test.lane2crash", reason: nil))
+
+        let remote = activityManager("Process studio.greenmist.test.lane2crash:remote (pid 25768) has died: fg  RCVR")
+        #expect(ProcessEvent(remote)
+            == .ended(pid: 25768, process: "studio.greenmist.test.lane2crash:remote", reason: nil))
+
+        let loader = activityManager("Process WebViewLoader-arm64-v8a (pid 935) has died: psvc PER ")
+        #expect(ProcessEvent(loader) == .ended(pid: 935, process: "WebViewLoader-arm64-v8a", reason: nil))
+    }
+
+    /// Derived from AOSP android-9.0.0_r1 `ActivityManagerService.appDiedLocked`, which appends the oom adj
+    /// and process state through `reportUidInfoMessageLocked`.
+    @Test func parsesHasDiedOnPie() {
+        let died = activityManager("Process com.example.app (pid 4321) has died: fore  TOP ")
+        #expect(ProcessEvent(died) == .ended(pid: 4321, process: "com.example.app", reason: nil))
+
+        let restarted = activityManager("Process com.example.app (pid 4321) has died and restarted (pid 4400).")
+        #expect(ProcessEvent(restarted) == .ended(pid: 4321, process: "com.example.app", reason: nil))
+    }
+
+    /// Derived from AOSP android-5.0.0_r1 `appDiedLocked` and `ProcessRecord.kill`; 5.1 logs the same text.
+    @Test func parsesLollipopDeathLines() {
+        let died = activityManager("Process com.example.app (pid 2345) has died")
+        #expect(ProcessEvent(died) == .ended(pid: 2345, process: "com.example.app", reason: nil))
+
+        let remote = activityManager("Process com.example.app:remote (pid 2346) has died")
+        #expect(ProcessEvent(remote) == .ended(pid: 2346, process: "com.example.app:remote", reason: nil))
+
+        let stopped = activityManager("Killing 2345:com.example.app/u0a57 (adj 0): stop com.example.app")
+        #expect(ProcessEvent(stopped) == .ended(pid: 2345, process: "com.example.app", reason: .forceStopped))
+
+        let isolated = activityManager(
+            "Killing 2401:com.android.chrome:sandboxed_process0/u0a57i3 (adj 0): isolated not needed")
+        #expect(ProcessEvent(isolated)
+            == .ended(pid: 2401, process: "com.android.chrome:sandboxed_process0", reason: nil))
+
+        let crashed = activityManager("Killing 2345:com.example.app/u0a57 (adj 0): crash")
+        #expect(ProcessEvent(crashed) == .ended(pid: 2345, process: "com.example.app", reason: .crashed))
+    }
+
+    @Test func classifiesKillReasons() {
+        #expect(ProcessEndReason(killReason: "crash") == .crashed)
+        #expect(ProcessEndReason(killReason: "stop com.a") == .forceStopped)
+        #expect(ProcessEndReason(killReason: "stop user 10") == .forceStopped)
+        #expect(ProcessEndReason(killReason: "stop com.a due to installPackageLI") == .forceStopped)
+        #expect(ProcessEndReason(killReason: "empty #17") == nil)
+        #expect(ProcessEndReason(killReason: "remove task") == nil)
+        #expect(ProcessEndReason(killReason: "depends on provider x in dying proc y") == nil)
+        #expect(ProcessEndReason(killReason: "") == nil)
     }
 
     @Test func parsesStartProcFromLongFormatStream() {
@@ -98,5 +173,35 @@ private func activityManager(_ message: String, tag: String = "ActivityManager")
         #expect(entries.count == 2)
         let events = entries.compactMap { ProcessEvent($0) }
         #expect(events == [.started(pid: 1545, process: "android.process.acore", uid: 10106)])
+    }
+
+    /// A real API 37 crash: the app dies right after `Start proc`, then a force stop of an earlier run.
+    @Test func parsesLifecycleFromLongFormatStream() {
+        let text = """
+        [          1794311752.441  1000:  608:  638 I/ActivityManager ]
+        Start proc 25015:studio.greenmist.test.lane2crash/u0a234 for broadcast {studio.greenmist.test.lane2crash/studio.greenmist.test.lane2crash.CrashReceiver}
+
+        [          1794311752.481 10234:25015:25015 E/AndroidRuntime ]
+        FATAL EXCEPTION: main
+        Process: studio.greenmist.test.lane2crash, PID: 25015
+        java.lang.RuntimeException: Unable to create application studio.greenmist.test.lane2crash.App
+        \tat android.app.ActivityThread.handleBindApplication(ActivityThread.java:8313)
+
+        [          1794311752.490  1000:  608: 1275 I/ActivityManager ]
+        Process studio.greenmist.test.lane2crash (pid 25015) has died: fg  CEM 
+
+        [          1794309544.730  1000:  608: 1632 I/ActivityManager ]
+        Killing 4758:studio.greenmist.test.lane2/u0a233 (adj 900): stop studio.greenmist.test.lane2 due to from pid 4795
+
+
+        """
+        var parser = LogcatLongParser()
+        let entries = parser.feed(Data(text.utf8)) + parser.finish()
+        #expect(entries.count == 4)
+        #expect(entries.compactMap { ProcessEvent($0) } == [
+            .started(pid: 25015, process: "studio.greenmist.test.lane2crash", uid: 10234),
+            .ended(pid: 25015, process: "studio.greenmist.test.lane2crash", reason: nil),
+            .ended(pid: 4758, process: "studio.greenmist.test.lane2", reason: .forceStopped),
+        ])
     }
 }

@@ -319,6 +319,8 @@ final class LogSession: Identifiable {
         case let .started(pid, process, uid):
             update.merge(processResolver.processStarted(pid: pid, name: process, seq: seq))
             if let uid { packageTracker.note(uid: uid) }
+        case let .ended(pid, _, _):
+            processResolver.processEnded(pid: pid, seq: seq)
         }
     }
 
