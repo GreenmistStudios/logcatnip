@@ -103,9 +103,10 @@ public enum LogcatLongFormat {
         return LogcatHeader(timestamp: timestamp, uid: uid, pid: pid, tid: tid, level: level, tag: String(tag))
     }
 
-    /// Formats an entry so that ``LogcatLongParser`` reads it back unchanged.
+    /// Formats an entry so that ``LogcatLongParser`` reads it back unchanged. The time is rounded like the
+    /// table's, so Export and the table never show different milliseconds.
     public static func format(_ entry: LogEntry) -> String {
-        let time = String(format: "%.3f", entry.timestamp)
+        let time = LogcatTime.formatEpoch(entry.timestamp)
         let uid = entry.uid.map { "\($0): " } ?? ""
         return "[ \(time) \(uid)\(entry.pid): \(entry.tid) \(entry.level.letter)/\(entry.tag) ]\n\(entry.message)\n\n"
     }
