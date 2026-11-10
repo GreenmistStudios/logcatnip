@@ -392,7 +392,9 @@ public enum LogFileImporter {
             return LogcatLongParser.parse(text, referenceDate: referenceDate)
         case .brief:
             return LogcatBriefFormat.parse(text, referenceDate: referenceDate)
-        case .threadtime, .bugreport, .logcatJSON, .bugreportZip, nil:
+        case .logcatJSON:
+            return (try? LogcatFile.decode(Data(text.utf8)))?.entries ?? []
+        case .threadtime, .bugreport, .bugreportZip, nil:
             return LogcatThreadtimeFormat.parse(text, referenceDate: referenceDate)
         }
     }

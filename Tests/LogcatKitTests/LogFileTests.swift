@@ -294,3 +294,139 @@ enum LogFileFixtures {
         #expect(merger.flush() == nil)
     }
 }
+
+// MARK: Android Studio .logcat files
+
+@Suite struct LogcatFileReadTests {
+    private func decode(_ json: String) throws -> (metadata: LogcatFileMetadata?, entries: [LogEntry]) {
+        try LogcatFile.decode(Data(json.utf8))
+    }
+
+    private func message(
+        level: String = "INFO", pid: Int = 42, applicationId: String, processName: String, seconds: Int = 1_794_248_132
+    ) -> String {
+        """
+        {"logcatMessages":[{"header":{"logLevel":"\(level)","pid":\(pid),"tid":\(pid),"applicationId":"\(applicationId)",\
+        "processName":"\(processName)","tag":"T","timestamp":{"seconds":\(seconds),"nanos":0}},"message":"m"}]}
+        """
+    }
+
+    @Test func readsCurrentStudioFormat() throws {
+        let (metadata, entries) = try decode(LogFileFixtures.studioCurrent)
+        #expect(entries.count == 3)
+        #expect(entries.map(\.level) == [.info, .warn, .assert])
+        #expect(entries.map(\.processName) == [nil, "com.example.app:remote", "com.google.android.gms.persistent"])
+        #expect(LogEntry.packageName(forProcess: try #require(entries[1].processName)) == "com.example.app")
+        #expect(entries[1].message == "timeout=30s <retrying>\n\tat com.example.Net.call(Net.kt:12)")
+        #expect(LogcatTime.milliseconds(entries[1].timestamp) == 1_794_248_132_663)
+        #expect(LogcatTime.milliseconds(entries[2].timestamp) == 1_794_248_133_001)
+        #expect(entries[1].pid == 4321)
+        #expect(entries[1].tid == 4330)
+        #expect(entries[1].uid == nil)
+        #expect(entries[1].tag == "Net")
+
+        let meta = try #require(metadata)
+        #expect(meta.filter == "package:mine level:WARN")
+        #expect(meta.projectApplicationIds == ["com.example.app"])
+        let device = try #require(meta.device)
+        #expect(device.kind == .physical)
+        #expect(device.serialNumber == "35930112X")
+        #expect(device.release == "14")
+        #expect(device.apiLevel == 34)
+        #expect(device.displayName == "Google Pixel 8")
+        #expect(LogFileInfo(device: device).summary == "Google Pixel 8 · Android 14, API 34")
+    }
+
+    @Test func readsEmulatorDevice() throws {
+        let json = #"{"metadata":{"device":{"emulatorDevice":{"deviceId":{"pluginId":"LocalEmulator","isTemplate":false,"identifier":"path=/Users/me/.android/avd/Medium_Phone_API_37.0.avd"},"serialNumber":"emulator-5554","isOnline":true,"release":"17","apiLevel":{"majorVersion":37,"minorVersion":0},"featureLevel":37,"avdName":"Medium_Phone_API_37.0","avdPath":"/Users/me/.android/avd/Medium_Phone_API_37.0.avd","type":"HANDHELD"}},"filter":"","projectApplicationIds":[]},"logcatMessages":[]}"#
+        let device = try #require(try decode(json).metadata?.device)
+        #expect(device.kind == .emulator)
+        #expect(device.displayName == "Medium_Phone_API_37.0")
+        #expect(device.avdName == "Medium_Phone_API_37.0")
+        #expect(device.apiLevel == 37)
+        #expect(LogFileInfo(device: device).deviceName == "Medium Phone API 37.0")
+    }
+
+    @Test func readsFlatDeviceFromStudio2024() throws {
+        let json = #"{"metadata":{"device":{"deviceId":"emulator-5554","name":"Pixel 8 API 34","serialNumber":"emulator-5554","isOnline":true,"release":"14","sdk":34,"featureLevel":34,"model":"Pixel 8","type":"HANDHELD","isEmulator":true},"filter":"tag:Foo","projectApplicationIds":["a.b"]},"logcatMessages":[]}"#
+        let meta = try #require(try decode(json).metadata)
+        let device = try #require(meta.device)
+        #expect(device.kind == .emulator)
+        #expect(device.displayName == "Pixel 8 API 34")
+        #expect(device.apiLevel == 34)
+        #expect(meta.filter == "tag:Foo")
+
+        let numericRelease = json.replacingOccurrences(of: #""release":"14""#, with: #""release":13"#)
+        #expect(try decode(numericRelease).metadata?.device?.release == "13")
+    }
+
+    @Test func readsFileWithoutMetadata() throws {
+        let (metadata, entries) = try decode(message(applicationId: "a.b", processName: "a.b"))
+        #expect(metadata == nil)
+        #expect(entries.count == 1)
+        #expect(entries.first?.processName == "a.b")
+    }
+
+    @Test func placeholderProcessFallsBackToApplicationId() throws {
+        #expect(try decode(message(applicationId: "com.foo", processName: "pid-42")).entries.first?.processName == "com.foo")
+        #expect(try decode(message(applicationId: "pid-42", processName: "pid-42")).entries.first?.processName == nil)
+        #expect(try decode(message(applicationId: "", processName: "")).entries.first?.processName == nil)
+        #expect(try decode(message(pid: 0, applicationId: "kernel", processName: "kernel")).entries.first?.processName == "kernel")
+        #expect(try decode(message(applicationId: "com.foo", processName: "kernel")).entries.first?.processName == "kernel")
+    }
+
+    @Test func ignoresUnknownKeys() throws {
+        let json = #"{"metadata":{"filter":"","projectApplicationIds":[],"ignoredTags":["x"]},"logcatMessages":[{"header":{"logLevel":"DEBUG","pid":1,"tid":2,"applicationId":"a","processName":"a","tag":"T","uid":"10123","timestamp":{"seconds":5,"nanos":6}},"message":"hi"}]}"#
+        let (metadata, entries) = try decode(json)
+        #expect(metadata?.filter == "")
+        #expect(entries.count == 1)
+        #expect(entries.first?.level == .debug)
+    }
+
+    @Test func importerReadsStudioJSON() {
+        let entries = LogFileImporter.parse(LogFileFixtures.studioCurrent)
+        #expect(entries.count == 3)
+        #expect(entries[1].processName == "com.example.app:remote")
+    }
+
+    @Test func rejectsMalformedJSON() {
+        #expect(throws: (any Error).self) { try LogcatFile.decode(Data("{".utf8)) }
+    }
+}
+
+/// A port of Android Studio's LogcatFileDataTest for `safeGetFilter`, with its exact expected strings.
+@Suite struct StudioFilterTests {
+    private func filter(_ filter: String, _ ids: [String], my: Set<String>) -> String {
+        LogcatFileMetadata(device: nil, filter: filter, projectApplicationIds: ids).filter(forMyPackages: my)
+    }
+
+    @Test func noMine() {
+        #expect(filter("package:foo tag:Foo", ["package1"], my: []) == "package:foo tag:Foo")
+    }
+
+    @Test func mineWithSingleProjectPackage() {
+        #expect(filter("package:mine", ["package1"], my: []) == "package:package1")
+    }
+
+    @Test func mineWithSinglePackageAndMoreTerms() {
+        #expect(filter("foo package:mine tag:Bar", ["package1"], my: []) == "foo package:package1 tag:Bar")
+    }
+
+    @Test func mineWithMultiplePackages() {
+        #expect(filter("package:mine", ["package1", "package2"], my: []) == "package:package1 package:package2")
+    }
+
+    @Test func mineWithMultiplePackagesAndMoreTerms() {
+        #expect(filter("foo package:mine tag:Bar", ["package1", "package2"], my: [])
+            == "foo (package:package1 | package:package2) tag:Bar")
+    }
+
+    @Test func mineWithoutProjectPackages() {
+        #expect(filter("foo package:mine tag:Bar", [], my: []) == "foo  tag:Bar")
+    }
+
+    @Test func mineMatchingMyPackages() {
+        #expect(filter("foo package:mine tag:Bar", ["package1", "package2"], my: ["package2", "package1"])
+            == "foo package:mine tag:Bar")
+    }
+}
