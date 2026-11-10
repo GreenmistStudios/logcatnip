@@ -83,6 +83,8 @@ final class AppModel {
                         + "follow=\(session.autoScroll) total=\(session.totalCount) visible=\(session.visibleCount) "
                         + "rows=\(session.rows.count) processes=\(stats.running) pending=\(stats.pending) "
                         + "unresolved=\(stats.unresolvable) "
+                        + "ps=\(session.processLookupCount) pm=\(session.packageLookupCount) "
+                        + "packages=\(session.packageOwnerCount) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
                     FileHandle.standardError.write(Data(line.utf8))
                 }

@@ -29,14 +29,16 @@ struct LogTableView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
         enum Column: String, CaseIterable {
-            case time, pid, tag, package, level, message
+            case time, pid, uid, tag, package, process, level, message
 
             var title: String {
                 switch self {
                 case .time: "Time"
                 case .pid: "PID-TID"
+                case .uid: "UID"
                 case .tag: "Tag"
                 case .package: "Package"
+                case .process: "Process"
                 case .level: ""
                 case .message: "Message"
                 }
@@ -75,8 +77,10 @@ struct LogTableView: NSViewRepresentable {
                 switch column {
                 case .time: tableColumn.width = 96
                 case .pid: tableColumn.width = 90
+                case .uid: tableColumn.width = 64
                 case .tag: tableColumn.width = 150
                 case .package: tableColumn.width = 190
+                case .process: tableColumn.width = 190
                 case .level:
                     tableColumn.width = 20
                     tableColumn.minWidth = 20
@@ -87,6 +91,10 @@ struct LogTableView: NSViewRepresentable {
                     tableColumn.resizingMask = []
                 }
                 tableColumn.minWidth = min(tableColumn.minWidth, 20)
+                // Hidden unless a saved layout (restored when autosaveName is set below) says otherwise, so
+                // layouts saved before these columns existed do not suddenly show them. Android Studio also
+                // hides the process column by default.
+                if column == .uid || column == .process { tableColumn.isHidden = true }
                 tableView.addTableColumn(tableColumn)
             }
             tableView.style = .plain
@@ -430,10 +438,15 @@ struct LogTableView: NSViewRepresentable {
                 label.textColor = LogColors.tag(entry.tag)
                 label.toolTip = isFirstLine ? entry.tag : nil
             case .package:
-                let process = session.processName(for: entry)
-                label.stringValue = isFirstLine ? (process ?? (entry.pid > 0 ? "pid-\(entry.pid)" : "")) : ""
-                label.textColor = process == nil ? .tertiaryLabelColor : .secondaryLabelColor
-                label.toolTip = isFirstLine ? process : nil
+                if isFirstLine { configurePackageCell(label, for: entry, in: session) } else { label.stringValue = "" }
+            case .process:
+                let process = isFirstLine ? session.processName(for: entry) : nil
+                label.stringValue = process ?? ""
+                label.textColor = .secondaryLabelColor
+                label.toolTip = process
+            case .uid:
+                label.stringValue = isFirstLine ? entry.uid ?? "" : ""
+                label.textColor = .secondaryLabelColor
             case .message:
                 setWrapping(label)
                 let text = Self.line(Int(logRow.line), of: entry.message)
@@ -445,6 +458,26 @@ struct LogTableView: NSViewRepresentable {
                 break
             }
             return label
+        }
+
+        /// The Package cell shows the app: the process name's package (the base package for a `:remote`
+        /// process), else the packages that own the entry's uid, dimmed and in italics because the process
+        /// was never seen. Entries nothing resolves keep `pid-N`. Reads the entry directly instead of going
+        /// through `resolvedPackage(for:)`, which allocates, because this runs for every visible row.
+        private func configurePackageCell(_ label: NSTextField, for entry: LogEntry, in session: LogSession) {
+            if let process = session.processName(for: entry) {
+                label.stringValue = LogEntry.packageName(forProcess: process)
+                label.textColor = .secondaryLabelColor
+                label.toolTip = process
+            } else if let owner = session.packageOwner(for: entry) {
+                label.stringValue = owner.label
+                label.textColor = .tertiaryLabelColor
+                if let italicFont { label.font = italicFont }
+                label.toolTip = "\(owner.label) (via uid \(entry.uid ?? ""); the process was not seen)"
+            } else {
+                label.stringValue = entry.pid > 0 ? "pid-\(entry.pid)" : ""
+                label.textColor = .tertiaryLabelColor
+            }
         }
 
         private static func line(_ index: Int, of message: String) -> String {
@@ -549,10 +582,11 @@ struct LogTableView: NSViewRepresentable {
             let tag = LogSession.quoted(entry.tag)
             menu.addItem(item("Show Only Tag “\(entry.tag)”", #selector(addTerm), "tag=:\(tag)"))
             menu.addItem(item("Hide Tag “\(entry.tag)”", #selector(addTerm), "-tag=:\(tag)"))
-            if let process = session.processName(for: entry) {
-                let package = LogEntry.packageName(forProcess: process)
-                menu.addItem(item("Show Only Package “\(package)”", #selector(addTerm), "package=:\(LogSession.quoted(package))"))
-                menu.addItem(item("Hide Package “\(package)”", #selector(addTerm), "-package=:\(LogSession.quoted(package))"))
+            if let resolved = session.resolvedPackage(for: entry) {
+                for package in resolved.packages {
+                    menu.addItem(item("Show Only Package “\(package)”", #selector(addTerm), "package=:\(LogSession.quoted(package))"))
+                    menu.addItem(item("Hide Package “\(package)”", #selector(addTerm), "-package=:\(LogSession.quoted(package))"))
+                }
             }
             menu.addItem(item("Show Only PID \(entry.pid)", #selector(addTerm), "pid:\(entry.pid)"))
             menu.addItem(item("Show Only TID \(entry.tid)", #selector(addTerm), "tid:\(entry.tid)"))

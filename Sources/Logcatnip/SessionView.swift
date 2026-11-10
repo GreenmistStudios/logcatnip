@@ -296,7 +296,7 @@ struct FilterHelpView: View {
         ("tag=:foo", "Tag is exactly foo"),
         ("tag~:fo+", "Tag matches a regular expression"),
         ("-tag:foo", "Negate any term with a leading -"),
-        ("package: process:", "Package (process name before :) or full process name"),
+        ("package: process:", "Package (process name before :, or the app that owns the uid) or full process name"),
         ("message: line:", "Message, or the whole line"),
         ("package:mine", "Packages listed in Settings"),
         ("level:WARN", "WARN and above (V, D, I, W, E, A also work)"),

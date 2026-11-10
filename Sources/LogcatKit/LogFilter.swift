@@ -64,11 +64,19 @@ public struct FilterContext: Sendable {
     public var myPackages: Set<String>
     /// Reference time for `age:`, seconds since 1970.
     public var now: Double
+    /// Owners of app uids, for entries whose process was never named.
+    public var packages: PackageUIDMap
 
-    public init(processNames: [Int32: String] = [:], myPackages: Set<String> = [], now: Double = Date().timeIntervalSince1970) {
+    public init(
+        processNames: [Int32: String] = [:],
+        myPackages: Set<String> = [],
+        now: Double = Date().timeIntervalSince1970,
+        packages: PackageUIDMap = PackageUIDMap()
+    ) {
         self.processNames = processNames
         self.myPackages = myPackages
         self.now = now
+        self.packages = packages
     }
 }
 
@@ -395,8 +403,12 @@ struct FilterSubject {
         return value
     }
 
-    mutating func package() -> String? {
-        process().map(LogEntry.packageName(forProcess:))
+    /// Whether any package the entry may belong to passes `test`: its process name's package, or, when the
+    /// process was never named, each package that owns its uid.
+    mutating func anyPackage(_ test: (String) -> Bool) -> Bool {
+        if let process = process() { return test(LogEntry.packageName(forProcess: process)) }
+        guard let owner = context.packages.owner(forUID: entry.uid) else { return false }
+        return owner.packages.contains(where: test)
     }
 
     mutating func line() -> String {
@@ -414,12 +426,12 @@ struct FilterSubject {
             case .message: return matcher.matches(entry.message)
             case .line: return matcher.matches(line())
             case .process: return process().map(matcher.matches) ?? false
-            case .package: return package().map(matcher.matches) ?? false
+            case .package: return anyPackage(matcher.matches)
             }
         case .myPackages:
-            if context.myPackages.isEmpty { return true }
-            guard let package = package() else { return false }
-            return context.myPackages.contains(package)
+            let mine = context.myPackages
+            if mine.isEmpty { return true }
+            return anyPackage { mine.contains($0) }
         case let .minLevel(level):
             return entry.level >= level
         case let .maxAge(seconds):
