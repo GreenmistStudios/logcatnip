@@ -18,7 +18,13 @@ Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr eve
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions; `LOGCATNIP_FIND='text'` opens the find bar
 with that query (the debug output then includes `find=... check=ok|MISMATCH`, a recount from scratch);
 `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. `LOGCATNIP_PERF_TESTS=1 swift test
---filter FindPerformance` runs the opt-in find timings on 500,000 rows.
+--filter FindPerformance` runs the opt-in find timings on 500,000 rows (`--filter WrapPerformance` times the
+line spans). With `LOGCATNIP_DEBUG=1` each session also prints a `table:` line (soft wrap state, the Message
+column, the selection, `clipped` and `truncated` counts); `LOGCATNIP_WRAP_TOGGLE=<seconds>` toggles soft wrap
+four times and prints it after each (`LOGCATNIP_WRAP_SELECT=middle|end|none|<row>`, `LOGCATNIP_WRAP_RESIZE=<points>`
+and `LOGCATNIP_WRAP_KEYS=1` add a selection, a window resize and the arrow keys), and
+`LOGCATNIP_SCROLL_BENCH=<pages>` times scrolling in each mode. Use them to check wrapping from a terminal,
+since screenshots of the Mac are off limits.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`. Run all three before you call a change done.
@@ -42,6 +48,9 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `FindResults.swift`: matching row indexes kept across appends, front trims and resets, and the
     next/previous jump targets.
   - `ScrollMarkerLayout.swift`: pixel runs for scroller tick marks (find now, the crash navigator later).
+  - `MessageLines.swift`: per-line spans and display widths of a message, computed once per row so the
+    table sizes wrapped rows and the Message column without touching the text.
+  - `ViewportAnchor.swift`: which row to hold still, and where to scroll, when row heights change.
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.

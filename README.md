@@ -16,7 +16,10 @@ Android Studio's Logcat window.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
-  lines scroll horizontally, or turn on Wrap Lines in the toolbar to wrap them to the window width.
+  lines scroll horizontally (trackpad, or ←/→ with the table focused; ⌘←/⌘→ jump to either edge), or turn
+  on View > Soft Wrap (⌃⌘L, also in the toolbar) to wrap them inside the Message column. Soft wrap is per
+  session, and a new session starts with the last choice. Lines over 10,000 characters are cut off with an
+  ellipsis when not wrapping; hover for the whole line.
 - **Find in results.** ⌘F opens a find bar that searches the tag and message of the rows shown (after the
   filter), with match case, regex and whole word options. Every match is highlighted, the current one in
   orange, with an "N of M" counter and tick marks on the scroller. Return or ⌘G goes to the next match,
@@ -58,6 +61,13 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 with that query, and `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. With
 `LOGCATNIP_DEBUG=1` the find bar's state is printed too, including a recount from scratch (`check=ok`).
 `LOGCATNIP_PERF_TESTS=1 swift test --filter FindPerformance` times find on 500,000 rows.
+`LOGCATNIP_WRAP_TOGGLE=<seconds>` toggles soft wrap four times, that far apart, and prints the table's state
+after each (`LOGCATNIP_WRAP_SELECT=middle|end|none|<row>` picks the row it selects first, `LOGCATNIP_WRAP_RESIZE=<points>`
+resizes the window afterwards, `LOGCATNIP_WRAP_KEYS=1` sends the arrow keys); `LOGCATNIP_SCROLL_BENCH=<pages>`
+times scrolling page by page in each mode. With `LOGCATNIP_DEBUG=1` every session also prints a `table:` line,
+where `clipped` counts visible wrapped lines taller than their row and `truncated` counts visible unwrapped
+lines wider than the Message column; both should stay 0.
+`LOGCATNIP_PERF_TESTS=1 swift test --filter WrapPerformance` times the line spans on 500,000 rows.
 
 ## Filter reference
 

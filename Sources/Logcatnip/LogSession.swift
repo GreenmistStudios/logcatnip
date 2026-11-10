@@ -36,10 +36,18 @@ final class LogSession: Identifiable {
     }
 
     /// One table row: a line of an entry's message. Multi-line messages (stack traces) take several rows,
-    /// which keeps row heights fixed and scrolling fast.
+    /// which keeps row heights fixed and scrolling fast. The span is computed once, when the row is built,
+    /// so drawing and sizing a row never has to split or measure the message again.
     struct Row: Equatable {
         let entryID: Int
         let line: Int32
+        let span: MessageLine
+        let isMarker: Bool
+
+        /// The row's line of `message`.
+        func text(in message: String) -> String {
+            span.text(in: message)
+        }
     }
 
     enum RowsChange {
@@ -62,6 +70,9 @@ final class LogSession: Identifiable {
         didSet { if oldValue && !isPaused { flushRows() } }
     }
     var autoScroll = true
+    /// Wrap long lines inside the Message column instead of scrolling them sideways. Per session; a new
+    /// session starts with the last value chosen. Set it through `setSoftWrap` to remember the choice.
+    var softWrap = UserDefaults.standard.bool(forKey: SettingsKey.wrapLines)
     var filterQuery = "" {
         didSet { if filterQuery != oldValue { scheduleFilterUpdate() } }
     }
@@ -79,6 +90,11 @@ final class LogSession: Identifiable {
     @ObservationIgnored private(set) var rows: [Row] = []
     @ObservationIgnored private(set) var processNames: [Int32: String] = [:]
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
+    /// Display cells of the widest line among the rows, so the table can size its Message column before a
+    /// line is ever drawn. Trimming leaves it alone: a column that is a little too wide beats one that jumps.
+    @ObservationIgnored private(set) var widestLineCells = 0
+    /// The table showing this session, for the debug summary.
+    @ObservationIgnored weak var tableDebug: (any LogTableDebugging)?
 
     @ObservationIgnored private let adb: ADB?
     @ObservationIgnored private weak var model: AppModel?
@@ -128,9 +144,19 @@ final class LogSession: Identifiable {
     // MARK: Lookup
 
     func entry(for row: Row) -> LogEntry? {
-        let index = row.entryID - firstID
+        entry(id: row.entryID)
+    }
+
+    func entry(id: Int) -> LogEntry? {
+        let index = id - firstID
         guard index >= 0, index < entries.count else { return nil }
         return entries[index]
+    }
+
+    /// Turns soft wrap on or off for this session and remembers the choice for sessions opened later.
+    func setSoftWrap(_ on: Bool) {
+        softWrap = on
+        UserDefaults.standard.set(on, forKey: SettingsKey.wrapLines)
     }
 
     /// Id of the oldest entry still in the buffer. Entries are indexed by `id - firstEntryID`.
@@ -358,26 +384,29 @@ final class LogSession: Identifiable {
         let context = filterContext()
         var newRows: [Row] = []
         var matched = 0
+        var widest = widestLineCells
         for entry in entries[startIndex...] where filter.matches(entry, context: context) {
             matched += 1
-            Self.appendRows(for: entry, to: &newRows)
+            Self.appendRows(for: entry, to: &newRows, widest: &widest)
         }
         lastFilteredID = nextID - 1
         guard !newRows.isEmpty else { return }
         let start = rows.count
         rows.append(contentsOf: newRows)
+        widestLineCells = widest
         visibleCount += matched
         find.rowsAppended()
         onRowsChanged?(.appended(start..<rows.count))
     }
 
-    nonisolated private static func appendRows(for entry: LogEntry, to rows: inout [Row]) {
-        var lines: Int32 = 1
-        for byte in entry.message.utf8 where byte == 0x0A {
-            lines += 1
-        }
-        for line in 0..<lines {
-            rows.append(Row(entryID: entry.id, line: line))
+    /// One row per line of the message, with each line's span. `widest` grows to the widest line seen.
+    nonisolated private static func appendRows(for entry: LogEntry, to rows: inout [Row], widest: inout Int) {
+        let isMarker = entry.kind == .marker
+        var line: Int32 = 0
+        MessageLines.forEach(in: entry.message) { span in
+            rows.append(Row(entryID: entry.id, line: line, span: span, isMarker: isMarker))
+            widest = max(widest, Int(span.cells))
+            line += 1
         }
     }
 
@@ -421,14 +450,15 @@ final class LogSession: Identifiable {
         refilterInFlight = true
 
         Task { [weak self] in
-            let (rows, visible) = await Task.detached(priority: .userInitiated) {
+            let (rows, visible, widest) = await Task.detached(priority: .userInitiated) {
                 var rows: [Row] = []
                 var visible = 0
+                var widest = 0
                 for entry in snapshot where filter.matches(entry, context: context) {
                     visible += 1
-                    LogSession.appendRows(for: entry, to: &rows)
+                    LogSession.appendRows(for: entry, to: &rows, widest: &widest)
                 }
-                return (rows, visible)
+                return (rows, visible, widest)
             }.value
             guard let self, generation == self.filterGeneration else { return }
             self.refilterInFlight = false
@@ -436,6 +466,7 @@ final class LogSession: Identifiable {
             let firstValid = rows.firstIndex { $0.entryID >= self.firstID } ?? rows.count
             self.rows = firstValid == 0 ? rows : Array(rows[firstValid...])
             self.visibleCount = firstValid == 0 ? visible : Set(self.rows.map(\.entryID)).count
+            self.widestLineCells = widest
             self.lastFilteredID = lastID
             self.find.rowsReplaced()
             self.onRowsChanged?(.reloaded(removedFront: 0))
@@ -459,6 +490,7 @@ final class LogSession: Identifiable {
     func clear() {
         entries.removeAll(keepingCapacity: true)
         rows.removeAll(keepingCapacity: true)
+        widestLineCells = 0
         firstID = nextID
         lastFilteredID = nextID - 1
         filterGeneration += 1

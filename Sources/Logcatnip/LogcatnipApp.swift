@@ -66,7 +66,6 @@ extension FocusedValues {
 struct LogcatCommands: Commands {
     let model: AppModel
     @FocusedValue(\.session) private var session
-    @AppStorage(SettingsKey.wrapLines) private var wrapLines = false
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -98,6 +97,11 @@ struct LogcatCommands: Commands {
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
             .disabled(session == nil)
+        }
+        CommandGroup(after: .toolbar) {
+            Toggle("Soft Wrap", isOn: Binding(get: { session?.softWrap ?? false }, set: { session?.setSoftWrap($0) }))
+                .keyboardShortcut("l", modifiers: [.command, .control])
+                .disabled(session == nil)
         }
         CommandMenu("Logcat") {
             Button(session?.isPaused == true ? "Resume" : "Pause") { session?.isPaused.toggle() }
@@ -131,7 +135,6 @@ struct LogcatCommands: Commands {
             Button("Scroll to End") { session?.autoScroll = true }
                 .keyboardShortcut(.downArrow, modifiers: [.command])
                 .disabled(session == nil)
-            Toggle("Wrap Lines", isOn: $wrapLines)
             Divider()
             Menu("Minimum Level") {
                 Button("Any") { session?.setMinimumLevel(nil) }

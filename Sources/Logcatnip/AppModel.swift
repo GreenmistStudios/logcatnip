@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import LogcatKit
 import Observation
@@ -60,6 +61,9 @@ final class AppModel {
         if ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1" {
             startDebugReporting()
         }
+        if let raw = ProcessInfo.processInfo.environment["LOGCATNIP_WRAP_TOGGLE"], let period = Double(raw) {
+            startDebugWrapToggle(period: period)
+        }
         // Debug helper: open log files at launch, `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt`.
         if let paths = ProcessInfo.processInfo.environment["LOGCATNIP_OPEN"] {
             for path in paths.split(separator: ":") {
@@ -92,8 +96,66 @@ final class AppModel {
                     if session.find.isVisible {
                         FileHandle.standardError.write(Data("[logcatnip]     \(session.find.debugSummary())\n".utf8))
                     }
+                    if let table = session.tableDebug {
+                        FileHandle.standardError.write(Data("[logcatnip]     table: \(table.debugSummary())\n".utf8))
+                    }
                 }
                 try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    /// Debug helper: `LOGCATNIP_WRAP_TOGGLE=<seconds>` waits for the selected session to have rows, selects a
+    /// row (`LOGCATNIP_WRAP_SELECT`: `middle`, the default, `end`, `none` or a row number), then toggles soft wrap four times,
+    /// `<seconds>` apart, printing the table's state after each. `LOGCATNIP_SCROLL_BENCH=<pages>` adds a scroll
+    /// timing for each mode, and `LOGCATNIP_WRAP_RESIZE=<points>` ends with a window resize,
+    /// and `LOGCATNIP_WRAP_KEYS=1` sends the arrow keys to the table in each mode. It bypasses `setSoftWrap`, so it never changes the saved default.
+    private func startDebugWrapToggle(period: Double) {
+        let environment = ProcessInfo.processInfo.environment
+        let pages = environment["LOGCATNIP_SCROLL_BENCH"].flatMap(Int.init)
+        Task { [weak self] in
+            func say(_ text: String) {
+                FileHandle.standardError.write(Data("[logcatnip] \(text)\n".utf8))
+            }
+            while true {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self else { return }
+                if let session = self.selectedSession, !session.rows.isEmpty, session.status != .loading, session.status != .starting {
+                    break
+                }
+            }
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, let session = self.selectedSession, let table = session.tableDebug else { return }
+            if let pages { say(table.debugScrollBenchmark(pages: pages)) }
+            let pressKeys = environment["LOGCATNIP_WRAP_KEYS"] == "1"
+            if pressKeys { say(table.debugPressArrowKeys()) }
+            let last = session.rows.count - 1
+            let select = environment["LOGCATNIP_WRAP_SELECT"] ?? "middle"
+            switch select {
+            case "none": break
+            case "end": table.debugSelect(row: last, at: 1, following: true)
+            default: table.debugSelect(row: Int(select) ?? last / 2, at: 0.8, following: false)
+            }
+            for _ in 0..<4 {
+                try? await Task.sleep(for: .seconds(period))
+                session.softWrap.toggle()
+                try? await Task.sleep(for: .seconds(1))
+                say("wrap-toggle: \(table.debugSummary())")
+                if pressKeys { say(table.debugPressArrowKeys()) }
+                if let pages { say(table.debugScrollBenchmark(pages: pages)) }
+            }
+            // `LOGCATNIP_WRAP_RESIZE=<points>` then narrows the window by that much and widens it again, which
+            // re-wraps the rows the way a drag of the window edge does.
+            if let delta = environment["LOGCATNIP_WRAP_RESIZE"].flatMap(Double.init),
+               let window = NSApp.windows.first(where: \.isVisible)
+            {
+                for change in [-delta, delta] {
+                    var frame = window.frame
+                    frame.size.width += change
+                    window.setFrame(frame, display: true)
+                    try? await Task.sleep(for: .seconds(1))
+                    say("wrap-resize: \(table.debugSummary())")
+                }
             }
         }
     }
