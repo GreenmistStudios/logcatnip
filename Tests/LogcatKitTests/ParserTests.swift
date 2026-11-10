@@ -107,6 +107,47 @@ import Testing
             #expect(text.hasSuffix(String(format: ".%03d", millis)))
         }
     }
+
+    /// 1794248132 is a current epoch, where a double has about 0.2 µs of resolution: the case that exposed
+    /// the truncation. `printf` rounds correctly, so it is the reference.
+    @Test func everyMillisecondMatchesPrintfAtCurrentEpoch() {
+        let utc = TimeZone(identifier: "UTC")!
+        var mismatches: [Int] = []
+        for millis in 0..<1000 {
+            let timestamp = 1794248132 + Double(millis) / 1000
+            let printf = String(format: "%.3f", timestamp)
+            let shown = LogcatTime.format(timestamp, includeDate: false, timeZone: utc)
+            let matches = printf.hasSuffix(String(format: ".%03d", millis))
+                && shown.hasSuffix(String(printf.suffix(4)))
+                && LogcatTime.formatEpoch(timestamp) == printf
+            if !matches { mismatches.append(millis) }
+        }
+        #expect(mismatches.isEmpty, "milliseconds that differ from printf: \(mismatches.prefix(10))")
+    }
+
+    @Test func carriesIntoNextSecondMinuteAndYear() {
+        let utc = TimeZone(identifier: "UTC")!
+        #expect(LogcatTime.format(1794248132.9996, timeZone: utc) == "2026-11-09 18:15:33.000")
+        #expect(LogcatTime.format(1798761599.9996, timeZone: utc) == "2027-01-01 00:00:00.000")
+        #expect(LogcatTime.format(1798761599.9996, includeDate: false, timeZone: utc) == "00:00:00.000")
+        #expect(LogcatTime.format(1798761599.9994, timeZone: utc) == "2026-12-31 23:59:59.999")
+        #expect(LogcatTime.formatEpoch(1798761599.9996) == "1798761600.000")
+    }
+
+    @Test func exportedTimeMatchesDisplayedTime() throws {
+        let timestamps = [1794248132.663, 1794248132.9996, 1794248132.0004, 1794248132.001, 1794248132.123,
+                          try #require(LogcatTime.parse(date: "11-09", time: "13:11:17.999"))]
+        for timestamp in timestamps {
+            let entry = LogEntry(timestamp: timestamp, uid: nil, pid: 1, tid: 2, level: .info, tag: "Tag", message: "m")
+            let exported = LogcatLongFormat.format(entry)
+            let reparsed = try #require(LogcatLongParser.parse(exported).first)
+            let shown = LogcatTime.format(timestamp)
+            let epoch = LogcatTime.formatEpoch(timestamp)
+            #expect(LogcatTime.format(reparsed.timestamp) == shown)
+            #expect(exported.contains(" \(epoch) "))
+            #expect(shown.suffix(3) == epoch.suffix(3))
+        }
+    }
 }
 
 @Suite struct ThreadtimeParserTests {

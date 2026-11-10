@@ -42,13 +42,16 @@ public enum LogcatTime {
         return base.timeIntervalSince1970 + seconds
     }
 
+    /// Whole milliseconds, rounded. Every printed time goes through this, so the table, Copy and Export agree
+    /// even when the stored double sits just below a millisecond (1794248132.663 is stored as ...132.66299).
+    public static func milliseconds(_ timestamp: Double) -> Int64 {
+        Int64((timestamp * 1000).rounded())
+    }
+
     /// Formats a timestamp the way Android Studio's logcat does by default: `yyyy-MM-dd HH:mm:ss.SSS`.
     public static func format(_ timestamp: Double, includeDate: Bool = true, timeZone: TimeZone = .current) -> String {
-        // Round to whole milliseconds first: 1794248132.663 is stored as ...132.66299, which truncates to 662.
-        let totalMillis = (timestamp * 1000).rounded()
-        let seconds = floor(totalMillis / 1000)
-        let millis = Int(totalMillis - seconds * 1000)
-        let date = Date(timeIntervalSince1970: seconds)
+        let (seconds, millis) = split(milliseconds(timestamp))
+        let date = Date(timeIntervalSince1970: Double(seconds))
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let c = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
@@ -58,6 +61,19 @@ public enum LogcatTime {
         )
         guard includeDate else { return time }
         return String(format: "%04d-%02d-%02d ", c.year ?? 0, c.month ?? 0, c.day ?? 0) + time
+    }
+
+    /// `sssss.mmm`, the `-v epoch` form Export writes. It shares ``milliseconds(_:)`` with ``format(_:includeDate:timeZone:)``
+    /// rather than using `%.3f`, so a time reads the same in the table and in an exported file.
+    public static func formatEpoch(_ timestamp: Double) -> String {
+        let (seconds, millis) = split(milliseconds(timestamp))
+        return "\(seconds)." + String(format: "%03d", millis)
+    }
+
+    /// Floored split, so a negative count still has milliseconds in 0...999. Logcat never prints one.
+    private static func split(_ milliseconds: Int64) -> (seconds: Int64, millis: Int) {
+        let seconds = milliseconds >= 0 ? milliseconds / 1000 : (milliseconds - 999) / 1000
+        return (seconds, Int(milliseconds - seconds * 1000))
     }
 
     /// `MM-DD HH:MM:SS.mmm`, the only `-T` form pre-Nougat logcat accepts.
