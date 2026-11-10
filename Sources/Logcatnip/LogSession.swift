@@ -683,7 +683,7 @@ final class LogSession: Identifiable {
     // MARK: Text output
 
     func formattedLine(for entry: LogEntry) -> String {
-        if entry.kind == .marker {
+        if entry.isMarker {
             return "--------- \(entry.message)"
         }
         let time = LogcatTime.format(entry.timestamp)

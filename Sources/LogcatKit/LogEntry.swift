@@ -5,8 +5,11 @@ public struct LogEntry: Sendable, Hashable {
     public enum Kind: Sendable, Hashable {
         /// A record read from logcat.
         case log
-        /// A marker the app inserts (device disconnected, logcat restarted, ...). Markers always pass filters.
+        /// A marker the app inserts (device disconnected, logcat restarted, ...). Always passes filters.
         case marker
+        /// PROCESS STARTED / ENDED. `pid`, `processName` and `uid` describe the process; filters match it on
+        /// package, process and pid only.
+        case process(ProcessMarker)
     }
 
     /// Monotonic sequence number within a session. Assigned by the owner of the buffer; parsers leave it at 0.
@@ -47,6 +50,9 @@ public struct LogEntry: Sendable, Hashable {
         self.message = message
         self.processName = processName
     }
+
+    /// True for entries the app inserted rather than read from logcat.
+    public var isMarker: Bool { kind != .log }
 
     public static func marker(_ text: String, at timestamp: Double = Date().timeIntervalSince1970) -> LogEntry {
         LogEntry(kind: .marker, timestamp: timestamp, pid: 0, tid: 0, level: .info, tag: "", message: text)
