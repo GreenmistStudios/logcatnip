@@ -308,31 +308,93 @@ public enum LogcatThreadtimeFormat {
     /// line, so a file never straddles two guesses of the year.
     public static func parse(_ text: String, referenceDate: Date = Date()) -> [LogEntry] {
         var entries: [LogEntry] = []
+        var merger = RecordMerger()
         text.enumerateLines { line, _ in
-            guard let entry = parseLine(line, referenceDate: referenceDate) else { return }
-            if var last = entries.last,
-               last.timestamp == entry.timestamp, last.pid == entry.pid, last.tid == entry.tid,
-               last.level == entry.level, last.tag == entry.tag {
-                last.message += "\n" + entry.message
-                entries[entries.count - 1] = last
-            } else {
-                entries.append(entry)
-            }
+            guard let entry = parseLine(line, referenceDate: referenceDate),
+                  let finished = merger.add(entry)
+            else { return }
+            entries.append(finished)
         }
+        if let last = merger.flush() { entries.append(last) }
         return entries
     }
 }
 
-/// Picks the right parser for a saved log file.
+/// Joins consecutive lines of one record. Logcat prints each line of a multi-line message with the same
+/// header, so lines with an equal time, pid, tid, level and tag belong together.
+struct RecordMerger {
+    private var pending: LogEntry?
+
+    /// Returns the previous record when `entry` starts a new one.
+    mutating func add(_ entry: LogEntry) -> LogEntry? {
+        if var last = pending,
+           last.timestamp == entry.timestamp, last.pid == entry.pid, last.tid == entry.tid,
+           last.level == entry.level, last.tag == entry.tag {
+            last.message += "\n" + entry.message
+            pending = last
+            return nil
+        }
+        let finished = pending
+        pending = entry
+        return finished
+    }
+
+    mutating func flush() -> LogEntry? {
+        defer { pending = nil }
+        return pending
+    }
+}
+
+/// Splits a byte stream into lines across reads, so that a line or a UTF-8 character cut by a chunk boundary is
+/// joined before it is decoded. Strips a `\r` before the `\n`.
+struct LineSplitter {
+    private var partial: [UInt8] = []
+
+    mutating func feed(_ data: Data, _ body: (String) -> Void) {
+        data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            var lineStart = 0
+            for (offset, byte) in buffer.enumerated() where byte == 0x0A {
+                if partial.isEmpty {
+                    body(Self.decode(buffer[lineStart..<offset]))
+                } else {
+                    partial.append(contentsOf: buffer[lineStart..<offset])
+                    body(Self.decode(partial[...]))
+                    partial.removeAll(keepingCapacity: true)
+                }
+                lineStart = offset + 1
+            }
+            if lineStart < buffer.count {
+                partial.append(contentsOf: buffer[lineStart...])
+            }
+        }
+    }
+
+    /// The last line, when the file doesn't end in a newline.
+    mutating func finish(_ body: (String) -> Void) {
+        guard !partial.isEmpty else { return }
+        body(Self.decode(partial[...]))
+        partial.removeAll()
+    }
+
+    private static func decode<C: BidirectionalCollection>(_ bytes: C) -> String where C.Element == UInt8 {
+        String(decoding: bytes.last == 0x0D ? bytes.dropLast() : bytes[...], as: UTF8.self)
+    }
+}
+
+/// Picks the right parser for a saved log file that is already in memory. The app reads files with
+/// ``LogFileReader`` instead, which streams; this stays for tests and small inputs.
 public enum LogFileImporter {
     /// `referenceDate` supplies the year of lines that have none; see ``LogcatTime/parse(date:time:timeZone:referenceDate:)``.
+    /// Text of no known format falls back to threadtime, as the importer always has.
     public static func parse(_ text: String, referenceDate: Date = Date()) -> [LogEntry] {
-        let firstLine = text.split(separator: "\n", maxSplits: 20, omittingEmptySubsequences: true)
-            .first { !$0.hasPrefix("---------") }
-        if let firstLine, firstLine.hasPrefix("[") {
+        switch LogFileFormat.detect(text: text) {
+        case .long:
             return LogcatLongParser.parse(text, referenceDate: referenceDate)
+        case .brief:
+            return LogcatBriefFormat.parse(text, referenceDate: referenceDate)
+        case .threadtime, .bugreport, .logcatJSON, .bugreportZip, nil:
+            return LogcatThreadtimeFormat.parse(text, referenceDate: referenceDate)
         }
-        return LogcatThreadtimeFormat.parse(text, referenceDate: referenceDate)
     }
 
     /// Reads and parses a saved log. Its modification date stands in for the year that threadtime and legacy
