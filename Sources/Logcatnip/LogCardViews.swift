@@ -167,7 +167,6 @@ final class LogCardRowView: NSTableRowView {
     }
 
     private func draw(fill: NSColor, stroke: NSColor) {
-        guard !isMarker else { return }
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSBezierPath(rect: bounds).addClip()
@@ -179,7 +178,9 @@ final class LogCardRowView: NSTableRowView {
         path.stroke()
     }
 
+    /// A marker is a plain line, so only its selection is drawn.
     override func drawBackground(in dirtyRect: NSRect) {
+        guard !isMarker else { return }
         draw(fill: .textBackgroundColor, stroke: .separatorColor)
     }
 

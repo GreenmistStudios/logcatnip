@@ -966,7 +966,7 @@ struct LogTableView: NSViewRepresentable {
                   let entry = session.entry(for: session.rows[clicked])
             else { return }
             if !tableView.selectedRowIndexes.contains(clicked) {
-                tableView.selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
+                tableView.selectRowIndexes(expandedToEntries(IndexSet(integer: clicked)), byExtendingSelection: false)
             }
 
             menu.addItem(item("Copy", #selector(copyRows)))
