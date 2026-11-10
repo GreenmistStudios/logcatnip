@@ -252,6 +252,14 @@ final class LogSession: Identifiable {
 
     // MARK: Ingestion
 
+    /// Shows a fixed set of entries, as if loaded from a file, and filters them right away instead of on
+    /// the next flush. Screenshot tests use it to render the table without adb.
+    func show(_ batch: [LogEntry], status: Status = .loaded) {
+        ingest(batch)
+        self.status = status
+        flushRows()
+    }
+
     private func ingest(_ batch: [LogEntry]) {
         var sawUnknownPid = false
         entries.reserveCapacity(entries.count + batch.count)

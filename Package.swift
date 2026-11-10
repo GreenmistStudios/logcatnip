@@ -18,5 +18,10 @@ let package = Package(
             name: "LogcatKitTests",
             dependencies: ["LogcatKit"]
         ),
+        .testTarget(
+            name: "LogcatnipTests",
+            dependencies: ["Logcatnip", "LogcatKit"],
+            exclude: ["__Snapshots__"]
+        ),
     ]
 )

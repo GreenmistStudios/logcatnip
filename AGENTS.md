@@ -8,8 +8,9 @@ logcat. Read `README.md` for user-facing features and the filter reference.
 ```sh
 swift build                                  # debug build
 swift run Logcatnip                          # run from the terminal
-swift test                                   # parser and filter tests (what CI runs)
+swift test                                   # parser, filter and screenshot tests (what CI runs)
 LOGCATNIP_DEVICE_TESTS=1 swift test          # also run device tests; needs adb and an online device
+LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 scripts/build-app.sh                         # build build/Logcatnip.app (release, ad-hoc signed)
 CONFIG=debug scripts/build-app.sh            # debug app bundle
 ```
@@ -44,6 +45,10 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
 - `Tests/LogcatKitTests/`: Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`). Device tests
   are gated on `LOGCATNIP_DEVICE_TESTS=1`.
+- `Tests/LogcatnipTests/`: screenshot tests of the app (it `@testable import`s the executable target).
+  `Snapshot.swift` renders a SwiftUI view in an offscreen window at 2x and compares it with
+  `__Snapshots__/macOS-<major>/<name>.png`; mismatches write `.actual.png` and `.diff.png` files to
+  `.build/snapshot-failures/`. `SessionScreenshotTests.swift` holds the fixture log.
 - `scripts/build-app.sh`: assembles the `.app` bundle and writes `Info.plist` inline (bundle id
   `studio.greenmist.logcatnip`). Add new bundle resources, such as an app icon, here.
 - `design/`: the app icon. `render-icons.swift` draws the concepts into `icons/` and the chosen one into
@@ -52,8 +57,14 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
 
 ## Conventions
 
-- Parsing, filtering and adb logic go in `LogcatKit` with unit tests. The app target has no test target,
-  so keep logic out of views where you can.
+- Parsing, filtering and adb logic go in `LogcatKit` with unit tests. The app target only has screenshot
+  tests, so keep logic out of views where you can.
+- For a visible UI change, add or update a screenshot test, open the recorded PNG and check it before you
+  commit it. References are per macOS major version: a missing one is recorded and fails the test once
+  (CI only records). Re-record intended changes with `LOGCATNIP_RECORD_SNAPSHOTS=1` and review the PNG diff.
+  Views rendered in tests take settings as values (see `SessionContent`) rather than reading
+  `@AppStorage`. Blur materials, such as the table header's, are not captured, so size views so the
+  table does not scroll.
 - Use Swift Testing for new tests, not XCTest. Write a failing test first for parser and filter bugs.
 - Mark public `LogcatKit` types `Sendable`. Use `@unchecked Sendable` only for lock-guarded boxes, and
   explain the locking in a comment.
