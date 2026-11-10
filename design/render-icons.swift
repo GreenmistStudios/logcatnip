@@ -95,7 +95,7 @@ func save(_ image: CGImage, to url: URL) {
 
 // MARK: - 1. The log cat
 
-func drawLogCat(_ ctx: CGContext) {
+func drawLogCat(_ ctx: CGContext, catnip: Bool = false) {
     linearGradient(ctx, [color(0x3E5288), color(0x1C2440)], from: CGPoint(x: 0, y: 100), to: CGPoint(x: 0, y: 924))
 
     // Stars.
@@ -154,6 +154,11 @@ func drawLogCat(_ ctx: CGContext) {
     ctx.setFillColor(color(0x3A2210))
     ctx.fillEllipse(in: ellipse(logLeft, logMidY, 8, 10))
 
+    if catnip { drawCatnipBowl(ctx, center: CGPoint(x: 796, y: 612)) }
+
+    // The catnip variant moves the cat left so it curls up against the bowl.
+    ctx.saveGState()
+    ctx.translateBy(x: catnip ? -56 : 0, y: 0)
     let fur = color(0xF39B43), furDark = color(0xC86A22), ink = color(0x3A2212)
 
     // Tail drapes over the front of the log in a tilde.
@@ -264,6 +269,100 @@ func drawLogCat(_ ctx: CGContext) {
             .foregroundColor: NSColor(cgColor: color(hex))!,
         ]).draw(at: CGPoint(x: x, y: y))
     }
+    ctx.restoreGState()
+}
+
+/// A food bowl heaped with catnip, sitting on the log with its base at `center`.
+func drawCatnipBowl(_ ctx: CGContext, center: CGPoint) {
+    let rimY = center.y - 66, rimRX: CGFloat = 66, rimRY: CGFloat = 15
+    ctx.setFillColor(color(0x000000, 0.3))
+    ctx.fillEllipse(in: ellipse(center.x, center.y + 2, 56, 9))
+
+    // Scent rising from the bowl, carrying a few leaves.
+    ctx.setLineCap(.round)
+    ctx.setLineWidth(5)
+    ctx.setLineDash(phase: 0, lengths: [2, 14])
+    for (dx, height, hex) in [(-22, 140, Level.info), (14, 175, 0x8BD45E as UInt32)] as [(CGFloat, CGFloat, UInt32)] {
+        ctx.setStrokeColor(color(hex, 0.75))
+        ctx.move(to: CGPoint(x: center.x + dx, y: rimY - 30))
+        ctx.addCurve(
+            to: CGPoint(x: center.x + dx - 30, y: rimY - height),
+            control1: CGPoint(x: center.x + dx + 40, y: rimY - height * 0.4),
+            control2: CGPoint(x: center.x + dx - 60, y: rimY - height * 0.6)
+        )
+        ctx.strokePath()
+    }
+    ctx.setLineDash(phase: 0, lengths: [])
+    for (x, y, angle, length, hex) in [
+        (center.x - 72, rimY - 130, -CGFloat.pi * 0.85, 40, 0x6FBF4A as UInt32),
+        (center.x + 34, rimY - 120, -CGFloat.pi * 0.2, 34, 0x8BD45E as UInt32),
+        (center.x - 6, rimY - 196, -CGFloat.pi * 0.6, 30, 0x5AA83C as UInt32),
+    ] as [(CGFloat, CGFloat, CGFloat, CGFloat, UInt32)] {
+        ctx.addPath(leafPath(base: CGPoint(x: x, y: y), angle: angle, length: length, width: length * 0.42))
+        ctx.setFillColor(color(hex))
+        ctx.fillPath()
+    }
+
+    // Bowl.
+    let bowl = CGMutablePath()
+    bowl.move(to: CGPoint(x: center.x - rimRX, y: rimY))
+    bowl.addLine(to: CGPoint(x: center.x + rimRX, y: rimY))
+    bowl.addQuadCurve(to: CGPoint(x: center.x + 48, y: center.y), control: CGPoint(x: center.x + 62, y: center.y - 20))
+    bowl.addLine(to: CGPoint(x: center.x - 48, y: center.y))
+    bowl.addQuadCurve(to: CGPoint(x: center.x - rimRX, y: rimY), control: CGPoint(x: center.x - 62, y: center.y - 20))
+    bowl.closeSubpath()
+    ctx.saveGState()
+    ctx.setShadow(offset: CGSize(width: 0, height: -4), blur: 10, color: color(0x000000, 0.35))
+    ctx.addPath(bowl)
+    ctx.setFillColor(color(0xD9443F))
+    ctx.fillPath()
+    ctx.restoreGState()
+    ctx.saveGState()
+    ctx.addPath(bowl)
+    ctx.clip()
+    linearGradient(ctx, [color(0xFF7A6E), color(0xD9443F), color(0x9E2A28)], from: CGPoint(x: center.x - rimRX, y: 0), to: CGPoint(x: center.x + rimRX, y: 0))
+    ctx.restoreGState()
+    ctx.setFillColor(color(0x7A1F1D))
+    ctx.fillEllipse(in: ellipse(center.x, rimY, rimRX - 6, rimRY - 4))
+
+    // Heap of leaves, back to front so the front ones overlap.
+    ctx.saveGState()
+    let heap = CGMutablePath()
+    heap.addRect(CGRect(x: center.x - rimRX, y: rimY - 80, width: rimRX * 2, height: 80))
+    heap.addEllipse(in: ellipse(center.x, rimY, rimRX - 6, rimRY - 4))
+    ctx.addPath(heap)
+    ctx.clip()
+    ctx.setFillColor(color(0x2F6F25))
+    ctx.fillEllipse(in: ellipse(center.x, rimY, rimRX - 8, 34))
+    var random = Random(state: 11)
+    let greens: [UInt32] = [0x3E8A2E, 0x5AA83C, 0x6FBF4A, 0x8BD45E]
+    for i in 0..<22 {
+        let t = CGFloat(i) / 22
+        let x = center.x - 52 + random.next() * 104
+        let y = rimY - 28 * sin(.pi * (x - center.x + 60) / 120) + 4 + t * 10
+        let angle = -CGFloat.pi * (0.1 + random.next() * 0.8)
+        ctx.addPath(leafPath(base: CGPoint(x: x, y: y), angle: angle, length: 30 + random.next() * 14, width: 13))
+        ctx.setFillColor(color(greens[i % greens.count]))
+        ctx.fillPath()
+    }
+    ctx.restoreGState()
+
+    // Front lip of the rim and the label.
+    ctx.setStrokeColor(color(0xFF9A8E))
+    ctx.setLineWidth(6)
+    ctx.addArc(center: .zero, radius: 1, startAngle: 0, endAngle: .pi, clockwise: false)
+    ctx.beginPath()
+    ctx.saveGState()
+    ctx.translateBy(x: center.x, y: rimY)
+    ctx.scaleBy(x: rimRX, y: rimRY)
+    ctx.addArc(center: .zero, radius: 1, startAngle: 0, endAngle: .pi, clockwise: false)
+    ctx.restoreGState()
+    ctx.strokePath()
+    let label = NSAttributedString(string: "nip", attributes: [
+        .font: NSFont.monospacedSystemFont(ofSize: 30, weight: .heavy),
+        .foregroundColor: NSColor(cgColor: color(0xFFF4E8))!,
+    ])
+    label.draw(at: CGPoint(x: center.x - label.size().width / 2, y: rimY + 16))
 }
 
 // MARK: - 2. The catnip filter
@@ -506,7 +605,8 @@ let output = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComp
 try! FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
 let concepts: [(String, CGImage)] = [
-    ("concept-1-log-cat", render("log cat", draw: drawLogCat)),
+    ("concept-1-log-cat", render("log cat", draw: { drawLogCat($0) })),
+    ("concept-1b-log-cat-catnip", render("log cat with catnip", draw: { drawLogCat($0, catnip: true) })),
     ("concept-2-catnip-filter", render("catnip", draw: drawCatnip)),
     ("concept-3-cat-eyes", render("cat eyes", draw: drawCatEyes)),
 ]
