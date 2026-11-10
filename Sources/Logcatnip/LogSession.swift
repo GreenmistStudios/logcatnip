@@ -119,6 +119,17 @@ final class LogSession: Identifiable {
     /// processes announced in the stream never cost a `ps`.
     private static let processStartGrace = 0.3
 
+    @ObservationIgnored private var jdwpTask: Task<Void, Never>?
+    @ObservationIgnored private var jdwpPids = JDWPProcessSet()
+    /// How many debuggable processes `adb track-jdwp` listed last; nil when it is not running. For debug output.
+    @ObservationIgnored private(set) var jdwpPidCount: Int?
+
+    /// How long a jdwp report waits: an end for ActivityManager's line, which says why and arrives through
+    /// logcat, and a start for the app to rename itself before `ps` looks.
+    private static let jdwpGrace = 1.0
+    /// `track-jdwp` runs that delivered no list before it is given up on until the next `start()`.
+    private static let jdwpMaxIdleRuns = 3
+
     init(source: Source, adb: ADB?, model: AppModel) {
         self.source = source
         self.adb = adb
@@ -181,6 +192,7 @@ final class LogSession: Identifiable {
         let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
         let token = UUID()
         streamToken = token
+        startJDWPTracking(token: token)
         requestProcessNames(force: true)
         packageTracker.reset()
         requestPackages(force: true)
@@ -208,6 +220,7 @@ final class LogSession: Identifiable {
         streamToken = nil
         streamTask?.cancel()
         streamTask = nil
+        stopJDWPTracking()
         ageRefresh?.cancel()
         if isLive { status = .stopped }
     }
@@ -228,6 +241,7 @@ final class LogSession: Identifiable {
         guard serial != nil, status != .disconnected, status != .stopped else { return }
         streamToken = nil
         streamTask?.cancel()
+        stopJDWPTracking()
         status = .disconnected
         appendMarker("Device disconnected")
     }
@@ -241,6 +255,7 @@ final class LogSession: Identifiable {
 
     private func logcatEnded(status exitStatus: Int32, error: String, receivedAny: Bool, modernFormat: Bool) {
         streamToken = nil
+        stopJDWPTracking()
         let message = error.trimmingCharacters(in: .whitespacesAndNewlines)
         if !receivedAny, modernFormat, exitStatus != 0, !useLegacyFormat {
             // Pre-Nougat logcat rejects -v epoch / -v uid.
@@ -291,6 +306,79 @@ final class LogSession: Identifiable {
         }
     }
 
+    // MARK: jdwp
+
+    /// Follows `adb track-jdwp` for the life of the logcat stream. It ends the markers of debuggable apps as
+    /// soon as their process goes away, which neither `ps` (polled on demand) nor logcat (when its buffers
+    /// lack ActivityManager's lines) can do. Restarts when adb drops it, and gives up after a few runs that
+    /// never delivered a list, so a device that lacks the service costs nothing.
+    private func startJDWPTracking(token: UUID) {
+        jdwpTask?.cancel()
+        jdwpTask = nil
+        jdwpPids = JDWPProcessSet()
+        jdwpPidCount = nil
+        guard let serial, let adb else { return }
+        jdwpTask = Task { [weak self] in
+            var idleRuns = 0
+            while !Task.isCancelled, idleRuns < Self.jdwpMaxIdleRuns {
+                var received = false
+                for await event in adb.trackJDWP(serial: serial) {
+                    guard let self, self.streamToken == token else { return }
+                    if case let .pids(list) = event {
+                        received = true
+                        self.applyJDWP(list, token: token)
+                    }
+                }
+                guard let self, self.streamToken == token, !Task.isCancelled else { return }
+                // A new run starts with a new baseline: what changed while adb was away is not known.
+                self.jdwpPids = JDWPProcessSet()
+                self.jdwpPidCount = nil
+                idleRuns = received ? 0 : idleRuns + 1
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    private func stopJDWPTracking() {
+        jdwpTask?.cancel()
+        jdwpTask = nil
+        jdwpPidCount = nil
+    }
+
+    /// A new debuggable pid asks `ps` for its name once the app has had time to rename itself; a pid that
+    /// went away is ended after the grace period, unless an ActivityManager or events line reported it first.
+    private func applyJDWP(_ list: Set<Int32>, token: UUID) {
+        let change = jdwpPids.apply(list)
+        jdwpPidCount = jdwpPids.pids.count
+        if !change.added.isEmpty {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(Self.jdwpGrace))
+                guard let self, self.streamToken == token else { return }
+                self.requestProcessNames(force: true)
+            }
+        }
+        guard !change.removed.isEmpty else { return }
+        let observed = nextID
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.jdwpGrace))
+            guard let self, self.streamToken == token else { return }
+            self.jdwpEnded(change.removed, observedAt: observed)
+        }
+    }
+
+    private func jdwpEnded(_ pids: [Int32], observedAt: Int) {
+        var markers: [ProcessMarkerTracker.Marker] = []
+        for pid in pids {
+            processResolver.processEnded(pid: pid, seq: observedAt)
+            // `observedAt` keeps a pid that was reused during the grace period from being ended.
+            if let marker = markerTracker.ended(
+                pid: pid, process: nil, reason: nil, seq: nextID, observedAt: observedAt) {
+                markers.append(marker)
+            }
+        }
+        appendProcessMarkers(markers, at: lastTimestamp ?? Date().timeIntervalSince1970, source: "jdwp")
+    }
+
     // MARK: Ingestion
 
     private func ingest(_ batch: [LogEntry]) {
@@ -312,7 +400,8 @@ final class LogSession: Identifiable {
             // The child logs before system_server writes its `Start proc` line; the marker goes above them.
             if let startIndex = hoisted[index], case let .started(pid, process, uid)? = events[startIndex] {
                 appendProcessMarkers(
-                    markerTracker.started(pid: pid, process: process, uid: uid, seq: nextID), at: entry.timestamp)
+                    markerTracker.started(pid: pid, process: process, uid: uid, seq: nextID), at: entry.timestamp,
+                    source: batch[startIndex].tag)
             }
             entry.id = nextID
             nextID += 1
@@ -332,27 +421,28 @@ final class LogSession: Identifiable {
         scheduleFlush()
     }
 
-    /// Binds pids named by ActivityManager and inserts the process markers they call for. The update fills in
-    /// entries the pid logged before its start line (the child logs a few lines before system_server writes the
-    /// event). Markers follow the line that reported them, after any crash entry that came first.
+    /// Binds pids named by ActivityManager (or the events buffer) and inserts the process markers they call for.
+    /// The update fills in entries the pid logged before its start line (the child logs a few lines before
+    /// system_server writes the event). Markers follow the line that reported them, after any crash entry that
+    /// came first.
     private func apply(_ event: ProcessEvent, entry: LogEntry, to update: inout ProcessNameResolver.Update) {
         switch event {
         case let .started(pid, process, uid):
             update.merge(processResolver.processStarted(pid: pid, name: process, seq: entry.id))
             if let uid { packageTracker.note(uid: uid) }
-            // Empty when the marker was already placed above the pid's first lines.
-            appendProcessMarkers(
-                markerTracker.started(pid: pid, process: process, uid: uid, seq: entry.id), at: entry.timestamp)
-        case let .ended(pid, process, reason):
+        case let .ended(pid, _, _):
             processResolver.processEnded(pid: pid, seq: entry.id)
-            if let marker = markerTracker.ended(pid: pid, process: process, reason: reason, seq: entry.id) {
-                appendProcessMarkers([marker], at: entry.timestamp)
-            }
+        case .crashed:
+            break
         }
+        // Empty for a start whose marker was already placed above the pid's first lines, and for a source that
+        // reports a transition another one already did.
+        appendProcessMarkers(markerTracker.apply(event, seq: entry.id), at: entry.timestamp, source: entry.tag)
     }
 
     /// Appends marker rows. They are generated for every process; the scope setting only decides which show.
-    private func appendProcessMarkers(_ markers: [ProcessMarkerTracker.Marker], at timestamp: Double) {
+    /// `source` says which report produced them, for debug output.
+    private func appendProcessMarkers(_ markers: [ProcessMarkerTracker.Marker], at timestamp: Double, source: String) {
         guard !markers.isEmpty else { return }
         let context = Self.debugMarkers ? filterContext() : nil
         for marker in markers {
@@ -361,18 +451,18 @@ final class LogSession: Identifiable {
             nextID += 1
             entries.append(entry)
             processMarkerCount += 1
-            if let context { debugPrint(marker: entry, context: context) }
+            if let context { debugPrint(marker: entry, source: source, context: context) }
         }
         scheduleFlush()
     }
 
     /// Debug output for `LOGCATNIP_DEBUG=1`: the marker, whether the current filter shows it, and the newest
     /// earlier entry of the same pid, so ordering against crash entries can be read from a terminal.
-    private func debugPrint(marker: LogEntry, context: FilterContext) {
+    private func debugPrint(marker: LogEntry, source: String, context: FilterContext) {
         let visible = filter.matches(marker, context: context)
         let after = entries.suffix(2000).last { $0.kind == .log && $0.pid == marker.pid }
         let anchor = after.map { "#\($0.id) \($0.tag)/\($0.level.letter)" } ?? "-"
-        let line = "[logcatnip]   \(title): marker #\(marker.id) \"\(marker.message)\" visible=\(visible) after=\(anchor)\n"
+        let line = "[logcatnip]   \(title): marker #\(marker.id) \"\(marker.message)\" source=\(source) visible=\(visible) after=\(anchor)\n"
         FileHandle.standardError.write(Data(line.utf8))
     }
 
@@ -621,7 +711,7 @@ final class LogSession: Identifiable {
         let mine = Defaults.myPackages
         appendProcessMarkers(
             markerTracker.applySnapshot(names, lookupStartSeq: lookup.startSeq) { mine.contains($0) },
-            at: lastTimestamp ?? Date().timeIntervalSince1970)
+            at: lastTimestamp ?? Date().timeIntervalSince1970, source: "ps")
     }
 
     /// Stamps names from a snapshot or an event on the entries that waited for them, and refreshes what the

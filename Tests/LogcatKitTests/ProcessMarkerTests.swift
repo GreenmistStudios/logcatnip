@@ -332,15 +332,8 @@ private func fatalException(pid: Int32) -> LogEntry {
         var emitted: [(after: Int, marker: ProcessMarkerTracker.Marker)] = []
         for (index, entry) in entries.enumerated() {
             tracker.note(entry)
-            switch ProcessEvent(entry) {
-            case let .started(pid, process, uid)?:
-                emitted += tracker.started(pid: pid, process: process, uid: uid, seq: index).map { (index, $0) }
-            case let .ended(pid, process, reason)?:
-                if let marker = tracker.ended(pid: pid, process: process, reason: reason, seq: index) {
-                    emitted.append((index, marker))
-                }
-            case nil:
-                break
+            if let event = ProcessEvent(entry) {
+                emitted += tracker.apply(event, seq: index).map { (index, $0) }
             }
         }
         #expect(emitted.map(\.marker.text) == [
@@ -354,6 +347,148 @@ private func fatalException(pid: Int32) -> LogEntry {
         #expect(emitted.map(\.after) == [0, 2, 3, 4])
         let fatalIndex = try #require(entries.firstIndex { $0.tag == "AndroidRuntime" })
         #expect(emitted[1].after > fatalIndex)
+    }
+
+    private func parse(_ text: String) -> [LogEntry] {
+        var parser = LogcatLongParser()
+        return parser.feed(Data(text.utf8)) + parser.finish()
+    }
+
+    /// Runs entries through the tracker the way the session does, with the entry index as sequence number.
+    private func markerTexts(_ entries: [LogEntry]) -> [String] {
+        var tracker = ProcessMarkerTracker()
+        var texts: [String] = []
+        for (index, entry) in entries.enumerated() {
+            tracker.note(entry)
+            if let event = ProcessEvent(entry) {
+                texts += tracker.apply(event, seq: index).map(\.text)
+            }
+        }
+        return texts
+    }
+
+    /// Real API 37 events entries (`logcat -b events`) for a crash on start and a force stop. There is no
+    /// AndroidRuntime entry: the crash buffer is not streamed, so `am_crash` has to carry the crash.
+    @Test func eventsBufferStreamProducesMarkers() {
+        let text = """
+        [          1794311752.441  1000:  608:  638 I/am_proc_start ]
+        [0,25015,10234,\(lane2crash),broadcast,{\(lane2crash)/\(lane2crash).CrashReceiver}]
+
+        [          1794311752.463  1000:  608: 1925 I/am_proc_bound ]
+        [0,25015,\(lane2crash)]
+
+        [          1794311752.482  1000:  608: 1925 I/am_crash ]
+        [25015,0,\(lane2crash),816430662,java.lang.RuntimeException,Lane2Crash boom at +12ms,App.java,17,0]
+
+        [          1794311752.490  1000:  608: 1275 I/am_proc_died ]
+        [0,25015,\(lane2crash),0,19]
+
+        [          1794314816.954  1000:  608: 1703 I/am_kill  ]
+        [0,29854,\(lane2),900,stop \(lane2) due to from pid 29887,136384]
+
+
+        """
+        #expect(markerTexts(parse(text)) == [
+            "PROCESS STARTED (25015) for package \(lane2crash)",
+            "PROCESS ENDED (25015) for package \(lane2crash) (crashed)",
+            "PROCESS ENDED (29854) for package \(lane2) (force stopped)",
+        ])
+    }
+
+    /// Both buffers streamed (`-b main,system,crash,events`): real API 37 order for pid 30320, where
+    /// `am_proc_start` and `Start proc` carry the same timestamp. Times after the start are approximate, the
+    /// order is real. Each transition gets one marker, whichever source comes first.
+    @Test func systemAndEventsReportsGiveOneMarkerEach() {
+        let text = """
+        [          1794315050.039  1000:  608:  638 I/am_proc_start ]
+        [0,30320,10233,\(lane2),next-top-activity,{\(lane2)/\(lane2).Main}]
+
+        [          1794315050.039  1000:  608:  638 I/ActivityManager ]
+        Start proc 30320:\(lane2)/u0a233 for next-top-activity {\(lane2)/\(lane2).Main}
+
+        [          1794315053.000 10233:30320:30320 E/AndroidRuntime ]
+        FATAL EXCEPTION: main
+        Process: \(lane2), PID: 30320
+        android.app.RemoteServiceException$CrashedByAdbException: shell-induced crash
+
+        [          1794315053.020  1000:  608: 1925 I/am_crash ]
+        [30320,0,\(lane2),816430662,android.app.RemoteServiceException$CrashedByAdbException,shell-induced crash,ActivityThread.java,2581,0]
+
+        [          1794315053.060  1000:  608: 1275 I/ActivityManager ]
+        Process \(lane2) (pid 30320) has died: cch  CRE 
+
+        [          1794315053.060  1000:  608: 1275 I/am_proc_died ]
+        [0,30320,\(lane2),900,18]
+
+
+        """
+        let entries = parse(text)
+        #expect(entries.count == 6)
+        #expect(markerTexts(entries) == [
+            "PROCESS STARTED (30320) for package \(lane2)",
+            "PROCESS ENDED (30320) for package \(lane2) (crashed)",
+        ])
+    }
+
+    @Test func amCrashMarksNamedProcessCrashed() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 25015, process: lane2crash, uid: 10234, seq: 1)
+        #expect(tracker.apply(.crashed(pid: 25015, process: lane2crash), seq: 2).isEmpty)
+        let ended = tracker.apply(.ended(pid: 25015, process: lane2crash, reason: nil), seq: 3)
+        #expect(ended.map(\.marker) == [.ended(.crashed)])
+    }
+
+    /// A native crash reaches `handleApplicationCrashInner` from system_server's NativeCrashListener, so the
+    /// first field of `am_crash` is system_server's pid. It must not flag system_server as crashed.
+    @Test func amCrashFromSystemServerIsIgnored() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 608, process: "system_server", uid: 1000, seq: 1)
+        tracker.noteCrash(pid: 608, process: "com.example.native")
+        #expect(tracker.ended(pid: 608, process: "system_server", reason: nil, seq: 2)?.marker == .ended(nil))
+    }
+
+    @Test func amCrashForUnknownPidStillCounts() {
+        var tracker = ProcessMarkerTracker()
+        tracker.noteCrash(pid: 77, process: "com.a")
+        #expect(tracker.ended(pid: 77, process: "com.a", reason: nil, seq: 2)?.marker == .ended(.crashed))
+    }
+
+    // MARK: jdwp
+
+    /// `adb track-jdwp` knows only pids, and reports them after a grace period, so `observedAt` carries the
+    /// sequence number at which the pid disappeared.
+    @Test func jdwpEndEndsKnownProcess() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 50, process: "com.mine", uid: nil, seq: 10)
+        let ended = tracker.ended(pid: 50, process: nil, reason: nil, seq: 30, observedAt: 20)
+        #expect(ended?.text == "PROCESS ENDED (50) for package com.mine")
+    }
+
+    @Test func jdwpEndSkipsProcessStartedAfterObservation() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 51, process: "com.mine", uid: nil, seq: 25)
+        #expect(tracker.ended(pid: 51, process: nil, reason: nil, seq: 30, observedAt: 20) == nil)
+        #expect(tracker.ended(pid: 51, process: "com.mine", reason: nil, seq: 40) != nil)
+    }
+
+    @Test func jdwpEndAfterActivityManagerEndIsDeduped() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 52, process: "com.mine", uid: nil, seq: 10)
+        #expect(tracker.ended(pid: 52, process: "com.mine", reason: .forceStopped, seq: 12) != nil)
+        #expect(tracker.ended(pid: 52, process: nil, reason: nil, seq: 20, observedAt: 11) == nil)
+    }
+
+    @Test func jdwpEndKeepsCrashFlag() {
+        var tracker = ProcessMarkerTracker()
+        _ = tracker.started(pid: 53, process: "com.mine", uid: nil, seq: 10)
+        tracker.note(fatalException(pid: 53))
+        let ended = tracker.ended(pid: 53, process: nil, reason: nil, seq: 30, observedAt: 20)
+        #expect(ended?.marker == .ended(.crashed))
+    }
+
+    @Test func jdwpEndOfUnknownPidIsIgnored() {
+        var tracker = ProcessMarkerTracker()
+        #expect(tracker.ended(pid: 54, process: nil, reason: nil, seq: 5, observedAt: 4) == nil)
     }
 
     private func eventMap(_ batch: [LogEntry]) -> [Int: ProcessEvent] {

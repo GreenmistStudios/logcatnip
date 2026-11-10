@@ -6,6 +6,10 @@ private func activityManager(_ message: String, tag: String = "ActivityManager")
     LogEntry(timestamp: 0, uid: "1000", pid: 608, tid: 638, level: .info, tag: tag, message: message)
 }
 
+private func event(_ tag: String, _ message: String) -> LogEntry {
+    LogEntry(timestamp: 0, uid: "1000", pid: 608, tid: 638, level: .info, tag: tag, message: message)
+}
+
 @Suite struct ProcessEventTests {
     @Test func parsesStartProcOnCurrentAndroid() {
         let entry = activityManager(
@@ -202,6 +206,145 @@ private func activityManager(_ message: String, tag: String = "ActivityManager")
             .started(pid: 25015, process: "studio.greenmist.test.lane2crash", uid: 10234),
             .ended(pid: 25015, process: "studio.greenmist.test.lane2crash", reason: nil),
             .ended(pid: 4758, process: "studio.greenmist.test.lane2", reason: .forceStopped),
+        ])
+    }
+
+    // MARK: Events buffer
+
+    /// Real API 37 captures from `logcat -b events` on emulator-5554.
+    @Test func parsesEventsBufferOnCurrentAndroid() {
+        let lane2 = "studio.greenmist.test.lane2"
+        let lane2crash = "studio.greenmist.test.lane2crash"
+        #expect(ProcessEvent(event(
+            "am_proc_start",
+            "[0,29854,10233,\(lane2),next-top-activity,{\(lane2)/\(lane2).Main}]"))
+            == .started(pid: 29854, process: lane2, uid: 10233))
+        #expect(ProcessEvent(event(
+            "am_proc_start",
+            "[0,25768,10234,\(lane2crash):remote,broadcast,{\(lane2crash)/\(lane2crash).RemoteReceiver}]"))
+            == .started(pid: 25768, process: "\(lane2crash):remote", uid: 10234))
+        // A process with no hosting type or component (`WebViewLoader`) still has five fields.
+        #expect(ProcessEvent(event("am_proc_start", "[0,935,1037,WebViewLoader-arm64-v8a,,]"))
+            == .started(pid: 935, process: "WebViewLoader-arm64-v8a", uid: 1037))
+
+        #expect(ProcessEvent(event(
+            "am_kill", "[0,29854,\(lane2),900,stop \(lane2) due to from pid 29887,136384]"))
+            == .ended(pid: 29854, process: lane2, reason: .forceStopped))
+        #expect(ProcessEvent(event("am_kill", "[0,28615,\(lane2crash),0,crash,109824]"))
+            == .ended(pid: 28615, process: lane2crash, reason: .crashed))
+
+        #expect(ProcessEvent(event("am_proc_died", "[0,29620,\(lane2),900,18]"))
+            == .ended(pid: 29620, process: lane2, reason: nil))
+        #expect(ProcessEvent(event("am_proc_died", "[0,25768,\(lane2crash):remote,0,11]"))
+            == .ended(pid: 25768, process: "\(lane2crash):remote", reason: nil))
+
+        // The pid comes first, then the user (AOSP passes Binder.getCallingPid() first).
+        #expect(ProcessEvent(event(
+            "am_crash",
+            "[25015,0,\(lane2crash),816430662,java.lang.RuntimeException,Lane2Crash boom at +12ms,App.java,17,0]"))
+            == .crashed(pid: 25015, process: lane2crash))
+    }
+
+    /// Derived from AOSP android-14.0.0_r1 `EventLogTags.logtags` (API 34); not captured on a device. The type
+    /// and component values are illustrative.
+    @Test func parsesEventsBufferOnAndroid14() {
+        #expect(ProcessEvent(event(
+            "am_proc_start", "[0,4321,10123,com.example.app,activity,{com.example.app/com.example.app.MainActivity}]"))
+            == .started(pid: 4321, process: "com.example.app", uid: 10123))
+        #expect(ProcessEvent(event("am_kill", "[0,4321,com.example.app,0,stop com.example.app due to from pid 4400]"))
+            == .ended(pid: 4321, process: "com.example.app", reason: .forceStopped))
+        #expect(ProcessEvent(event("am_kill", "[0,4500,com.example.app:sync,915,empty #17]"))
+            == .ended(pid: 4500, process: "com.example.app:sync", reason: nil))
+        #expect(ProcessEvent(event("am_proc_died", "[0,4321,com.example.app,0,2]"))
+            == .ended(pid: 4321, process: "com.example.app", reason: nil))
+        #expect(ProcessEvent(event(
+            "am_crash",
+            "[4321,0,com.example.app,948485702,java.lang.IllegalStateException,boom,MainActivity.java,42,0]"))
+            == .crashed(pid: 4321, process: "com.example.app"))
+    }
+
+    /// Derived from AOSP android-11.0.0_r1 `EventLogTags.logtags` (API 30), for a secondary user: the uid in
+    /// `am_proc_start` is the full uid (user 10 -> 1010123), not the app id.
+    @Test func parsesEventsBufferOnAndroid11() {
+        #expect(ProcessEvent(event(
+            "am_proc_start", "[10,12345,1010123,com.example.app,service,{com.example.app/com.example.app.SyncService}]"))
+            == .started(pid: 12345, process: "com.example.app", uid: 1_010_123))
+        #expect(ProcessEvent(event("am_kill", "[10,12345,com.example.app,0,crash]"))
+            == .ended(pid: 12345, process: "com.example.app", reason: .crashed))
+        #expect(ProcessEvent(event("am_proc_died", "[10,12345,com.example.app,100,10]"))
+            == .ended(pid: 12345, process: "com.example.app", reason: nil))
+    }
+
+    /// Derived from AOSP android-8.0.0_r1 `EventLogTags.logtags` (API 26): `am_crash` has eight fields and
+    /// `am_kill` has no rss.
+    @Test func parsesEventsBufferOnOreo() {
+        #expect(ProcessEvent(event(
+            "am_proc_start", "[0,2345,10057,com.example.app,activity,{com.example.app/com.example.app.MainActivity}]"))
+            == .started(pid: 2345, process: "com.example.app", uid: 10057))
+        #expect(ProcessEvent(event("am_kill", "[0,2345,com.example.app,0,stop com.example.app]"))
+            == .ended(pid: 2345, process: "com.example.app", reason: .forceStopped))
+        #expect(ProcessEvent(event(
+            "am_crash",
+            "[2345,0,com.example.app,948485702,java.lang.NullPointerException,oops,MainActivity.java,17]"))
+            == .crashed(pid: 2345, process: "com.example.app"))
+    }
+
+    /// AOSP android-9.0.0_r1 `appDiedLocked` writes a three-field `am_proc_died` when it restarts the process,
+    /// and the pid in it is the new, live one. It must not end anything.
+    @Test func ignoresRestartedProcDiedOnPie() {
+        #expect(ProcessEvent(event("am_proc_died", "[0,4400,com.example.app]")) == nil)
+    }
+
+    @Test func ignoresOtherEventsEntries() {
+        for (tag, message) in [
+            ("am_proc_bound", "[0,29854,studio.greenmist.test.lane2]"),
+            ("am_anr", "[0,1234,com.a,123,Input dispatching timed out]"),
+            ("am_proc_start", "[0,abc,10233,com.a,activity,{}]"),
+            ("am_proc_start", "[0,0,10233,com.a,activity,{}]"),
+            ("am_proc_start", "[0,12,10233,com.a]"),
+            ("am_kill", "[0,12,,0,x]"),
+            ("am_kill", "stop com.a"),
+            ("am_proc_died", "[0,12,com.a,0"),
+            ("am_proc_died", "[0,12,com a,0,1]"),
+            ("am_crash", "[x,0,com.a,1,e,m,F.java,1,0]"),
+            ("ActivityManager", "[0,12,com.a,0,1]"),
+        ] {
+            #expect(ProcessEvent(event(tag, message)) == nil, "\(tag) \(message)")
+        }
+        var marker = event("am_kill", "[0,12,com.a,0,stop com.a]")
+        marker.kind = .marker
+        #expect(ProcessEvent(marker) == nil)
+    }
+
+    /// Real API 37 output: the tag is padded in the header (`am_kill  ]`), which the parser trims.
+    @Test func parsesEventsLifecycleFromLongFormatStream() {
+        let text = """
+        [          1794311752.441  1000:  608:  638 I/am_proc_start ]
+        [0,25015,10234,studio.greenmist.test.lane2crash,broadcast,{studio.greenmist.test.lane2crash/studio.greenmist.test.lane2crash.CrashReceiver}]
+
+        [          1794311752.463  1000:  608: 1925 I/am_proc_bound ]
+        [0,25015,studio.greenmist.test.lane2crash]
+
+        [          1794311752.482  1000:  608: 1925 I/am_crash ]
+        [25015,0,studio.greenmist.test.lane2crash,816430662,java.lang.RuntimeException,Lane2Crash boom at +12ms,App.java,17,0]
+
+        [          1794311752.490  1000:  608: 1275 I/am_proc_died ]
+        [0,25015,studio.greenmist.test.lane2crash,0,19]
+
+        [          1794314816.954  1000:  608: 1703 I/am_kill  ]
+        [0,29854,studio.greenmist.test.lane2,900,stop studio.greenmist.test.lane2 due to from pid 29887,136384]
+
+
+        """
+        var parser = LogcatLongParser()
+        let entries = parser.feed(Data(text.utf8)) + parser.finish()
+        #expect(entries.count == 5)
+        #expect(entries[4].tag == "am_kill")
+        #expect(entries.compactMap { ProcessEvent($0) } == [
+            .started(pid: 25015, process: "studio.greenmist.test.lane2crash", uid: 10234),
+            .crashed(pid: 25015, process: "studio.greenmist.test.lane2crash"),
+            .ended(pid: 25015, process: "studio.greenmist.test.lane2crash", reason: nil),
+            .ended(pid: 29854, process: "studio.greenmist.test.lane2", reason: .forceStopped),
         ])
     }
 }

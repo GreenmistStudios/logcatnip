@@ -1,25 +1,79 @@
 import Foundation
 
-/// A process lifecycle line that ActivityManager writes to the system buffer. Seen in the stream, it names a
-/// pid before any `ps` can, which is the only way to name a process that exits within a poll interval, and it
-/// says when a process ended.
+/// A process lifecycle line that ActivityManager writes to the system buffer, or the matching `am_*` entry in the
+/// events buffer (when the user streams it). Seen in the stream, it names a pid before any `ps` can, which is
+/// the only way to name a process that exits within a poll interval, and it says when a process ended.
 public enum ProcessEvent: Sendable, Equatable {
     /// `Start proc <pid>:<process>/<uid> …` (Android 5.1+) or `Start proc <process> … pid=<pid> uid=<uid> …`
-    /// (Android 5.0). `uid` is the full uid (user × 100000 + appId), nil when it cannot be read.
+    /// (Android 5.0), or the events buffer's `am_proc_start [user,pid,uid,process,type,component]`. `uid` is the
+    /// full uid (user × 100000 + appId), nil when it cannot be read.
     case started(pid: Int32, process: String, uid: Int?)
     /// `Killing <pid>:<process>/<uid> (adj <n>): <reason>` (Android 5.0+) or `Process <process> (pid <pid>)
     /// has died…` (5.0+; 9.0+ appends the oom adj and process state, 5.0 also logs `has died and restarted
-    /// (pid <new>).`). `reason` is set only for the kinds a marker names.
+    /// (pid <new>).`), or the events buffer's `am_proc_died [user,pid,process,adj,procstate]` and `am_kill
+    /// [user,pid,process,adj,reason(,rss on Android 15+)]`. `reason` is set only for the kinds a marker names.
     case ended(pid: Int32, process: String, reason: ProcessEndReason?)
+    /// `am_crash` in the events buffer: the named process is about to die of an uncaught exception. Useful when
+    /// the crash buffer is not streamed, so no `FATAL EXCEPTION` entry says so.
+    case crashed(pid: Int32, process: String)
 
-    /// Parses an ActivityManager entry. Cheap for everything else: kind, tag and the first message byte are
-    /// checked before any parsing, because this runs for every ingested entry.
+    /// Parses an ActivityManager or events-buffer entry. Cheap for everything else: kind, tag and the first
+    /// message byte are checked before any parsing, because this runs for every ingested entry.
     public init?(_ entry: LogEntry) {
-        guard entry.kind == .log, entry.tag == "ActivityManager",
-              let first = entry.message.utf8.first, first == UInt8(ascii: "S") || first == UInt8(ascii: "K")
-              || first == UInt8(ascii: "P")
+        guard entry.kind == .log, let first = entry.message.utf8.first else { return nil }
+        if first == UInt8(ascii: "[") {
+            guard entry.tag.hasPrefix("am_") else { return nil }
+            self.init(eventTag: entry.tag, message: entry.message)
+            return
+        }
+        guard entry.tag == "ActivityManager",
+              first == UInt8(ascii: "S") || first == UInt8(ascii: "K") || first == UInt8(ascii: "P")
         else { return nil }
         self.init(activityManagerMessage: entry.message)
+    }
+
+    /// Parses an events-buffer entry: `[field,field,…]`. The fifth field onwards is not split, because a kill
+    /// reason or a component name may contain commas. Formats are those of AOSP `EventLogTags.logtags`, which
+    /// did not change for these tags between Android 8 and 16 apart from fields appended at the end.
+    public init?(eventTag tag: String, message: String) {
+        var body = Substring(message)
+        while body.last == " " || body.last == "\n" { body = body.dropLast() }
+        guard body.first == "[", body.last == "]", body.count >= 2 else { return nil }
+        body = body.dropFirst().dropLast()
+        let fields = body.split(separator: ",", maxSplits: 4, omittingEmptySubsequences: false)
+        // The three-field `am_proc_died` of `appDiedLocked`'s "died and restarted" branch names the new, live
+        // pid, so requiring five fields also rejects it.
+        guard fields.count == 5 else { return nil }
+        let event: ProcessEvent?
+        switch tag {
+        case "am_proc_start":
+            event = Self.processName(fields[3]).flatMap { process in
+                Self.positiveInt(fields[1]).map { .started(pid: $0, process: process, uid: Self.digits(fields[2])) }
+            }
+        case "am_proc_died":
+            event = Self.processName(fields[2]).flatMap { process in
+                Self.positiveInt(fields[1]).map { .ended(pid: $0, process: process, reason: nil) }
+            }
+        case "am_kill":
+            event = Self.processName(fields[2]).flatMap { process in
+                Self.positiveInt(fields[1]).map {
+                    .ended(pid: $0, process: process, reason: ProcessEndReason(killReason: fields[4]))
+                }
+            }
+        case "am_crash":
+            // AOSP writes the pid first and the user second, the reverse of the logtags file.
+            event = Self.processName(fields[2]).flatMap { process in
+                Self.positiveInt(fields[0]).map { .crashed(pid: $0, process: process) }
+            }
+        default:
+            event = nil
+        }
+        guard let event else { return nil }
+        self = event
+    }
+
+    private static func processName(_ text: Substring) -> String? {
+        text.isEmpty || text.contains(" ") ? nil : String(text)
     }
 
     /// Parses the message of an ActivityManager entry.
