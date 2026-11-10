@@ -75,7 +75,6 @@ final class LogSession: Identifiable {
 
     @ObservationIgnored private(set) var entries: [LogEntry] = []
     @ObservationIgnored private(set) var rows: [Row] = []
-    @ObservationIgnored private(set) var processNames: [Int32: String] = [:]
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
@@ -99,7 +98,7 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var processRefreshInFlight = false
     @ObservationIgnored private var processRefreshQueued = false
     @ObservationIgnored private var lastProcessRefresh = Date.distantPast
-    @ObservationIgnored private var unresolvablePids: Set<Int32> = []
+    @ObservationIgnored private var processResolver = ProcessNameResolver()
 
     init(source: Source, adb: ADB?, model: AppModel) {
         self.source = source
@@ -130,9 +129,14 @@ final class LogSession: Identifiable {
         return entries[index]
     }
 
+    /// Names are stamped on entries at ingestion or when a `ps` snapshot resolves them. There is no
+    /// pid-map fallback: a reused pid would rename the unresolved entries of the process that died.
     func processName(for entry: LogEntry) -> String? {
-        entry.processName ?? processNames[entry.pid]
+        entry.processName
     }
+
+    /// How many pids the resolver knows, is waiting on, or gave up on. For debug output.
+    var processNameStats: ProcessNameResolver.Stats { processResolver.stats }
 
     // MARK: Streaming
 
@@ -253,7 +257,7 @@ final class LogSession: Identifiable {
     // MARK: Ingestion
 
     private func ingest(_ batch: [LogEntry]) {
-        var sawUnknownPid = false
+        let now = ProcessInfo.processInfo.systemUptime
         entries.reserveCapacity(entries.count + batch.count)
         for var entry in batch {
             if let resumeAfter {
@@ -263,18 +267,12 @@ final class LogSession: Identifiable {
             }
             entry.id = nextID
             nextID += 1
-            if entry.processName == nil, entry.pid > 0 {
-                if let name = processNames[entry.pid] {
-                    entry.processName = name
-                } else if !unresolvablePids.contains(entry.pid) {
-                    sawUnknownPid = true
-                }
-            }
+            processResolver.stamp(&entry, now: now)
             lastTimestamp = entry.timestamp
             entries.append(entry)
         }
         trimIfNeeded()
-        if sawUnknownPid { requestProcessNames() }
+        if processResolver.needsLookup { requestProcessNames() }
         scheduleFlush()
     }
 
@@ -369,7 +367,7 @@ final class LogSession: Identifiable {
     // MARK: Filtering
 
     private func filterContext() -> FilterContext {
-        FilterContext(processNames: processNames, myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970)
+        FilterContext(myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970)
     }
 
     private func scheduleFilterUpdate() {
@@ -486,36 +484,28 @@ final class LogSession: Identifiable {
         }
         processRefreshInFlight = true
         lastProcessRefresh = Date()
+        let lookup = processResolver.beginLookup(seq: nextID)
         Task { [weak self] in
             let names = try? await adb.processes(serial: serial)
             guard let self else { return }
             self.processRefreshInFlight = false
-            if let names { self.applyProcessNames(names) }
-            if self.processRefreshQueued {
+            if let names {
+                self.applyProcessNames(names, from: lookup)
+            } else {
+                self.processResolver.cancelLookup(lookup)
+            }
+            // After a failure, retry only when asked again, so an unreachable device is not polled.
+            if self.processRefreshQueued || (names != nil && self.processResolver.needsLookup) {
                 self.processRefreshQueued = false
                 self.requestProcessNames()
             }
         }
     }
 
-    private func applyProcessNames(_ names: [Int32: String]) {
-        processNames.merge(names) { _, new in new }
-        // Fill in recent entries that arrived before their process was known; give up on pids that have
-        // already exited so they don't trigger refreshes forever.
-        var stillUnknown: Set<Int32> = []
-        var index = entries.count - 1
-        let stop = max(0, entries.count - 50_000)
-        while index >= stop {
-            if entries[index].processName == nil, entries[index].pid > 0 {
-                if let name = names[entries[index].pid] {
-                    entries[index].processName = name
-                } else {
-                    stillUnknown.insert(entries[index].pid)
-                }
-            }
-            index -= 1
-        }
-        unresolvablePids.formUnion(stillUnknown)
+    private func applyProcessNames(_ names: [Int32: String], from lookup: ProcessNameResolver.Lookup) {
+        let update = processResolver.applySnapshot(names, from: lookup, now: ProcessInfo.processInfo.systemUptime)
+        // Cells only change when entries got a name, so skip the refresh otherwise.
+        guard update.apply(to: &entries) > 0 else { return }
         if filter.dependsOnProcessNames {
             refilter()
         } else {
