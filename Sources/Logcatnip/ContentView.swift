@@ -31,7 +31,7 @@ private struct EmptyStateView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        if let error = model.adbError, model.adb == nil {
+        if let error = model.adbError, model.adb == nil, model.simulators.isEmpty {
             ContentUnavailableView {
                 Label("adb Not Found", systemImage: "exclamationmark.triangle")
             } description: {
@@ -39,17 +39,17 @@ private struct EmptyStateView: View {
             } actions: {
                 SettingsLink { Text("Open Settings…") }
             }
-        } else if model.devices.contains(where: \.isOnline) {
+        } else if model.devices.contains(where: \.isOnline) || !model.simulators.isEmpty {
             ContentUnavailableView(
                 "No Session Selected",
                 systemImage: "text.alignleft",
-                description: Text("Choose a device in the sidebar to start a logcat session.")
+                description: Text("Choose a device or simulator in the sidebar to start a session.")
             )
         } else {
             ContentUnavailableView(
                 "No Devices",
                 systemImage: "iphone.slash",
-                description: Text("Connect a device with USB debugging enabled, or start an emulator. You can also drop a saved log file here.")
+                description: Text("Connect a device with USB debugging enabled, or start an emulator or iOS simulator. You can also drop a saved log file here.")
             )
         }
     }
@@ -71,12 +71,15 @@ struct SidebarView: View {
             }
 
             Section("Devices") {
-                if model.devices.isEmpty {
+                if model.devices.isEmpty && model.simulators.isEmpty {
                     Text("No devices")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(model.devices) { device in
                     DeviceRow(device: device)
+                }
+                ForEach(model.simulators) { simulator in
+                    SimulatorRow(simulator: simulator)
                 }
             }
 
@@ -85,8 +88,8 @@ struct SidebarView: View {
                     SessionRow(session: session)
                         .tag(session.id)
                         .contextMenu {
-                            if session.serial != nil {
-                                Button("Restart Logcat") { session.restart() }
+                            if session.isStreamSource {
+                                Button(session.udid != nil ? "Restart Log Stream" : "Restart Logcat") { session.restart() }
                             }
                             Button("Close Session") { model.close(session) }
                         }
@@ -135,6 +138,46 @@ private struct DeviceRow: View {
             Button("Copy Serial") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(device.serial, forType: .string)
+            }
+        }
+    }
+}
+
+/// A booted simulator. Shares the Devices section with Android devices; the Apple logo marks the platform.
+struct SimulatorRow: View {
+    @Environment(AppModel.self) private var model
+    let simulator: SimulatorDevice
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "apple.logo")
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(simulator.name)
+                    .lineLimit(1)
+                Text("\(simulator.runtimeName) · Simulator")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button {
+                model.openSession(simulator: simulator.udid)
+            } label: {
+                Image(systemName: "plus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("New log session")
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            model.showSimulator(udid: simulator.udid)
+        }
+        .contextMenu {
+            Button("New Session") { model.openSession(simulator: simulator.udid) }
+            Button("Copy UDID") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(simulator.udid, forType: .string)
             }
         }
     }

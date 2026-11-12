@@ -75,7 +75,10 @@ struct LogcatCommands: Commands {
                 ForEach(model.devices.filter(\.isOnline)) { device in
                     Button(device.displayName) { model.openSession(serial: device.serial) }
                 }
-                if model.devices.filter(\.isOnline).isEmpty {
+                ForEach(model.simulators) { simulator in
+                    Button("\(simulator.name) (\(simulator.runtimeName) Simulator)") { model.openSession(simulator: simulator.udid) }
+                }
+                if model.devices.filter(\.isOnline).isEmpty && model.simulators.isEmpty {
                     Text("No devices connected")
                 }
             }
@@ -110,9 +113,9 @@ struct LogcatCommands: Commands {
             Button("Clear Device Log Buffer") { session?.clearDeviceBuffer() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(session?.serial == nil)
-            Button("Restart Logcat") { session?.restart() }
+            Button(session?.udid != nil ? "Restart Log Stream" : "Restart Logcat") { session?.restart() }
                 .keyboardShortcut("r")
-                .disabled(session?.serial == nil)
+                .disabled(session?.isStreamSource != true)
             Divider()
             Button("Find / Filter") { session?.focusFilterRequest += 1 }
                 .keyboardShortcut("f")

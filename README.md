@@ -24,6 +24,9 @@ Android Studio's Logcat window.
 - **Import and export.** Export in `logcat -v long` format. Open long or threadtime (`adb logcat` default,
   bug report) files, or drop them on the window.
 - Pause, clear the view, clear the device buffer (`logcat -c`), and restart logcat.
+- **iOS simulators.** Booted simulators (iOS, watchOS, tvOS, visionOS) appear in the sidebar next to Android
+  devices. A simulator session streams its unified log with `simctl spawn <udid> log stream`, and uses the
+  same table, filters and export. See [iOS simulator logs](#ios-simulator-logs).
 
 ## Requirements
 
@@ -31,6 +34,8 @@ Android Studio's Logcat window.
 - Xcode 16 / Swift 6 toolchain to build
 - `adb` from the Android SDK platform-tools. Logcatnip looks in `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`,
   `~/Library/Android/sdk`, Homebrew and `PATH`, or you can set the path in Settings.
+- Xcode, only for iOS simulator logs. Logcatnip uses `simctl` from the developer directory that
+  `xcode-select -p` reports (or `$DEVELOPER_DIR`). Without Xcode, simulators are hidden and Settings says why.
 
 ## Build and run
 
@@ -47,6 +52,7 @@ You can also open `Package.swift` in Xcode and run the `Logcatnip` scheme.
 ```sh
 swift test                                   # parser, filter and screenshot tests
 LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached device
+LOGCATNIP_SIMULATOR_TESTS=1 swift test       # also stream from a booted simulator
 LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 ```
 
@@ -93,13 +99,33 @@ hold a whole sequence, and `()` matches everything.
 Before 0.2, spaces bound tighter than `&` and `|`. Saved favorites and recent filters whose meaning changed
 are marked ⚠︎ in the filter menu once, until you remove them or choose Dismiss ⚠︎ Warnings.
 
+## iOS simulator logs
+
+Unified log fields map onto logcat's columns, so every filter works on simulator logs:
+
+| Logcatnip | Unified log |
+| --- | --- |
+| level | `Debug` → D, `Info` and `Default` → I, `Error` → E, `Fault` → A |
+| tag | `subsystem:category`, or the subsystem alone. Without a subsystem (`NSLog`, most system frameworks), the library that logged, such as `UIKitCore` |
+| package, process | the executable name, such as `Catnip` or `SpringBoard` |
+| PID, TID | `processID`, `threadID` |
+| message | `eventMessage` |
+
+`log stream` starts at the moment the session opens and has no backlog, so Restart clears the view and continues from now.
+Clear Device Log Buffer is not available for simulators. Swift `print()` writes to the app's stdout, not the
+unified log, so it doesn't appear; use `Logger` or `NSLog`.
+
+Physical iPhones and iPads aren't supported yet: Xcode has no public command that streams a connected
+device's unified log.
+
 ## Layout
 
-- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime), the filter language, and adb
-  (device tracking, logcat streaming, process names). No UI dependencies.
+- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, unified log NDJSON), the filter language,
+  adb (device tracking, logcat streaming, process names) and simctl (simulators, `log stream`). No UI
+  dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
 - `Tests/LogcatnipTests`: screenshot tests of the app's views.
 
-Long-running adb commands run under a small `sh` watchdog that stops them when the app exits, even if it
+Long-running adb and simctl commands run under a small `sh` watchdog that stops them when the app exits, even if it
 crashes.
