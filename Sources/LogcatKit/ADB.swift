@@ -122,6 +122,33 @@ final class StreamingProcess: @unchecked Sendable {
             process.terminate()
         }
     }
+
+    /// Runs a command to completion, killing it after `timeout` or when the calling task is cancelled.
+    static func run(executable: URL, arguments: [String], timeout: Duration = .seconds(30)) async throws -> CommandResult {
+        let process = StreamingProcess(executable: executable, arguments: arguments)
+        let collected = DataBox()
+        let timeoutTask = Task {
+            try await Task.sleep(for: timeout)
+            process.terminate()
+        }
+        defer { timeoutTask.cancel() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CommandResult, Error>) in
+                do {
+                    try process.start(
+                        onData: { collected.append($0) },
+                        onExit: { status, stderr in
+                            continuation.resume(returning: CommandResult(status: status, stdout: collected.data, stderr: stderr))
+                        }
+                    )
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        } onCancel: {
+            process.terminate()
+        }
+    }
 }
 
 public struct CommandResult: Sendable {
@@ -184,29 +211,7 @@ public struct ADB: Sendable {
 
     /// Runs `adb <arguments>` to completion.
     public func run(_ arguments: [String], timeout: Duration = .seconds(30)) async throws -> CommandResult {
-        let process = StreamingProcess(executable: executable, arguments: arguments)
-        let collected = DataBox()
-        let timeoutTask = Task {
-            try await Task.sleep(for: timeout)
-            process.terminate()
-        }
-        defer { timeoutTask.cancel() }
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CommandResult, Error>) in
-                do {
-                    try process.start(
-                        onData: { collected.append($0) },
-                        onExit: { status, stderr in
-                            continuation.resume(returning: CommandResult(status: status, stdout: collected.data, stderr: stderr))
-                        }
-                    )
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        } onCancel: {
-            process.terminate()
-        }
+        try await StreamingProcess.run(executable: executable, arguments: arguments, timeout: timeout)
     }
 
     public func startServer() async throws {
