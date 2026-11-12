@@ -4,6 +4,8 @@ A native macOS app for reading Android logcat. It follows every connected device
 per device (or several per device, each with its own filter), and filters with the same query language as
 Android Studio's Logcat window.
 
+![Logcatnip showing a live logcat session from a Samsung device, filtered with -message:setFrame](docs/screenshot.png)
+
 ## Features
 
 - **Devices and sessions.** Devices appear in the sidebar as adb reports them. Open one or more logcat
