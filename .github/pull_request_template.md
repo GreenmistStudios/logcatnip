@@ -6,6 +6,15 @@
 
 -
 
+## Screenshots
+
+<!-- For visible UI changes: before and after if existing UI changed. The PNGs in
+Tests/LogcatnipTests/__Snapshots__/ work. Delete this section if there is nothing to see. -->
+
+| Before | After |
+| --- | --- |
+|  |  |
+
 ## Testing
 
 <!-- What you ran and what you checked by hand (device, emulator, simulator, log file). -->
