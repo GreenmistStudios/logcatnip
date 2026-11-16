@@ -38,6 +38,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `UnifiedLogParser.swift`: `log stream --style ndjson` parsing into `LogEntry`.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
+  - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
+    events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
 - `Sources/Logcatnip/`: the app.
