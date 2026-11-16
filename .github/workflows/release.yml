@@ -1,0 +1,83 @@
+name: Release
+
+# Every merge to master that carries a feat, fix, perf, refactor, revert or breaking commit is tested, built,
+# tagged vX.Y.Z and published as a GitHub release with Logcatnip-X.Y.Z.zip. The app's updater reads that feed.
+# See scripts/next-version.sh for how the version is chosen. Run it by hand to force a bump.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump (auto reads the commit messages since the last tag)
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+# One release at a time, in push order, so each run sees the tag the previous one made.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: scripts/next-version.sh --bump "$BUMP" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Nothing to release
+        if: steps.version.outputs.release != 'true'
+        run: echo "No feat, fix, perf, refactor, revert or breaking commits since v${{ steps.version.outputs.previous }}."
+
+      - name: Select Xcode
+        if: steps.version.outputs.release == 'true'
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app || true
+
+      - name: Test
+        if: steps.version.outputs.release == 'true'
+        run: swift test
+
+      - name: Build app bundle
+        if: steps.version.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/build-app.sh
+
+      - name: Package
+        if: steps.version.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          built="$(plutil -extract CFBundleShortVersionString raw build/Logcatnip.app/Contents/Info.plist)"
+          [ "$built" = "$VERSION" ] || { echo "Built $built, expected $VERSION" >&2; exit 1; }
+          codesign --verify --deep --strict build/Logcatnip.app
+          ditto -c -k --sequesterRsrc --keepParent build/Logcatnip.app "build/Logcatnip-$VERSION.zip"
+          (cd build && shasum -a 256 "Logcatnip-$VERSION.zip" > "Logcatnip-$VERSION.zip.sha256")
+          cat "build/Logcatnip-$VERSION.zip.sha256"
+
+      - name: Publish release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            "build/Logcatnip-$VERSION.zip" "build/Logcatnip-$VERSION.zip.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "Logcatnip $VERSION" \
+            --generate-notes \
+            --latest
+          echo "Released [$TAG]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG)" >> "$GITHUB_STEP_SUMMARY"

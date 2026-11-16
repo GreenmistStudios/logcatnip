@@ -3,11 +3,16 @@
 #
 #   scripts/build-app.sh            # release build into build/Logcatnip.app
 #   CONFIG=debug scripts/build-app.sh
+#   VERSION=1.2.3 scripts/build-app.sh   # the release workflow passes the version it is about to tag
+#
+# Without VERSION the app takes the newest vX.Y.Z tag, so local builds compare with releases correctly.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CONFIG="${CONFIG:-release}"
-VERSION="${VERSION:-0.1.0}"
+LAST_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD 2>/dev/null || true)"
+VERSION="${VERSION:-${LAST_TAG#v}}"
+VERSION="${VERSION:-0.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 APP="build/Logcatnip.app"
 

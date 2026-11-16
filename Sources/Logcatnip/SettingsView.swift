@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(UpdateController.self) private var updater
     @AppStorage(SettingsKey.adbPath) private var adbPath = ""
     @AppStorage(SettingsKey.myPackages) private var myPackages = ""
     @AppStorage(SettingsKey.maxEntries) private var maxEntries = Defaults.maxEntries
@@ -10,6 +11,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.logcatBuffers) private var logcatBuffers = ""
     @AppStorage(SettingsKey.autoOpenSessions) private var autoOpenSessions = true
     @AppStorage(SettingsKey.showSimulators) private var showSimulators = true
+    @AppStorage(SettingsKey.checkForUpdates) private var checkForUpdates = true
 
     var body: some View {
         Form {
@@ -70,6 +72,28 @@ struct SettingsView: View {
             Section("Appearance") {
                 Stepper(value: $fontSize, in: 9...20, step: 1) {
                     Text("Font size: \(Int(fontSize)) pt")
+                }
+            }
+
+            Section("Updates") {
+                Toggle("Check for updates automatically", isOn: $checkForUpdates)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(updater.versionDescription)
+                        if let lastChecked = updater.lastChecked {
+                            Text("Last checked \(lastChecked.formatted(.relative(presentation: .named)))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button("Check Now") { updater.check(userInitiated: true) }
+                    .disabled(updater.isBusy)
+                }
+                if let blocker = updater.installBlocker {
+                    Text(blocker)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
