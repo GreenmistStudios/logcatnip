@@ -91,3 +91,6 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
 - Commit subjects use conventional commits: `feat: ...`, `fix: ...`, lowercase and imperative. Reference
   issues in the body (`Fixes #8.`).
 - Other agents may have uncommitted work in the tree. Stage only your own files.
+- Pull requests that change visible UI include screenshots in the description, before and after when
+  something existing changed. The screenshot test PNGs in `Tests/LogcatnipTests/__Snapshots__/` work for
+  this. Skip it for changes with nothing to see.
