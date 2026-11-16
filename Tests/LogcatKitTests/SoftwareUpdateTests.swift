@@ -127,6 +127,49 @@ import Testing
         }
     }
 
+    @Test func rejectsAnAppForAnotherArchitecture() throws {
+        let scratch = try UpdateScratch()
+        let app = try FakeApp.make(in: scratch.url, version: "1.2.3")
+        let running = UpdateInstaller.runningArchitecture
+        let other = running == NSBundleExecutableArchitectureARM64 ? "x86_64" : "arm64e"
+        // The universal test binary runs here; thinned to the other architecture it must not.
+        try UpdateInstaller.validate(app: app, bundleIdentifier: id, version: SemanticVersion("1.2.3")!)
+        let executable = app.appendingPathComponent("Contents/MacOS/Logcatnip")
+        try FakeApp.run("/usr/bin/lipo", [executable.path, "-thin", other, "-output", executable.path])
+        try FakeApp.run("/usr/bin/codesign", ["--force", "--sign", "-", app.path])
+        #expect {
+            try UpdateInstaller.validate(app: app, bundleIdentifier: id, version: SemanticVersion("1.2.3")!)
+        } throws: { error in
+            if case .invalidBundle(let detail) = error as? UpdateError { detail.contains("architecture") } else { false }
+        }
+        // And a universal app is accepted for either architecture.
+        let universal = try FakeApp.make(in: try scratch.folder("universal"), version: "1.2.3")
+        try UpdateInstaller.validate(
+            app: universal, bundleIdentifier: id, version: SemanticVersion("1.2.3")!,
+            architecture: NSBundleExecutableArchitectureX86_64
+        )
+    }
+
+    @Test func removesStaleAndDiscardedDownloads() throws {
+        let scratch = try UpdateScratch()
+        let stale = try scratch.folder("logcatnip-update-OLD")
+        let unrelated = try scratch.folder("something-else")
+        let staged = try scratch.folder("logcatnip-update-NEW")
+        let app = try FakeApp.make(in: try scratch.folder("logcatnip-update-NEW/unpacked"), version: "1.0.0")
+
+        UpdateInstaller.discard(app)
+        #expect(!FileManager.default.fileExists(atPath: staged.path))
+
+        UpdateInstaller.removeStaleDownloads(in: scratch.url)
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+        #expect(FileManager.default.fileExists(atPath: unrelated.path))
+
+        // Never deletes outside a download folder.
+        let elsewhere = try FakeApp.make(in: try scratch.folder("mine/unpacked"), version: "1.0.0")
+        UpdateInstaller.discard(elsewhere)
+        #expect(FileManager.default.fileExists(atPath: elsewhere.path))
+    }
+
     @Test func hashesFiles() throws {
         let scratch = try UpdateScratch()
         let file = scratch.url.appendingPathComponent("abc")

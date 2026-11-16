@@ -4,6 +4,7 @@
 #   scripts/build-app.sh            # release build into build/Logcatnip.app
 #   CONFIG=debug scripts/build-app.sh
 #   VERSION=1.2.3 scripts/build-app.sh   # the release workflow passes the version it is about to tag
+#   UNIVERSAL=1 scripts/build-app.sh     # arm64 + x86_64, as releases ship (the default builds the Mac's own arch)
 #
 # Without VERSION the app takes the newest vX.Y.Z tag, so local builds compare with releases correctly.
 set -euo pipefail
@@ -16,8 +17,11 @@ VERSION="${VERSION:-0.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 APP="build/Logcatnip.app"
 
-swift build -c "$CONFIG" --product Logcatnip
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/Logcatnip"
+ARCH_FLAGS=()
+if [ "${UNIVERSAL:-0}" = "1" ]; then ARCH_FLAGS=(--arch arm64 --arch x86_64); fi
+# `${a[@]+"${a[@]}"}`: macOS's bash 3.2 calls an empty array unbound under `set -u`.
+swift build -c "$CONFIG" --product Logcatnip ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
+BIN="$(swift build -c "$CONFIG" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)/Logcatnip"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

@@ -276,9 +276,20 @@ public enum UpdateInstaller {
         }
     }
 
-    /// Checks the bundle identifier, the version and the code signature, so a mislabelled or damaged zip is
-    /// never swapped in.
-    public static func validate(app: URL, bundleIdentifier: String, version: SemanticVersion) throws {
+    /// The architecture this process runs as: an Intel build under Rosetta needs x86_64 even on Apple silicon.
+    public static var runningArchitecture: Int {
+        #if arch(arm64)
+        NSBundleExecutableArchitectureARM64
+        #else
+        NSBundleExecutableArchitectureX86_64
+        #endif
+    }
+
+    /// Checks the bundle identifier, the version, that it runs on `architecture`, and the code signature, so a
+    /// mislabelled, damaged or wrong-architecture zip is never swapped in over a working app.
+    public static func validate(
+        app: URL, bundleIdentifier: String, version: SemanticVersion, architecture: Int = runningArchitecture
+    ) throws {
         let plistURL = app.appendingPathComponent("Contents/Info.plist")
         guard let data = try? Data(contentsOf: plistURL),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
@@ -293,6 +304,10 @@ public enum UpdateInstaller {
         guard !executable.isEmpty,
               FileManager.default.isExecutableFile(atPath: app.appendingPathComponent("Contents/MacOS/\(executable)").path)
         else { throw UpdateError.invalidBundle("no executable") }
+        let architectures = Bundle(url: app)?.executableArchitectures?.map(\.intValue) ?? []
+        guard architectures.contains(architecture) else {
+            throw UpdateError.invalidBundle("it doesn't run on this Mac's architecture")
+        }
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path]) {
             UpdateError.invalidBundle("code signature: \($0)")
         }
@@ -319,6 +334,22 @@ public enum UpdateInstaller {
     }
 
     static let stagingPrefix = "logcatnip-update-"
+
+    /// Deletes the download folder `prepare` made for `app`, when an update is replaced by a newer one.
+    public static func discard(_ app: URL) {
+        let folder = app.deletingLastPathComponent().deletingLastPathComponent()
+        guard folder.lastPathComponent.hasPrefix(stagingPrefix) else { return }
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    /// Deletes downloads left by a run that quit without installing. Call at launch, before any download starts;
+    /// an installed update's folder is already gone by then, removed by the swap script before it relaunches.
+    public static func removeStaleDownloads(in root: URL = FileManager.default.temporaryDirectory) {
+        let entries = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        for entry in entries where entry.lastPathComponent.hasPrefix(stagingPrefix) {
+            try? FileManager.default.removeItem(at: entry)
+        }
+    }
 
     /// Arguments: pid, new app, target, backup, staging folder to delete afterwards. Waits at most a minute for
     /// the app to quit.
@@ -389,18 +420,20 @@ public enum UpdateInstaller {
     }
 }
 
-/// One download with progress. URLSession calls the delegate on its own queue; the continuation and callback are
-/// set before the task starts and only read afterwards, and `finished` is guarded by `lock` so the continuation
-/// resumes once.
-private final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+/// One download with progress. URLSession calls the delegate on its own queue, and cancellation can finish the
+/// task before the continuation is registered (a Swift task cancelled on entry cancels the URLSession task at
+/// once). So `continuation` and `result` are guarded by `lock`: whichever of registering and finishing comes
+/// second resumes the continuation, exactly once.
+final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let destination: URL
     private let expectedSize: Int
     private let progress: @Sendable (Double) -> Void
-    private var continuation: CheckedContinuation<Void, Error>?
     private let lock = NSLock()
-    private var finished = false
+    private var continuation: CheckedContinuation<Void, Error>?
+    /// Set once by `finish`; a continuation registered after it is resumed with it immediately.
+    private var result: Result<Void, Error>?
 
-    private init(destination: URL, expectedSize: Int, progress: @escaping @Sendable (Double) -> Void) {
+    init(destination: URL, expectedSize: Int, progress: @escaping @Sendable (Double) -> Void) {
         self.destination = destination
         self.expectedSize = expectedSize
         self.progress = progress
@@ -416,7 +449,7 @@ private final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked
         let task = session.downloadTask(with: url)
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                delegate.continuation = continuation
+                delegate.register(continuation)
                 task.resume()
             }
         } onCancel: {
@@ -424,12 +457,22 @@ private final class Downloader: NSObject, URLSessionDownloadDelegate, @unchecked
         }
     }
 
-    private func finish(_ result: Result<Void, Error>) {
-        lock.lock()
-        let continuation = finished ? nil : self.continuation
-        finished = true
-        lock.unlock()
-        continuation?.resume(with: result)
+    func register(_ continuation: CheckedContinuation<Void, Error>) {
+        let finished: Result<Void, Error>? = lock.withLock {
+            if result == nil { self.continuation = continuation }
+            return result
+        }
+        if let finished { continuation.resume(with: finished) }
+    }
+
+    func finish(_ result: Result<Void, Error>) {
+        let waiting: CheckedContinuation<Void, Error>? = lock.withLock {
+            guard self.result == nil else { return nil }
+            self.result = result
+            defer { continuation = nil }
+            return continuation
+        }
+        waiting?.resume(with: result)
     }
 
     func urlSession(

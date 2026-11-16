@@ -15,6 +15,7 @@ private final class FakeServices: UpdateServices, @unchecked Sendable {
     private var _fetches: [SemanticVersion] = []
     private var _prepared: [UpdateRelease] = []
     private var _installed: [URL] = []
+    private var _discarded: [URL] = []
 
     var fetch: @Sendable (SemanticVersion) async throws -> UpdateRelease? {
         get { lock.withLock { _fetch } }
@@ -31,6 +32,7 @@ private final class FakeServices: UpdateServices, @unchecked Sendable {
     var fetches: [SemanticVersion] { lock.withLock { _fetches } }
     var prepared: [UpdateRelease] { lock.withLock { _prepared } }
     var installed: [URL] { lock.withLock { _installed } }
+    var discarded: [URL] { lock.withLock { _discarded } }
 
     func newestRelease(newerThan current: SemanticVersion) async throws -> UpdateRelease? {
         lock.withLock { _fetches.append(current) }
@@ -45,6 +47,10 @@ private final class FakeServices: UpdateServices, @unchecked Sendable {
     @MainActor func startInstall(of app: URL) throws {
         try install(app)
         lock.withLock { _installed.append(app) }
+    }
+
+    func discard(_ app: URL) {
+        lock.withLock { _discarded.append(app) }
     }
 }
 
@@ -293,12 +299,65 @@ private struct Boom: LocalizedError {
         #expect(services.installed.isEmpty)
         #expect(quits.count == 0)
 
-        // Closing the window or checking again keeps the verified download.
+        // Closing the window keeps the verified download, and so does a check that finds nothing newer.
         controller.dismiss()
         await check(controller, userInitiated: true)
         #expect(controller.phase == .ready(release, app: URL(fileURLWithPath: "/tmp/staged/Logcatnip.app")))
+        #expect(services.fetches.count == 2)
+        #expect(services.discarded.isEmpty)
+    }
+
+    @Test func aNewerReleaseReplacesAStagedDownload() async {
+        let (controller, _) = await available()
+        controller.download()
+        await controller.waitUntilIdle()
+        let staged = URL(fileURLWithPath: "/tmp/staged/0.3.0/Logcatnip.app")
+        #expect(controller.phase == .ready(release, app: staged))
+
+        let newer = UpdateRelease.fixture("0.4.0")
+        services.fetch = { _ in newer }
+        let presented = controller.presentRequest
+        #expect(controller.checkIfDue(now: .distantFuture))
+        await controller.waitUntilIdle()
+
+        #expect(controller.phase == .available(newer))
+        #expect(services.discarded == [staged])
+        #expect(controller.presentRequest == presented + 1)
+
+        // The newer one downloads and installs, not the discarded one.
+        controller.download()
+        await controller.waitUntilIdle()
+        controller.installAndRelaunch()
+        #expect(services.installed == [URL(fileURLWithPath: "/tmp/staged/0.4.0/Logcatnip.app")])
+    }
+
+    @Test func aFailedCheckKeepsAStagedDownload() async {
+        let (controller, _) = await available()
+        controller.download()
+        await controller.waitUntilIdle()
+        services.fetch = { _ in throw Boom() }
+        await check(controller, userInitiated: true)
+        #expect(controller.phase == .ready(release, app: URL(fileURLWithPath: "/tmp/staged/0.3.0/Logcatnip.app")))
+        #expect(services.discarded.isEmpty)
+    }
+
+    @Test func dismissingDuringACheckDoesNotStartASecondOne() async {
+        let gate = Gate()
+        let release = release
+        services.fetch = { _ in
+            await gate.wait()
+            return release
+        }
+        let (controller, _) = controller()
+        controller.check(userInitiated: true)
+        controller.dismiss()
+        #expect(controller.phase == .checking)
+        controller.check(userInitiated: true)
+        #expect(controller.presentRequest == 2)
+        gate.open()
+        await controller.waitUntilIdle()
         #expect(services.fetches.count == 1)
-        #expect(!controller.checkIfDue(now: .distantFuture))
+        #expect(controller.phase == .available(release))
     }
 
     @Test func aFailedDownloadIsReported() async {

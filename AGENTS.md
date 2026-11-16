@@ -15,6 +15,7 @@ LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 scripts/build-app.sh                         # build build/Logcatnip.app (release, ad-hoc signed)
 CONFIG=debug scripts/build-app.sh            # debug app bundle
 VERSION=1.2.3 scripts/build-app.sh           # set the bundle version (default: newest vX.Y.Z tag, else 0.0.0)
+UNIVERSAL=1 scripts/build-app.sh             # arm64 + x86_64, as the release workflow builds it
 scripts/next-version.sh [--bump auto|patch|minor|major]   # the version the next release would get
 ```
 

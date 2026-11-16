@@ -35,7 +35,9 @@ jobs:
         id: version
         env:
           BUMP: ${{ inputs.bump || 'auto' }}
-        run: scripts/next-version.sh --bump "$BUMP" | tee -a "$GITHUB_OUTPUT"
+        run: |
+          set -o pipefail
+          scripts/next-version.sh --bump "$BUMP" | tee -a "$GITHUB_OUTPUT"
 
       - name: Nothing to release
         if: steps.version.outputs.release != 'true'
@@ -53,6 +55,8 @@ jobs:
         if: steps.version.outputs.release == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          # Intel Macs get the same zip; the updater refuses an app without the running architecture.
+          UNIVERSAL: "1"
         run: scripts/build-app.sh
 
       - name: Package
@@ -63,6 +67,10 @@ jobs:
           built="$(plutil -extract CFBundleShortVersionString raw build/Logcatnip.app/Contents/Info.plist)"
           [ "$built" = "$VERSION" ] || { echo "Built $built, expected $VERSION" >&2; exit 1; }
           codesign --verify --deep --strict build/Logcatnip.app
+          archs="$(lipo -archs build/Logcatnip.app/Contents/MacOS/Logcatnip)"
+          for arch in arm64 x86_64; do
+            [[ " $archs " == *" $arch "* ]] || { echo "Missing $arch (has: $archs)" >&2; exit 1; }
+          done
           ditto -c -k --sequesterRsrc --keepParent build/Logcatnip.app "build/Logcatnip-$VERSION.zip"
           (cd build && shasum -a 256 "Logcatnip-$VERSION.zip" > "Logcatnip-$VERSION.zip.sha256")
           cat "build/Logcatnip-$VERSION.zip.sha256"

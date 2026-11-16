@@ -145,6 +145,66 @@ import Testing
         #expect(progress.all.last == 1)
     }
 
+    /// Cancelled before the download starts, URLSession can finish the task before the continuation exists. The
+    /// download must still end, as a cancellation, rather than hang.
+    @Test(arguments: 0..<20)
+    func aDownloadCancelledOnEntryEnds(_ attempt: Int) async throws {
+        let served = try Served(appVersion: "1.4.0")
+        let finished = Finished()
+        let release = served.release
+        let staging = served.staging
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await UpdateInstaller.prepare(
+                    release, bundleIdentifier: FakeApp.bundleIdentifier,
+                    configuration: MockURLProtocol.configuration(), stagingRoot: staging, progress: { _ in }
+                )
+                finished.set("returned")
+            } catch is CancellationError {
+                finished.set("cancelled")
+            } catch {
+                finished.set("\(error)")
+            }
+        }
+        for _ in 0..<500 where finished.value == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let outcome = try #require(finished.value, "the download hung after cancellation")
+        #expect(outcome == "cancelled")
+        await task.value
+        #expect(served.stagingIsEmpty)
+    }
+
+    /// The race above, forced: the download finishes before the continuation is registered. Polled with a
+    /// deadline, because the bug is a continuation that is never resumed.
+    @Test func aContinuationRegisteredAfterTheDownloadEndedIsResumed() async throws {
+        let downloader = Downloader(destination: URL(fileURLWithPath: "/dev/null"), expectedSize: 0, progress: { _ in })
+        downloader.finish(.failure(CancellationError()))
+        let outcome = Finished()
+        Task {
+            do {
+                try await withCheckedThrowingContinuation { downloader.register($0) }
+                outcome.set("returned")
+            } catch {
+                outcome.set(error is CancellationError ? "cancelled" : "\(error)")
+            }
+        }
+        for _ in 0..<200 where outcome.value == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(outcome.value == "cancelled")
+        // A second finish is ignored rather than resuming twice.
+        downloader.finish(.success(()))
+    }
+
+    private final class Finished: @unchecked Sendable {
+        private let lock = NSLock()
+        private var outcome: String?
+        func set(_ value: String) { lock.withLock { outcome = value } }
+        var value: String? { lock.withLock { outcome } }
+    }
+
     @Test func verifiesAgainstTheChecksumFileWhenThereIsNoDigest() async throws {
         let served = try Served(appVersion: "1.4.0", useChecksumFile: true)
         let app = try await served.prepare()

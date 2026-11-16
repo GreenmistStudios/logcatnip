@@ -10,6 +10,8 @@ public protocol UpdateServices: Sendable {
     func prepare(_ release: UpdateRelease, progress: @escaping @Sendable (Double) -> Void) async throws -> URL
     /// Starts replacing the running app with `app` once it quits. The controller quits right after.
     @MainActor func startInstall(of app: URL) throws
+    /// Deletes a prepared app that will not be installed, because a newer release replaced it.
+    func discard(_ app: URL)
 }
 
 /// The real services: GitHub Releases, `UpdateInstaller` and the app bundle at `appURL`.
@@ -34,6 +36,10 @@ public struct GitHubUpdateServices: UpdateServices {
 
     @MainActor public func startInstall(of app: URL) throws {
         try UpdateInstaller.installAndRelaunch(newApp: app, replacing: appURL, pid: getpid())
+    }
+
+    public func discard(_ app: URL) {
+        UpdateInstaller.discard(app)
     }
 }
 
@@ -81,6 +87,9 @@ public final class UpdateController {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var work: Task<Void, Never>?
     @ObservationIgnored private var schedule: Task<Void, Never>?
+    /// A verified download waiting to install. Kept apart from `phase` so a check started from `.ready` can return
+    /// to it, or replace it when it finds a newer release.
+    @ObservationIgnored private var staged: (release: UpdateRelease, app: URL)?
 
     public init(
         currentVersion: SemanticVersion?, installBlocker: String?, services: any UpdateServices,
@@ -122,7 +131,6 @@ public final class UpdateController {
     @discardableResult
     public func checkIfDue(now: Date = Date()) -> Bool {
         guard defaults.bool(forKey: Keys.automaticChecks), currentVersion != nil, !isBusy else { return false }
-        if case .ready = phase { return false }
         let due = (lastChecked ?? .distantPast).addingTimeInterval(Self.checkInterval)
         guard due <= now else { return false }
         check(userInitiated: false)
@@ -131,9 +139,8 @@ public final class UpdateController {
 
     public func check(userInitiated: Bool) {
         if userInitiated { presentRequest += 1 }
-        // A check or download in flight, or a verified download waiting to install, is kept rather than redone.
+        // A check or download in flight is kept rather than redone.
         if isBusy { return }
-        if case .ready = phase { return }
         guard let currentVersion else {
             if userInitiated {
                 phase = .failed("This is a development build without a version, so it can't be compared with releases.")
@@ -159,6 +166,17 @@ public final class UpdateController {
         case .success(let release):
             lastChecked = Date()
             defaults.set(lastChecked, forKey: Keys.lastChecked)
+            if let staged {
+                // Nothing newer than the downloaded update: go back to offering it.
+                guard let release, release.version > staged.release.version else {
+                    phase = .ready(staged.release, app: staged.app)
+                    log("still ready to install \(staged.release.version)")
+                    return
+                }
+                services.discard(staged.app)
+                self.staged = nil
+                log("discarded \(staged.release.version) for \(release.version)")
+            }
             guard let release else {
                 phase = .upToDate
                 log("up to date")
@@ -171,8 +189,13 @@ public final class UpdateController {
             }
             if installWithoutAsking { download() }
         case .failure(let error):
-            // A failed background check stays silent and is retried at the next due time.
-            phase = userInitiated ? .failed(error.localizedDescription) : .idle
+            if let staged {
+                // The verified download is still good.
+                phase = .ready(staged.release, app: staged.app)
+            } else {
+                // A failed background check stays silent and is retried at the next due time.
+                phase = userInitiated ? .failed(error.localizedDescription) : .idle
+            }
             log("check failed: \(error.localizedDescription)")
         }
     }
@@ -204,6 +227,7 @@ public final class UpdateController {
     private func finishDownload(_ result: Result<URL, Error>, release: UpdateRelease) {
         switch result {
         case .success(let app):
+            staged = (release, app)
             phase = .ready(release, app: app)
             log("ready at \(app.path)")
             if installWithoutAsking { installAndRelaunch() }
@@ -237,10 +261,11 @@ public final class UpdateController {
         phase = .idle
     }
 
-    /// Closing the window forgets a finished check, but not a download in progress or one waiting to install.
+    /// Closing the window forgets a finished check, but not one in flight (its result still arrives, and resetting
+    /// would let a second check race it), a download in progress, or one waiting to install.
     public func dismiss() {
         switch phase {
-        case .downloading, .ready: break
+        case .checking, .downloading, .ready: break
         default: phase = .idle
         }
     }

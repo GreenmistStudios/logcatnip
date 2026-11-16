@@ -18,6 +18,8 @@ extension UpdateController {
         let blocker = bundle.bundleIdentifier == nil
             ? "Updates install only into Logcatnip.app. Build it with scripts/build-app.sh."
             : UpdateInstaller.installBlocker(for: bundle.bundleURL)
+        // A download from a run that quit without installing will not be used.
+        UpdateInstaller.removeStaleDownloads()
         let controller = UpdateController(
             currentVersion: version,
             installBlocker: blocker,
