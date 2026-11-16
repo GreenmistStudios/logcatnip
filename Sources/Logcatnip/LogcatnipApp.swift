@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct LogcatnipApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
+    @State private var updater = UpdateController.forApp()
 
     init() {
         Defaults.register()
@@ -18,18 +19,29 @@ struct LogcatnipApp: App {
             ContentView()
                 .environment(model)
                 .frame(minWidth: 900, minHeight: 500)
+                .modifier(UpdatePresenter(updater: updater))
                 .task {
                     appDelegate.model = model
                     model.start()
+                    updater.startSchedule()
                 }
         }
         .commands {
             LogcatCommands(model: model)
+            UpdateCommands(updater: updater)
         }
+
+        Window("Software Update", id: UpdateView.windowID) {
+            UpdateView()
+                .environment(updater)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
 
         Settings {
             SettingsView()
                 .environment(model)
+                .environment(updater)
         }
     }
 }
