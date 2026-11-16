@@ -112,12 +112,12 @@ struct LogcatCommands: Commands {
                 if let session { FilePanels.save(session, visibleOnly: true) }
             }
             .keyboardShortcut("s")
-            .disabled(session == nil || session?.isSaving == true)
+            .disabled(session?.canSave != true)
             Button("Save All Logs As…") {
                 if let session { FilePanels.save(session, visibleOnly: false) }
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
-            .disabled(session == nil || session?.isSaving == true)
+            .disabled(session?.canSave != true)
         }
         CommandMenu("Logcat") {
             Button(session?.isPaused == true ? "Resume" : "Pause") { session?.isPaused.toggle() }
@@ -180,7 +180,7 @@ enum FilePanels {
     /// Save As…: the panel offers the format and whether to save what is visible or everything. The format is
     /// remembered for next time; the entries preset follows the menu item that was used.
     static func save(_ session: LogSession, visibleOnly: Bool) {
-        guard !session.isSaving else { return }
+        guard session.canSave else { return }
         let remembered = LogSaveFormat(rawValue: UserDefaults.standard.string(forKey: SettingsKey.saveFormat) ?? "") ?? .logcat
         let panel = NSSavePanel()
         panel.title = visibleOnly ? "Save Visible Logs" : "Save All Logs"

@@ -33,7 +33,7 @@ public struct LogSaveRequest: Sendable {
         if let ids = onlyEntryIDs {
             guard let first = entries.first else { return [] }
             selected = []
-            selected.reserveCapacity(ids.count)
+            selected.reserveCapacity(min(ids.count, entries.count))
             var previous: Int?
             for id in ids where id != previous {
                 previous = id

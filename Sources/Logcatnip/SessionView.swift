@@ -88,9 +88,9 @@ private struct SessionToolbar: ToolbarContent {
                 Toggle("Show Date", isOn: $showDate)
                 Divider()
                 Button("Save Visible Logs As…") { FilePanels.save(session, visibleOnly: true) }
-                    .disabled(session.isSaving)
+                    .disabled(!session.canSave)
                 Button("Save All Logs As…") { FilePanels.save(session, visibleOnly: false) }
-                    .disabled(session.isSaving)
+                    .disabled(!session.canSave)
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
             }

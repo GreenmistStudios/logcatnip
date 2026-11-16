@@ -87,9 +87,15 @@ final class LogSession: Identifiable {
 
     @ObservationIgnored private(set) var entries: [LogEntry] = []
     @ObservationIgnored private(set) var rows: [Row] = []
-    /// The device a `.logcat` was saved with, or the live device once it was described, so saving again after the
-    /// device is gone still names it.
+    /// The device a `.logcat` was saved with, or the live device as last seen in adb (kept current by
+    /// `refreshBaseTitle()`), so saving after the device is gone still names it.
     @ObservationIgnored private(set) var fileDevice: LogcatFileDevice?
+    private struct DeviceKey: Equatable {
+        let serial: String
+        let isOnline: Bool
+        let properties: DeviceProperties
+    }
+    @ObservationIgnored private var rememberedDeviceKey: DeviceKey?
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
@@ -163,6 +169,7 @@ final class LogSession: Identifiable {
             // A device that went away keeps its name while the session waits for it to come back.
             if let device = model?.device(serial: serial) {
                 baseTitle = device.displayName
+                rememberDevice()
             } else if baseTitle.isEmpty {
                 baseTitle = serial
             }
@@ -735,11 +742,23 @@ final class LogSession: Identifiable {
 
     var isSaving: Bool { fileSaver?.state == .running }
 
+    var isLoading: Bool { fileLoader?.state == .running }
+
+    /// Saving mid-load would write a partial buffer, possibly over the very file being read.
+    var canSave: Bool { !isSaving && !isLoading }
+
+    /// Cancels work that must not outlive the session, such as a save still writing. Not part of `stop()`, because
+    /// `restart()` stops too and a save works from its own snapshot.
+    func close() {
+        fileSaver?.cancel()
+        stop()
+    }
+
     /// Saves what the table shows (`visibleOnly`) or the whole buffer, in the background. Taking the snapshot is
     /// cheap: the buffer is copy-on-write, and only the row ids are copied. Process names travel on the entries,
     /// which `ProcessNameResolver` stamps per process lifetime; a pid map would rename entries of a reused pid.
     func save(to url: URL, format: LogSaveFormat, visibleOnly: Bool) {
-        guard !isSaving else { return }
+        guard canSave else { return }
         let request = LogSaveRequest(
             format: format, entries: entries, onlyEntryIDs: visibleOnly ? rows.map(\.entryID) : nil,
             metadata: saveMetadata()
@@ -757,18 +776,27 @@ final class LogSession: Identifiable {
     }
 
     private func saveDevice() -> LogcatFileDevice? {
-        guard case let .device(serial, _) = source else {
+        guard case .device = source else {
             return fileDevice ?? fileInfo.flatMap(LogcatFileDevice.init(info:))
         }
-        guard let device = model?.device(serial: serial), let properties = device.properties else { return fileDevice }
+        rememberDevice()
+        return fileDevice
+    }
+
+    /// Caches the live device's description while adb still lists it, so a save after it vanished still names it.
+    /// Skips the AVD lookup (a filesystem hit) when nothing it depends on changed.
+    private func rememberDevice() {
+        guard case let .device(serial, _) = source,
+              let device = model?.device(serial: serial), let properties = device.properties else { return }
+        let key = DeviceKey(serial: serial, isOnline: device.isOnline, properties: properties)
+        guard key != rememberedDeviceKey else { return }
+        rememberedDeviceKey = key
         let avdPath = properties.avdName.flatMap {
             AvdLocator.path(
                 forAvdName: $0, environment: ProcessInfo.processInfo.environment,
                 home: FileManager.default.homeDirectoryForCurrentUser
             )
         }
-        let described = LogcatFileDevice(properties: properties, serial: serial, isOnline: device.isOnline, avdPath: avdPath)
-        fileDevice = described
-        return described
+        fileDevice = LogcatFileDevice(properties: properties, serial: serial, isOnline: device.isOnline, avdPath: avdPath)
     }
 }

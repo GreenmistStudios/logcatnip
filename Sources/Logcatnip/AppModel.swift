@@ -158,7 +158,7 @@ final class AppModel {
             let deadline = clock.now + .seconds(60)
             while let self, clock.now < deadline {
                 let session = self.selectedSession ?? self.sessions.first
-                if session != nil, session?.fileLoader?.state != .running { break }
+                if session != nil, session?.canSave == true { break }
                 try? await Task.sleep(for: .milliseconds(200))
             }
             guard let self, let session = self.selectedSession ?? self.sessions.first else {
@@ -601,7 +601,7 @@ final class AppModel {
     }
 
     func close(_ session: LogSession) {
-        session.stop()
+        session.close()
         guard let index = sessions.firstIndex(where: { $0.id == session.id }) else { return }
         sessions.remove(at: index)
         if selectedSessionID == session.id {
