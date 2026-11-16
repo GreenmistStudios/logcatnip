@@ -10,6 +10,7 @@ enum SettingsKey {
     static let filterHistory = "filterHistory"
     static let favoriteFilters = "favoriteFilters"
     static let autoOpenSessions = "autoOpenSessions"
+    static let showSimulators = "showSimulators"
     static let wrapLines = "wrapLines"
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
@@ -24,6 +25,7 @@ enum Defaults {
             SettingsKey.maxEntries: maxEntries,
             SettingsKey.fontSize: fontSize,
             SettingsKey.autoOpenSessions: true,
+            SettingsKey.showSimulators: true,
             SettingsKey.wrapLines: false,
             SettingsKey.logcatBuffers: "",
             SettingsKey.filterPrecedenceChecked: false,

@@ -3,13 +3,14 @@ import Foundation
 import LogcatKit
 import Observation
 
-/// One log view: a live logcat stream from a device, or an imported file. Owns the entry buffer, the
-/// filter, and the filtered rows the table shows.
+/// One log view: a live logcat stream from a device, a simulator's `log stream`, or an imported file. Owns
+/// the entry buffer, the filter, and the filtered rows the table shows.
 @MainActor
 @Observable
 final class LogSession: Identifiable {
     enum Source: Equatable {
         case device(serial: String)
+        case simulator(udid: String)
         case file(URL)
     }
 
@@ -79,6 +80,7 @@ final class LogSession: Identifiable {
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
+    @ObservationIgnored private let simctl: Simctl?
     @ObservationIgnored private weak var model: AppModel?
     @ObservationIgnored private var firstID = 0
     @ObservationIgnored private var nextID = 0
@@ -101,14 +103,35 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var lastProcessRefresh = Date.distantPast
     @ObservationIgnored private var unresolvablePids: Set<Int32> = []
 
-    init(source: Source, adb: ADB?, model: AppModel) {
+    init(source: Source, adb: ADB? = nil, simctl: Simctl? = nil, model: AppModel) {
         self.source = source
         self.adb = adb
+        self.simctl = simctl
         self.model = model
     }
 
+    /// The adb serial of an Android device session.
     var serial: String? {
         if case let .device(serial) = source { serial } else { nil }
+    }
+
+    /// The UDID of a simulator session.
+    var udid: String? {
+        if case let .simulator(udid) = source { udid } else { nil }
+    }
+
+    /// Whether logs stream from a device or simulator, as opposed to a file.
+    var isStreamSource: Bool { serial != nil || udid != nil }
+
+    /// The command that produces the logs, for menus and markers.
+    var streamName: String { udid != nil ? "log stream" : "logcat" }
+
+    private var isSourceOnline: Bool {
+        switch source {
+        case let .device(serial): model?.device(serial: serial)?.isOnline ?? false
+        case let .simulator(udid): model?.simulator(udid: udid) != nil
+        case .file: false
+        }
     }
 
     var isLive: Bool { status == .streaming || status == .starting }
@@ -117,6 +140,13 @@ final class LogSession: Identifiable {
         switch source {
         case let .device(serial):
             baseTitle = model?.device(serial: serial)?.displayName ?? serial
+        case let .simulator(udid):
+            if let simulator = model?.simulator(udid: udid) {
+                baseTitle = simulator.name
+            } else if baseTitle.isEmpty {
+                // Keep the name once the simulator shuts down.
+                baseTitle = udid
+            }
         case let .file(url):
             baseTitle = url.lastPathComponent
         }
@@ -137,12 +167,23 @@ final class LogSession: Identifiable {
     // MARK: Streaming
 
     func start() {
-        guard case let .device(serial) = source, let adb else { return }
+        let stream: AsyncStream<LogStreamEvent>
+        var modern = true
+        switch source {
+        case let .device(serial):
+            guard let adb else { return }
+            let api = model?.device(serial: serial)?.properties?.apiLevel
+            modern = !useLegacyFormat && (api ?? 99) >= 24
+            let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
+            stream = adb.logcat(serial: serial, options: options)
+        case let .simulator(udid):
+            guard let simctl else { return }
+            stream = simctl.logStream(udid: udid)
+        case .file:
+            return
+        }
         streamTask?.cancel()
         status = .starting
-        let api = model?.device(serial: serial)?.properties?.apiLevel
-        let modern = !useLegacyFormat && (api ?? 99) >= 24
-        let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
         let token = UUID()
         streamToken = token
         requestProcessNames()
@@ -150,7 +191,7 @@ final class LogSession: Identifiable {
         streamTask = Task { [weak self] in
             var receivedAny = false
             self?.status = .streaming
-            for await event in adb.logcat(serial: serial, options: options) {
+            for await event in stream {
                 guard let self, self.streamToken == token else { return }
                 switch event {
                 case let .entries(batch):
@@ -174,7 +215,8 @@ final class LogSession: Identifiable {
         if isLive { status = .stopped }
     }
 
-    /// Clears the view and starts logcat again from the start of the device buffer.
+    /// Clears the view and starts the stream again: logcat from the start of the device buffer, a simulator's
+    /// `log stream` from now.
     func restart() {
         stop()
         clear()
@@ -184,16 +226,16 @@ final class LogSession: Identifiable {
     }
 
     func deviceWentOffline() {
-        guard serial != nil, status != .disconnected, status != .stopped else { return }
+        guard isStreamSource, status != .disconnected, status != .stopped else { return }
         streamToken = nil
         streamTask?.cancel()
         status = .disconnected
-        appendMarker("Device disconnected")
+        appendMarker(disconnectedText)
     }
 
     func deviceCameOnline() {
         guard status == .disconnected else { return }
-        appendMarker("Device reconnected")
+        appendMarker(udid != nil ? "Simulator booted" : "Device reconnected")
         resumeAfter = lastTimestamp
         start()
     }
@@ -201,16 +243,16 @@ final class LogSession: Identifiable {
     private func logcatEnded(status exitStatus: Int32, error: String, receivedAny: Bool, modernFormat: Bool) {
         streamToken = nil
         let message = error.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !receivedAny, modernFormat, exitStatus != 0, !useLegacyFormat {
+        if serial != nil, !receivedAny, modernFormat, exitStatus != 0, !useLegacyFormat {
             // Pre-Nougat logcat rejects -v epoch / -v uid.
             useLegacyFormat = true
             start()
             return
         }
-        let online = serial.flatMap { model?.device(serial: $0)?.isOnline } ?? false
+        let online = isSourceOnline
         if online, restartAttempts < 3 {
             restartAttempts += 1
-            appendMarker("logcat exited\(message.isEmpty ? "" : ": \(message)"); restarting")
+            appendMarker("\(streamName) exited\(message.isEmpty ? "" : ": \(message)"); restarting")
             resumeAfter = lastTimestamp
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(1))
@@ -220,11 +262,15 @@ final class LogSession: Identifiable {
             return
         }
         if online {
-            status = .failed(message.isEmpty ? "logcat exited (\(exitStatus))" : message)
+            status = .failed(message.isEmpty ? "\(streamName) exited (\(exitStatus))" : message)
         } else {
             status = .disconnected
-            appendMarker("Device disconnected")
+            appendMarker(disconnectedText)
         }
+    }
+
+    private var disconnectedText: String {
+        udid != nil ? "Simulator shut down" : "Device disconnected"
     }
 
     func loadFile() {

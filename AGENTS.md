@@ -10,6 +10,7 @@ swift build                                  # debug build
 swift run Logcatnip                          # run from the terminal
 swift test                                   # parser, filter and screenshot tests (what CI runs)
 LOGCATNIP_DEVICE_TESTS=1 swift test          # also run device tests; needs adb and an online device
+LOGCATNIP_SIMULATOR_TESTS=1 swift test       # also run simulator tests; needs Xcode and a booted simulator
 LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 scripts/build-app.sh                         # build build/Logcatnip.app (release, ad-hoc signed)
 CONFIG=debug scripts/build-app.sh            # debug app bundle
@@ -32,6 +33,9 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `ADB.swift`: locating adb, `StreamingProcess` (child processes under an `sh` watchdog so they die
     with the app), device tracking, logcat streaming.
   - `Devices.swift`: `adb track-devices` decoding and device properties.
+  - `Simctl.swift`, `Simulators.swift`: finding `simctl` without triggering the Xcode install prompt, polling
+    booted simulators, and streaming `log stream` from one.
+  - `UnifiedLogParser.swift`: `log stream --style ndjson` parsing into `LogEntry`.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace

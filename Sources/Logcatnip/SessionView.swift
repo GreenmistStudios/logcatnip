@@ -71,13 +71,13 @@ private struct SessionToolbar: ToolbarContent {
             }
             .help("Clear the view (⌘K). Hold for more options.")
 
-            if session.serial != nil {
+            if session.isStreamSource {
                 Button {
                     session.restart()
                 } label: {
                     Label("Restart", systemImage: "arrow.clockwise")
                 }
-                .help("Restart logcat (⌘R)")
+                .help("Restart \(session.streamName) (⌘R)")
             }
 
             Menu {
