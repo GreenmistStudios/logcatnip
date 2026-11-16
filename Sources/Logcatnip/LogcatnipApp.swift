@@ -10,6 +10,7 @@ struct LogcatnipApp: App {
 
     init() {
         Defaults.register()
+        FilterLibrary.flagPrecedenceChangesOnce()
     }
 
     var body: some Scene {
@@ -75,7 +76,10 @@ struct LogcatCommands: Commands {
                 ForEach(online) { group in
                     Button(group.displayName) { model.openSession(serial: group.primary.serial) }
                 }
-                if online.isEmpty {
+                ForEach(model.simulators) { simulator in
+                    Button("\(simulator.name) (\(simulator.runtimeName) Simulator)") { model.openSession(simulator: simulator.udid) }
+                }
+                if online.isEmpty && model.simulators.isEmpty {
                     Text("No devices connected")
                 }
             }
@@ -110,9 +114,9 @@ struct LogcatCommands: Commands {
             Button("Clear Device Log Buffer") { session?.clearDeviceBuffer() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(session?.serial == nil)
-            Button("Restart Logcat") { session?.restart() }
+            Button(session?.udid != nil ? "Restart Log Stream" : "Restart Logcat") { session?.restart() }
                 .keyboardShortcut("r")
-                .disabled(session?.serial == nil)
+                .disabled(session?.isStreamSource != true)
             Divider()
             Button("Find / Filter") { session?.focusFilterRequest += 1 }
                 .keyboardShortcut("f")

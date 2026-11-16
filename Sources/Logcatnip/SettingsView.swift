@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.fontSize) private var fontSize = Defaults.fontSize
     @AppStorage(SettingsKey.logcatBuffers) private var logcatBuffers = ""
     @AppStorage(SettingsKey.autoOpenSessions) private var autoOpenSessions = true
+    @AppStorage(SettingsKey.showSimulators) private var showSimulators = true
 
     var body: some View {
         Form {
@@ -24,6 +25,27 @@ struct SettingsView: View {
                     Button("Reconnect") { model.connectADB() }
                 }
                 Toggle("Open a session when a device connects", isOn: $autoOpenSessions)
+            }
+
+            Section("iOS Simulators") {
+                Toggle("Show booted simulators", isOn: $showSimulators)
+                    .onChange(of: showSimulators) { model.connectSimulators() }
+                if showSimulators {
+                    if let error = model.simctlError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    } else {
+                        Text(model.simctl?.executable.path ?? "Looking for Xcode…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                Text("Streams each simulator's unified log with simctl, which comes with Xcode. Android devices work without Xcode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Filtering") {

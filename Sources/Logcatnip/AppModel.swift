@@ -92,6 +92,12 @@ final class AppModel {
     private(set) var adb: ADB?
     private(set) var adbError: String?
     private(set) var devices: [Device] = []
+    private(set) var simctl: Simctl?
+    /// Why simulators aren't listed (no Xcode, or simctl failing). Shown in Settings, not the sidebar, because
+    /// Android-only users don't need Xcode.
+    private(set) var simctlError: String?
+    /// Booted simulators.
+    private(set) var simulators: [SimulatorDevice] = []
     private(set) var sessions: [LogSession] = []
     var selectedSessionID: LogSession.ID?
 
@@ -99,7 +105,9 @@ final class AppModel {
     /// In-flight getprop requests by serial. The token lets a request that was overtaken (the transport went
     /// away and came back) be ignored when it finally completes.
     @ObservationIgnored private var propertyRequests: [String: UUID] = [:]
+    @ObservationIgnored private var simulatorTask: Task<Void, Never>?
     @ObservationIgnored private var autoOpenedIdentities: Set<DeviceIdentity> = []
+    @ObservationIgnored private var autoOpenedSimulators: Set<String> = []
 
     /// Devices grouped by identity, one entry per physical device.
     var deviceGroups: [DeviceGroup] {
@@ -120,6 +128,7 @@ final class AppModel {
     func start() {
         guard trackingTask == nil else { return }
         connectADB()
+        connectSimulators()
         if ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1" {
             startDebugReporting()
         }
@@ -129,6 +138,8 @@ final class AppModel {
     func shutdown() {
         trackingTask?.cancel()
         trackingTask = nil
+        simulatorTask?.cancel()
+        simulatorTask = nil
         for session in sessions {
             session.stop()
         }
@@ -141,7 +152,9 @@ final class AppModel {
                 let devices = self.devices.map {
                     "\($0.serial)[\($0.descriptor.state.description),\($0.transport.rawValue),\($0.identity?.description ?? "?")]"
                 }.joined(separator: ",")
-                let header = "[logcatnip] devices=\(devices) groups=\(self.deviceGroups.count) sessions=\(self.sessions.count)\n"
+                let simulators = self.simulators.map(\.name).joined(separator: ",")
+                let header = "[logcatnip] devices=\(devices) groups=\(self.deviceGroups.count) simulators=\(simulators) "
+                    + "sessions=\(self.sessions.count)\n"
                 FileHandle.standardError.write(Data(header.utf8))
                 for session in self.sessions {
                     let markers = session.entries.filter { $0.kind == .marker }
@@ -202,6 +215,65 @@ final class AppModel {
                     self.adbError = message.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             }
+        }
+    }
+
+    /// Locates simctl and follows booted simulators, or stops when the setting is off.
+    func connectSimulators() {
+        simulatorTask?.cancel()
+        simulatorTask = nil
+        guard UserDefaults.standard.bool(forKey: SettingsKey.showSimulators) else {
+            simctl = nil
+            simctlError = nil
+            updateSimulators([])
+            return
+        }
+        simulatorTask = Task { [weak self] in
+            let located = await Simctl.locate()
+            guard let self, !Task.isCancelled else { return }
+            switch located {
+            case let .unavailable(message):
+                self.simctl = nil
+                self.simctlError = message
+                self.updateSimulators([])
+            case let .found(simctl):
+                self.simctl = simctl
+                self.simctlError = nil
+                for await event in simctl.trackBootedDevices() {
+                    guard !Task.isCancelled else { return }
+                    switch event {
+                    case let .devices(booted):
+                        self.simctlError = nil
+                        self.updateSimulators(booted)
+                    case let .failed(message):
+                        self.simctlError = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+            }
+        }
+    }
+
+    func simulator(udid: String) -> SimulatorDevice? {
+        simulators.first { $0.udid == udid }
+    }
+
+    func updateSimulators(_ booted: [SimulatorDevice]) {
+        let before = Set(simulators.map(\.udid))
+        simulators = booted
+        let after = Set(booted.map(\.udid))
+        for udid in before.subtracting(after) {
+            for session in sessions where session.udid == udid {
+                session.deviceWentOffline()
+            }
+        }
+        for udid in after.subtracting(before) {
+            for session in sessions where session.udid == udid {
+                session.simulatorBooted()
+            }
+        }
+        refreshTitles()
+        for udid in after.subtracting(before) {
+            autoOpenIfNeeded(simulator: udid)
         }
     }
 
@@ -291,9 +363,10 @@ final class AppModel {
         refreshTitles()
     }
 
-    /// Opens a session for the first device that shows up, so a fresh window starts showing logs.
+    /// Opens a session for the first device that shows up, so a fresh window starts showing logs. Each device
+    /// is opened automatically once, so closing its session doesn't bring it back.
     private func autoOpenIfNeeded(serial: String) {
-        guard UserDefaults.standard.bool(forKey: SettingsKey.autoOpenSessions),
+        guard autoOpenEnabled,
               let device = device(serial: serial), device.isOnline, let identity = device.identity,
               !autoOpenedIdentities.contains(identity),
               !sessions.contains(where: { $0.identity == identity })
@@ -302,6 +375,22 @@ final class AppModel {
         if sessions.isEmpty {
             openSession(serial: serial)
         }
+    }
+
+    /// The simulator counterpart of `autoOpenIfNeeded(serial:)`. A UDID is stable, so it is the identity.
+    private func autoOpenIfNeeded(simulator udid: String) {
+        guard autoOpenEnabled,
+              !autoOpenedSimulators.contains(udid),
+              !sessions.contains(where: { $0.udid == udid })
+        else { return }
+        autoOpenedSimulators.insert(udid)
+        if sessions.isEmpty {
+            openSession(simulator: udid)
+        }
+    }
+
+    private var autoOpenEnabled: Bool {
+        UserDefaults.standard.bool(forKey: SettingsKey.autoOpenSessions)
     }
 
     // MARK: Sessions
@@ -316,7 +405,17 @@ final class AppModel {
             chosen = preferred.serial
         }
         autoOpenedIdentities.insert(identity)
-        let session = LogSession(source: .device(serial: chosen, identity: identity), adb: adb, model: self)
+        return openStreamingSession(LogSession(source: .device(serial: chosen, identity: identity), adb: adb, model: self))
+    }
+
+    @discardableResult
+    func openSession(simulator udid: String) -> LogSession? {
+        guard let simctl else { return nil }
+        autoOpenedSimulators.insert(udid)
+        return openStreamingSession(LogSession(source: .simulator(udid: udid), simctl: simctl, model: self))
+    }
+
+    private func openStreamingSession(_ session: LogSession) -> LogSession {
         sessions.append(session)
         selectedSessionID = session.id
         refreshTitles()
@@ -339,8 +438,17 @@ final class AppModel {
         }
     }
 
+    /// Selects an existing session for the simulator, or opens one.
+    func showSimulator(udid: String) {
+        if let existing = sessions.first(where: { $0.udid == udid }) {
+            selectedSessionID = existing.id
+        } else {
+            openSession(simulator: udid)
+        }
+    }
+
     func openFile(_ url: URL) {
-        let session = LogSession(source: .file(url), adb: adb, model: self)
+        let session = LogSession(source: .file(url), model: self)
         sessions.append(session)
         selectedSessionID = session.id
         refreshTitles()
