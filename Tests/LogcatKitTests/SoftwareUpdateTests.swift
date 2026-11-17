@@ -257,14 +257,17 @@ import Testing
         let layout = try Layout(scratch)
         let app = Process()
         app.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        app.arguments = ["1"]
+        // Runs until the test quits it, so a slow runner can't let it exit before the checks below.
+        app.arguments = ["60"]
         try app.run()
+        defer { if app.isRunning { app.terminate() } }
         let script = try layout.start(waitingFor: app.processIdentifier)
 
         try await Task.sleep(for: .milliseconds(400))
         #expect(app.isRunning)
         #expect(try layout.marker() == "old")
 
+        app.terminate()
         app.waitUntilExit()
         script.waitUntilExit()
         #expect(try layout.marker() == "new")
