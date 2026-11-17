@@ -45,6 +45,8 @@ record; nothing is committed back. The commit type you choose therefore decides 
   - `ADB.swift`: locating adb, `StreamingProcess` (child processes under an `sh` watchdog so they die
     with the app), device tracking, logcat streaming.
   - `Devices.swift`: `adb track-devices` decoding and device properties.
+  - `DeviceIdentity.swift`: device identity (serial number, AVD name, mDNS serial), transport kind, and
+    matching sessions to transports.
   - `Simctl.swift`, `Simulators.swift`: finding `simctl` without triggering the Xcode install prompt, polling
     booted simulators, and streaming `log stream` from one.
   - `UnifiedLogParser.swift`: `log stream --style ndjson` parsing into `LogEntry`.

@@ -9,7 +9,9 @@ import Observation
 @Observable
 final class LogSession: Identifiable {
     enum Source: Equatable {
-        case device(serial: String)
+        /// `serial` is the adb transport now in use; it changes when the device reconnects on a new port or
+        /// switches between USB and Wi-Fi. `identity` stays with the session.
+        case device(serial: String, identity: DeviceIdentity)
         case simulator(udid: String)
         case file(URL)
     }
@@ -53,7 +55,7 @@ final class LogSession: Identifiable {
     }
 
     let id = UUID()
-    let source: Source
+    private(set) var source: Source
     private(set) var baseTitle = ""
     var title = ""
     private(set) var status: Status = .starting
@@ -111,7 +113,11 @@ final class LogSession: Identifiable {
 
     /// The adb serial of an Android device session.
     var serial: String? {
-        if case let .device(serial) = source { serial } else { nil }
+        if case let .device(serial, _) = source { serial } else { nil }
+    }
+
+    var identity: DeviceIdentity? {
+        if case let .device(_, identity) = source { identity } else { nil }
     }
 
     /// The UDID of a simulator session.
@@ -127,7 +133,7 @@ final class LogSession: Identifiable {
 
     private var isSourceOnline: Bool {
         switch source {
-        case let .device(serial): model?.device(serial: serial)?.isOnline ?? false
+        case let .device(serial, _): model?.device(serial: serial)?.isOnline ?? false
         case let .simulator(udid): model?.simulator(udid: udid) != nil
         case .file: false
         }
@@ -137,8 +143,13 @@ final class LogSession: Identifiable {
 
     func refreshBaseTitle() {
         switch source {
-        case let .device(serial):
-            baseTitle = model?.device(serial: serial)?.displayName ?? serial
+        case let .device(serial, _):
+            // A device that went away keeps its name while the session waits for it to come back.
+            if let device = model?.device(serial: serial) {
+                baseTitle = device.displayName
+            } else if baseTitle.isEmpty {
+                baseTitle = serial
+            }
         case let .simulator(udid):
             if let simulator = model?.simulator(udid: udid) {
                 baseTitle = simulator.name
@@ -174,7 +185,7 @@ final class LogSession: Identifiable {
         let stream: AsyncStream<LogStreamEvent>
         var modern = true
         switch source {
-        case let .device(serial):
+        case let .device(serial, _):
             guard let adb else { return }
             let api = model?.device(serial: serial)?.properties?.apiLevel
             modern = !useLegacyFormat && (api ?? 99) >= 24
@@ -237,10 +248,36 @@ final class LogSession: Identifiable {
         appendMarker(disconnectedText)
     }
 
-    func deviceCameOnline() {
-        guard status == .disconnected else { return }
-        appendMarker(udid != nil ? "Simulator booted" : "Device reconnected")
+    /// Replaces the identity once it is known, for a session opened before getprop answered.
+    func adopt(identity: DeviceIdentity) {
+        guard case let .device(serial, _) = source else { return }
+        source = .device(serial: serial, identity: identity)
+    }
+
+    /// Streams from `newSerial` from now on: the device came back, maybe on a new port or transport, or a
+    /// better transport of the same device appeared. Resumes after the last entry, so nothing repeats or
+    /// goes missing beyond what the device's buffer has already dropped.
+    func reattach(serial newSerial: String, transport: DeviceTransport) {
+        guard case let .device(_, identity) = source, status != .stopped else { return }
+        let reconnected = status == .disconnected
+        streamToken = nil
+        streamTask?.cancel()
+        streamTask = nil
+        source = .device(serial: newSerial, identity: identity)
+        let via = transport == .emulator ? newSerial : transport.label
+        appendMarker(reconnected ? "Device reconnected (\(via))" : "Switched to \(via)")
         resumeAfter = lastTimestamp
+        restartAttempts = 0
+        start()
+    }
+
+    /// Resumes a simulator session after the simulator boots again. Its UDID never changes, so unlike
+    /// `reattach` there is no transport to switch to.
+    func simulatorBooted() {
+        guard udid != nil, status == .disconnected else { return }
+        appendMarker("Simulator booted")
+        resumeAfter = lastTimestamp
+        restartAttempts = 0
         start()
     }
 
@@ -260,7 +297,7 @@ final class LogSession: Identifiable {
             resumeAfter = lastTimestamp
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(1))
-                guard let self, self.streamToken == nil, self.status != .stopped else { return }
+                guard let self, self.streamToken == nil, self.isLive else { return }
                 self.start()
             }
             return
