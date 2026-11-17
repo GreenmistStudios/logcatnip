@@ -33,6 +33,19 @@ Android Studio's Logcat window.
   devices. A simulator session streams its unified log with `simctl spawn <udid> log stream`, and uses the
   same table, filters and export. See [iOS simulator logs](#ios-simulator-logs).
 
+## Install and update
+
+Download `Logcatnip-X.Y.Z.zip` from the [releases page](https://github.com/GreenmistStudios/logcatnip/releases),
+unzip it and move `Logcatnip.app` to Applications. The app is ad-hoc signed, not notarized, so the first time
+macOS blocks it: Control-click the app, choose Open, then Open again (or run
+`xattr -dr com.apple.quarantine /Applications/Logcatnip.app`).
+
+Logcatnip checks GitHub Releases once a day (Settings › Updates; Logcatnip › Check for Updates… at any time).
+When there is a newer release it shows the release notes and offers to download it. The download is checked
+against the release's SHA-256, the bundle identifier, the version and the code signature before Install and
+Relaunch swaps it in. Updating in place needs the app in a folder you can write to; when it isn't, the window
+links to the release page instead.
+
 ## Requirements
 
 - macOS 14 or later
@@ -69,6 +82,28 @@ and a diff to `.build/snapshot-failures/`.
 
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch, and `LOGCATNIP_UPDATE_INSTALL=1` with it downloads and
+installs what it finds without clicking. `LOGCATNIP_UPDATE_FEED=/path/release.json` (or a URL) reads releases from
+a copy of the GitHub API response instead, and `LOGCATNIP_UPDATE_VERSION=0.1.0` pretends to be that version. With
+`LOGCATNIP_DEBUG=1` each update step is logged as `update:`.
+
+## Releases
+
+Every merge to `master` runs `.github/workflows/release.yml`. `scripts/next-version.sh` reads the conventional
+commits since the last `vX.Y.Z` tag and picks the bump:
+
+| Commits since the last tag | Bump |
+| --- | --- |
+| `type!:` subject or a `BREAKING CHANGE:` footer | major (minor while the version is 0.x) |
+| `feat:` | minor |
+| `fix:`, `perf:`, `refactor:`, `revert:` | patch |
+| only `docs:`, `chore:`, `ci:`, `test:`, `style:`, `build:` | no release |
+
+The workflow then runs the tests, builds the app with that version, and publishes a GitHub release tagged
+`vX.Y.Z` with `Logcatnip-X.Y.Z.zip`, its `.sha256` and notes generated from the merged pull requests. The tag
+is the only record of the version: nothing is committed back. To force a release, or to cut 1.0, run the
+Release workflow by hand and choose the bump. Local builds take the newest tag as their version (`0.0.0`
+before the first release); set `VERSION=` to override it.
 
 ## Filter reference
 
@@ -129,6 +164,7 @@ device's unified log.
   adb (device tracking, logcat streaming, process names) and simctl (simulators, `log stream`). No UI
   dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
+- `scripts/`: `build-app.sh` builds the app bundle; `next-version.sh` picks the next release version.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
 - `Tests/LogcatnipTests`: screenshot tests of the app's views.
 

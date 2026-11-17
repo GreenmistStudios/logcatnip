@@ -14,6 +14,8 @@ enum SettingsKey {
     static let wrapLines = "wrapLines"
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
+    /// Owned by `UpdateController`, which also reads when it last checked and which version was skipped.
+    static let checkForUpdates = UpdateController.Keys.automaticChecks
 }
 
 enum Defaults {
@@ -29,6 +31,7 @@ enum Defaults {
             SettingsKey.wrapLines: false,
             SettingsKey.logcatBuffers: "",
             SettingsKey.filterPrecedenceChecked: false,
+            SettingsKey.checkForUpdates: true,
         ])
     }
 

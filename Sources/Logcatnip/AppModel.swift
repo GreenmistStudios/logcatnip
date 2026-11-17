@@ -157,10 +157,12 @@ final class AppModel {
                     + "sessions=\(self.sessions.count)\n"
                 FileHandle.standardError.write(Data(header.utf8))
                 for session in self.sessions {
+                    let stats = session.processNameStats
                     let markers = session.entries.filter { $0.kind == .marker }
                     let line = "[logcatnip]   \(session.title): status=\(session.status.label) paused=\(session.isPaused) "
                         + "follow=\(session.autoScroll) total=\(session.totalCount) visible=\(session.visibleCount) "
-                        + "rows=\(session.rows.count) processes=\(session.processNames.count) "
+                        + "rows=\(session.rows.count) processes=\(stats.running) pending=\(stats.pending) "
+                        + "unresolved=\(stats.unresolvable) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-") "
                         + "serial=\(session.serial ?? "-") identity=\(session.identity?.description ?? "-") "
                         + "markers=\(markers.count) lastMarker=\"\(markers.last?.message ?? "-")\" "

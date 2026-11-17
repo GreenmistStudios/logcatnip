@@ -14,13 +14,25 @@ LOGCATNIP_SIMULATOR_TESTS=1 swift test       # also run simulator tests; needs X
 LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 scripts/build-app.sh                         # build build/Logcatnip.app (release, ad-hoc signed)
 CONFIG=debug scripts/build-app.sh            # debug app bundle
+VERSION=1.2.3 scripts/build-app.sh           # set the bundle version (default: newest vX.Y.Z tag, else 0.0.0)
+UNIVERSAL=1 scripts/build-app.sh             # arm64 + x86_64, as the release workflow builds it
+scripts/next-version.sh [--bump auto|patch|minor|major]   # the version the next release would get
 ```
 
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch and `LOGCATNIP_UPDATE_INSTALL=1` installs what it finds
+without clicking; `LOGCATNIP_UPDATE_FEED=/path/release.json|URL` and `LOGCATNIP_UPDATE_VERSION=0.1.0` point it at a
+local feed and fake the running version. With `LOGCATNIP_DEBUG=1` each step logs an `update:` line.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
-`scripts/build-app.sh`. Run all three before you call a change done.
+`scripts/build-app.sh`, and uploads the zipped app as an artifact. Run all three before you call a change done.
+
+Releases (`.github/workflows/release.yml`) run on every push to `master`: `scripts/next-version.sh` picks the bump
+from the conventional commits since the last `vX.Y.Z` tag (breaking → major, minor before 1.0; `feat` → minor;
+`fix`/`perf`/`refactor`/`revert` → patch; anything else → no release), then the workflow tests, builds with
+`VERSION`, and publishes a GitHub release with `Logcatnip-X.Y.Z.zip` and its `.sha256`. Tags are the only version
+record; nothing is committed back. The commit type you choose therefore decides the release, so pick it with care.
 
 ## Requirements
 
@@ -40,8 +52,14 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `UnifiedLogParser.swift`: `log stream --style ndjson` parsing into `LogEntry`.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
+  - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
+    events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
+  - `SoftwareUpdate.swift`: `SemanticVersion`, the GitHub Releases feed, and the updater's download, SHA-256 and
+    bundle checks, and the shell that swaps the app after it quits.
+  - `UpdateController.swift`: the update flow (check, skip, daily schedule, download, install) as a
+    `@MainActor @Observable` state machine over `UpdateServices`, so tests drive it with fakes.
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
@@ -49,12 +67,16 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
+  - `Updater.swift`: wires `UpdateController` to the bundle and the `LOGCATNIP_UPDATE_*` hooks, the Software Update
+    window and the Check for Updates… command.
 - `Tests/LogcatKitTests/`: Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`). Device tests
-  are gated on `LOGCATNIP_DEVICE_TESTS=1`.
+  are gated on `LOGCATNIP_DEVICE_TESTS=1`. Update tests never touch the network: `UpdateTestSupport.swift` has a
+  `MockURLProtocol` (one host per test, so parallel suites don't collide) and builds signed fake app bundles.
 - `Tests/LogcatnipTests/`: screenshot tests of the app (it `@testable import`s the executable target).
   `Snapshot.swift` renders a SwiftUI view in an offscreen window at 2x and compares it with
   `__Snapshots__/macOS-<major>/<name>.png`; mismatches write `.actual.png` and `.diff.png` files to
   `.build/snapshot-failures/`. `SessionScreenshotTests.swift` holds the fixture log.
+- `scripts/next-version.sh`: the next release version from conventional commits, for the release workflow.
 - `scripts/build-app.sh`: assembles the `.app` bundle and writes `Info.plist` inline (bundle id
   `studio.greenmist.logcatnip`). Add new bundle resources, such as an app icon, here.
 - `design/`: the app icon. `render-icons.swift` draws the concepts into `icons/` and the chosen one into
@@ -93,3 +115,6 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
 - Commit subjects use conventional commits: `feat: ...`, `fix: ...`, lowercase and imperative. Reference
   issues in the body (`Fixes #8.`).
 - Other agents may have uncommitted work in the tree. Stage only your own files.
+- Pull requests that change visible UI include screenshots in the description, before and after when
+  something existing changed. The screenshot test PNGs in `Tests/LogcatnipTests/__Snapshots__/` work for
+  this. Skip it for changes with nothing to see.
