@@ -925,7 +925,7 @@ struct FilterParser {
         }
     }
 
-    private func simplify(_ node: FilterNode) -> FilterNode? {
+    func simplify(_ node: FilterNode) -> FilterNode? {
         if case .predicate(.always) = node { return nil }
         return node
     }
