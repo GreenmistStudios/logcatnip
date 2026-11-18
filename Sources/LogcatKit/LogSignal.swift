@@ -17,6 +17,11 @@ public enum SignalKind: String, Sendable, Hashable, CaseIterable {
         }
     }
 
+    /// Crashes, native crashes and ANRs: what Next Crash visits and the status bar counts in red.
+    public static let fatal: Set<SignalKind> = Set(allCases.filter(\.isFatal))
+    /// Out of memory, leaks and jank.
+    public static let warnings: Set<SignalKind> = Set(allCases.filter { !$0.isFatal })
+
     public var title: String {
         switch self {
         case .crash: "Crash"

@@ -77,7 +77,9 @@ an ad-hoc signed release once signed ones exist.
   - `LogFinder.swift`: find-in-results queries (plain, regex, whole word) and the rows they match.
   - `FindResults.swift`: matching row indexes kept across appends, front trims and resets, and the
     next/previous jump targets.
-  - `ScrollMarkerLayout.swift`: pixel runs for scroller tick marks (find now, the crash navigator later).
+  - `IncrementalRowIndex.swift`: row indexes of the entries a predicate picks (errors) or the caller inserts
+    (signal anchors), kept across appends, front trims and refilters.
+  - `ScrollMarkerLayout.swift`: pixel runs for scroller tick marks (find, errors and signals).
   - `SoftwareUpdate.swift`: `SemanticVersion`, the GitHub Releases feed, and the updater's download, SHA-256 and
     bundle checks, and the shell that swaps the app after it quits.
   - `UpdateController.swift`: the update flow (check, skip, daily schedule, download, install) as a
@@ -90,6 +92,8 @@ an ad-hoc signed release once signed ones exist.
   - `FindController.swift`, `FindBar.swift`: the find bar, its state, and incremental off-main scans.
   - `ScrollMarkers.swift`: the tick marks drawn over the table's vertical scroller, one layer per kind of
     mark.
+  - `SignalsPopover.swift`: the status bar's crash badge, its popover of signal groups, and the occurrence
+    context menu (`SignalOccurrenceMenu`).
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
   - `WirelessModel.swift`, `WirelessConnectView.swift`, `QRCodeImage.swift`: the Connect over Wi-Fi sheet,
     its QR code, and the sidebar's Discovered list.

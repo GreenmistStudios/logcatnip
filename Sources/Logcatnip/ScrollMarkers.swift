@@ -1,11 +1,14 @@
 import AppKit
 import LogcatKit
 
-/// Tick marks drawn over the vertical scroller's track, one set of rows per layer. Find uses two
-/// layers; the crash navigator adds its own later by extending `Layer`.
+/// Tick marks drawn over the vertical scroller's track, one set of rows per layer: errors, warnings and
+/// fatal signals underneath, find matches on top so a search stays readable in a log full of errors.
 final class ScrollMarkersView: NSView {
     /// Drawn in raw-value order, so later layers sit on top of earlier ones.
     enum Layer: Int, CaseIterable, Comparable {
+        case errors
+        case warnings
+        case fatal
         case findMatches
         case currentFindMatch
 
@@ -15,6 +18,9 @@ final class ScrollMarkersView: NSView {
     struct Style {
         var color: NSColor
         var minLength: Int
+        /// Points across the track, centred; nil fills it. Thin layers leave the bold ones above them visible
+        /// at the sides.
+        var width: CGFloat?
     }
 
     private struct Marks {
@@ -53,8 +59,10 @@ final class ScrollMarkersView: NSView {
                 trackLength: trackLength,
                 minLength: marks.style.minLength
             )
+            let width = min(marks.style.width ?? bounds.width, bounds.width)
+            let x = (bounds.width - width) / 2
             for run in runs {
-                NSRect(x: 0, y: CGFloat(run.lowerBound), width: bounds.width, height: CGFloat(run.count)).fill()
+                NSRect(x: x, y: CGFloat(run.lowerBound), width: width, height: CGFloat(run.count)).fill(using: .sourceOver)
             }
         }
     }

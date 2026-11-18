@@ -188,7 +188,7 @@ struct LogTableView: NSViewRepresentable {
                 resetMessageWidth()
                 wrapColumns = currentWrapColumns()
                 tableView.reloadData()
-                updateFindMarkers()
+                updateMarkers()
                 if session.autoScroll { scrollToEnd() }
             }
         }
@@ -211,7 +211,7 @@ struct LogTableView: NSViewRepresentable {
             switch change {
             case .appended:
                 tableView.noteNumberOfRowsChanged()
-                updateFindMarkers()
+                updateMarkers()
                 if session.autoScroll { scrollToEnd() }
             case let .reloaded(removedFront):
                 let selectedIDs = selectedEntryIDs()
@@ -221,7 +221,7 @@ struct LogTableView: NSViewRepresentable {
                 if removedFront == 0 { resetMessageWidth() }
                 tableView.reloadData()
                 restoreSelection(selectedIDs)
-                updateFindMarkers()
+                updateMarkers()
                 if session.autoScroll {
                     scrollToEnd()
                 } else if removedFront > 0 {
@@ -414,6 +414,18 @@ struct LogTableView: NSViewRepresentable {
             session?.rows.count ?? 0
         }
 
+        /// Tints every line of an entry that reported a crash or ANR. A set lookup, so scrolling stays cheap.
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            let view = tableView.makeView(withIdentifier: LogRowView.identifier, owner: nil) as? LogRowView ?? LogRowView()
+            view.identifier = LogRowView.identifier
+            var tinted = false
+            if let session, row < session.rows.count {
+                tinted = session.isFatalAnchor(session.rows[row].entryID)
+            }
+            view.isFatal = tinted
+            return view
+        }
+
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard let session, let tableColumn, let column = Column(rawValue: tableColumn.identifier.rawValue),
                   row < session.rows.count
@@ -561,14 +573,21 @@ struct LogTableView: NSViewRepresentable {
                     tableView.reloadData(forRowIndexes: IndexSet(integersIn: rows), columnIndexes: columns)
                 }
             }
-            updateFindMarkers()
+            updateMarkers()
         }
 
-        private func updateFindMarkers() {
+        /// Refreshes every tick layer. Called whenever rows or find matches change; each source is cached
+        /// or kept incrementally, so this costs a few array copies.
+        private func updateMarkers() {
             guard let session else { return }
             let find = session.find
             let markers = scrollView.markers
             markers.rowCount = session.rows.count
+            markers.setRows(session.errorRows.rows, for: .errors, style: LogColors.errorMarker)
+            // Every visible report of a burst gets a tick (an ANR's InputDispatcher and ActivityManager lines),
+            // which shows where each was logged and keeps this proportional to the new rows.
+            markers.setRows(session.warningAnchorRows.rows, for: .warnings, style: LogColors.warningMarker)
+            markers.setRows(session.fatalAnchorRows.rows, for: .fatal, style: LogColors.fatalMarker)
             markers.setRows(find.isActive ? find.results.rows : [], for: .findMatches, style: LogColors.findMarker)
             let current = find.currentRow.flatMap { find.isActive && find.results.contains($0) ? [$0] : nil } ?? []
             markers.setRows(current, for: .currentFindMatch, style: LogColors.currentFindMarker)
@@ -700,6 +719,22 @@ final class BadgeCellView: NSView {
     override func layout() {
         super.layout()
         badge.frame = NSRect(x: 0, y: 0, width: bounds.width, height: min(badgeHeight, bounds.height))
+    }
+}
+
+/// A table row that can carry the fatal-signal tint under its cells.
+final class LogRowView: NSTableRowView {
+    static let identifier = NSUserInterfaceItemIdentifier("LogRow")
+
+    var isFatal = false {
+        didSet { if isFatal != oldValue { needsDisplay = true } }
+    }
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        guard isFatal else { return }
+        LogColors.fatalRowBackground.setFill()
+        bounds.fill(using: .sourceOver)
     }
 }
 

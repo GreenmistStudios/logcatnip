@@ -148,6 +148,21 @@ struct LogcatCommands: Commands {
             Button("Use Selection for Find") { session?.find.useSelectionForFind() }
                 .keyboardShortcut("e")
                 .disabled(session == nil)
+            Divider()
+            // Xcode's Jump to Next/Previous Issue keys. ⇧⌘[ and ⇧⌘] stay free for window tabs.
+            Button("Next Crash") { session?.navigateSignal(.next, kinds: SignalKind.fatal) }
+                .keyboardShortcut("'")
+                .disabled(session?.hasCrashTargets != true)
+            Button("Previous Crash") { session?.navigateSignal(.previous, kinds: SignalKind.fatal) }
+                .keyboardShortcut("'", modifiers: [.command, .shift])
+                .disabled(session?.hasCrashTargets != true)
+            Button("Next Error") { session?.navigateError(.next) }
+                .keyboardShortcut("]")
+                .disabled(session?.hasErrorTargets != true)
+            Button("Previous Error") { session?.navigateError(.previous) }
+                .keyboardShortcut("[")
+                .disabled(session?.hasErrorTargets != true)
+            Divider()
             Button("Scroll to End") { session?.autoScroll = true }
                 .keyboardShortcut(.downArrow, modifiers: [.command])
                 .disabled(session == nil)

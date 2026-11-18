@@ -34,6 +34,12 @@ Android Studio's Logcat window.
   orange, with an "N of M" counter and tick marks on the scroller. Return or ⌘G goes to the next match,
   ⇧Return or ⇧⌘G to the previous (both wrap), ⌘E searches for the selected text or line, and Esc closes the
   bar. ⌘L focuses the filter.
+- **Crash navigator.** Crashes, native crashes, ANRs, leaks, out-of-memory kills and skipped frames are
+  detected as they stream in. The status bar counts them ("2 crashes · 1 ANR · 3 warnings"); click it for
+  the list, grouped by signature with a count, where clicking an occurrence selects it in the log. The
+  scroller marks crashes and ANRs in red, warnings in orange and every error line faintly, and crash rows are
+  tinted. ⌘' and ⇧⌘' go to the next and previous crash or ANR, ⌘] and ⌘[ to the next and previous error.
+  None of these change the filter; occurrences it hides are greyed out in the list.
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or set the
   minimum level.
 - **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker.
