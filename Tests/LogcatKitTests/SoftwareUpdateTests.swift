@@ -299,10 +299,22 @@ import Testing
         #expect(try layout.marker() == "old")
 
         app.terminate()
-        app.waitUntilExit()
-        script.waitUntilExit()
+        #expect(await exited(app, within: .seconds(5)))
+        #expect(await exited(script, within: .seconds(10)))
         #expect(try layout.marker() == "new")
         #expect(layout.exists(layout.target.appendingPathComponent("relaunched")))
+    }
+
+    /// `waitUntilExit()` spins the calling thread's run loop and can miss the exit of a process launched on
+    /// another thread, which an `await` in an async test can switch to; it then blocks forever. Polling has no
+    /// such dependency, and the deadline fails the test instead of hanging the run.
+    private func exited(_ process: Process, within limit: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + limit
+        while process.isRunning {
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return true
     }
 
     @Test func putsTheOldAppBackWhenTheSwapFails() throws {
