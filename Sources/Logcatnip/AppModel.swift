@@ -61,6 +61,7 @@ final class AppModel {
         connectADB()
         if ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1" {
             startDebugReporting()
+            startDebugSessionActions()
         }
     }
 
@@ -85,6 +86,7 @@ final class AppModel {
                     Data("[logcatnip] devices=\(devices) sessions=\(self.sessions.count) \(ignored)\n".utf8))
                 for session in self.sessions {
                     let line = "[logcatnip]   \(session.title): status=\(session.status.label) paused=\(session.isPaused) "
+                        + "ageRefresh=\(session.isRefreshingAge) "
                         + "follow=\(session.autoScroll) total=\(session.totalCount) visible=\(session.visibleCount) "
                         + "ignored=\(session.ignoredCount) showIgnored=\(session.showIgnored) rows=\(session.rows.count) processes=\(session.processNames.count) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-")\n"
@@ -99,6 +101,36 @@ final class AppModel {
                     }
                 }
                 try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    /// Debug helpers, with `LOGCATNIP_DEBUG=1`: `LOGCATNIP_RESTART_AFTER=<seconds>` restarts every device session once
+    /// and `LOGCATNIP_CLOSE_AFTER=<seconds>` closes every session, both counted from launch, so Restart Logcat and
+    /// Close Session can be checked from a terminal.
+    private func startDebugSessionActions() {
+        let environment = ProcessInfo.processInfo.environment
+        func say(_ text: String) {
+            FileHandle.standardError.write(Data("[logcatnip] \(text)\n".utf8))
+        }
+        if let delay = environment["LOGCATNIP_RESTART_AFTER"].flatMap(Double.init) {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self else { return }
+                for session in self.sessions where session.serial != nil {
+                    say("debug restart: \(session.title)")
+                    session.restart()
+                }
+            }
+        }
+        if let delay = environment["LOGCATNIP_CLOSE_AFTER"].flatMap(Double.init) {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self else { return }
+                for session in self.sessions {
+                    say("debug close: \(session.title)")
+                    self.close(session)
+                }
             }
         }
     }

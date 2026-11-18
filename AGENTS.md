@@ -17,7 +17,10 @@ CONFIG=debug scripts/build-app.sh            # debug app bundle
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, overriding the default filter. The debug
 output includes the ignore lists and each session's `ignored=` count. `LOGCATNIP_COMPLETE='tag:Net'` (with
-`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query.
+`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query. With `LOGCATNIP_DEBUG=1`,
+`LOGCATNIP_RESTART_AFTER=<seconds>` restarts every device session once and `LOGCATNIP_CLOSE_AFTER=<seconds>`
+closes every session (both counted from launch); each session line shows `ageRefresh=`, and an
+`age refresh ended (<reason>)` line is printed when a session's `age:` refresh stops.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`. Run all three before you call a change done.
@@ -42,6 +45,8 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `FilterCompletion.swift`: `completionContext(query:cursor:)` and the suggestions for keys, values and history.
   - `IgnoreList.swift`: `IgnoreList` (global ignored tags and packages), `FilterOutcome` (shown, ignored or filtered
     out, so the status bar can count what the lists hide) and `DefaultFilter` (the query new sessions start with).
+  - `PeriodicRefresh.swift`: a main-actor loop for state that goes stale with time (`age:` filters), held weakly
+    so it ends with its owner.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
 - `Sources/Logcatnip/`: the app.

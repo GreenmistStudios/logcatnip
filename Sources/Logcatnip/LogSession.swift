@@ -97,7 +97,7 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var refilterInFlight = false
     @ObservationIgnored private var flushScheduled = false
     @ObservationIgnored private var filterDebounce: Task<Void, Never>?
-    @ObservationIgnored private var ageRefresh: Task<Void, Never>?
+    @ObservationIgnored private var ageRefresh: Task<PeriodicRefresh.Ending, Never>?
 
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var streamToken: UUID?
@@ -180,7 +180,7 @@ final class LogSession: Identifiable {
         streamToken = nil
         streamTask?.cancel()
         streamTask = nil
-        ageRefresh?.cancel()
+        stopAgeRefresh()
         if isLive { status = .stopped }
     }
 
@@ -191,6 +191,8 @@ final class LogSession: Identifiable {
         resumeAfter = nil
         lastTimestamp = nil
         start()
+        // stop() ended the age: refresh along with the stream; the filter is unchanged, so start it again.
+        scheduleAgeRefresh()
     }
 
     func deviceWentOffline() {
@@ -495,15 +497,30 @@ final class LogSession: Identifiable {
 
     /// `age:` results change as time passes, so refilter periodically while such a filter is active.
     private func scheduleAgeRefresh() {
-        ageRefresh?.cancel()
+        stopAgeRefresh()
         guard filter.dependsOnTime else { return }
-        ageRefresh = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
-                guard let self, !Task.isCancelled, self.filter.dependsOnTime, !self.isPaused else { continue }
-                self.refilter()
+        let task = PeriodicRefresh.start(every: .seconds(5), owner: self) { session in
+            guard session.filter.dependsOnTime, !session.isPaused else { return }
+            session.refilter()
+        }
+        ageRefresh = task
+        if Self.debugLogging {
+            let title = title
+            Task {
+                let ending = await task.value
+                FileHandle.standardError.write(Data("[logcatnip] age refresh ended (\(ending)) for \(title)\n".utf8))
             }
         }
+    }
+
+    /// Whether the `age:` refresh loop is scheduled, for the debug output.
+    var isRefreshingAge: Bool { ageRefresh != nil }
+
+    private static let debugLogging = ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1"
+
+    private func stopAgeRefresh() {
+        ageRefresh?.cancel()
+        ageRefresh = nil
     }
 
     func clear() {
