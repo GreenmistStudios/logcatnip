@@ -14,6 +14,10 @@ on:
         type: choice
         options: [auto, patch, minor, major]
         default: auto
+      dry_run:
+        description: Build, sign and notarize, but skip the tests and upload the DMG and zip as an artifact instead of releasing
+        type: boolean
+        default: false
 
 # One release at a time, in push order, so each run sees the tag the previous one made.
 concurrency:
@@ -48,7 +52,7 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_16.4.app || true
 
       - name: Test
-        if: steps.version.outputs.release == 'true'
+        if: steps.version.outputs.release == 'true' && !inputs.dry_run
         run: swift test
 
       # Secrets (see "Signing releases" in README.md):
@@ -97,8 +101,19 @@ jobs:
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
         run: NOTARY_KEY="$RUNNER_TEMP/notary.p8" scripts/package-release.sh
 
+      - name: Upload dry run
+        if: steps.version.outputs.release == 'true' && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: Logcatnip-${{ steps.version.outputs.version }}-dry-run
+          path: |
+            build/Logcatnip-*.dmg
+            build/Logcatnip-*.zip
+            build/Logcatnip-*.sha256
+          retention-days: 7
+
       - name: Publish release
-        if: steps.version.outputs.release == 'true'
+        if: steps.version.outputs.release == 'true' && !inputs.dry_run
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
