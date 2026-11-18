@@ -19,11 +19,16 @@ public struct GitHubUpdateServices: UpdateServices {
     public var feed: URL
     public var bundleIdentifier: String
     public var appURL: URL
+    /// The team updates must be signed by; nil accepts any valid signature (see `UpdateInstaller.signingTeam`).
+    public var team: String?
 
-    public init(feed: URL = UpdateFeed.latestReleaseURL, bundleIdentifier: String, appURL: URL) {
+    public init(
+        feed: URL = UpdateFeed.latestReleaseURL, bundleIdentifier: String, appURL: URL, team: String? = nil
+    ) {
         self.feed = feed
         self.bundleIdentifier = bundleIdentifier
         self.appURL = appURL
+        self.team = team
     }
 
     public func newestRelease(newerThan current: SemanticVersion) async throws -> UpdateRelease? {
@@ -31,7 +36,7 @@ public struct GitHubUpdateServices: UpdateServices {
     }
 
     public func prepare(_ release: UpdateRelease, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
-        try await UpdateInstaller.prepare(release, bundleIdentifier: bundleIdentifier, progress: progress)
+        try await UpdateInstaller.prepare(release, bundleIdentifier: bundleIdentifier, team: team, progress: progress)
     }
 
     @MainActor public func startInstall(of app: URL) throws {

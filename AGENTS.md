@@ -16,6 +16,9 @@ scripts/build-app.sh                         # build build/Logcatnip.app (releas
 CONFIG=debug scripts/build-app.sh            # debug app bundle
 VERSION=1.2.3 scripts/build-app.sh           # set the bundle version (default: newest vX.Y.Z tag, else 0.0.0)
 UNIVERSAL=1 scripts/build-app.sh             # arm64 + x86_64, as the release workflow builds it
+SIGN_IDENTITY="Developer ID Application: …" scripts/build-app.sh   # Developer ID + hardened runtime, as releases sign
+VERSION=1.2.3 SIGN_IDENTITY=… NOTARY_PROFILE=… scripts/package-release.sh   # notarized DMG + zip (SKIP_NOTARIZE=1 to try)
+LOGCATNIP_SIGNING_IDENTITY="Developer ID Application: …" swift test   # also test team pinning with a real certificate
 scripts/next-version.sh [--bump auto|patch|minor|major]   # the version the next release would get
 ```
 
@@ -34,8 +37,12 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
 Releases (`.github/workflows/release.yml`) run on every push to `main`: `scripts/next-version.sh` picks the bump
 from the conventional commits since the last `vX.Y.Z` tag (breaking → major, minor before 1.0; `feat` → minor;
 `fix`/`perf`/`refactor`/`revert` → patch; anything else → no release), then the workflow tests, builds with
-`VERSION`, and publishes a GitHub release with `Logcatnip-X.Y.Z.zip` and its `.sha256`. Tags are the only version
+`VERSION` and the Developer ID from the repository secrets, notarizes with `scripts/package-release.sh`, and
+publishes a GitHub release with `Logcatnip-X.Y.Z.dmg`, `Logcatnip-X.Y.Z.zip` and a `.sha256` for each. The updater
+only reads the zip. Tags are the only version
 record; nothing is committed back. The commit type you choose therefore decides the release, so pick it with care.
+A Developer ID build only accepts updates signed by its own team (`UpdateInstaller.signingTeam`), so never publish
+an ad-hoc signed release once signed ones exist.
 
 ## Requirements
 
@@ -88,7 +95,10 @@ record; nothing is committed back. The commit type you choose therefore decides 
   `.build/snapshot-failures/`. `SessionScreenshotTests.swift` holds the fixture log.
 - `scripts/next-version.sh`: the next release version from conventional commits, for the release workflow.
 - `scripts/build-app.sh`: assembles the `.app` bundle and writes `Info.plist` inline (bundle id
-  `studio.greenmist.logcatnip`). Add new bundle resources, such as an app icon, here.
+  `studio.greenmist.logcatnip`). Add new bundle resources, such as an app icon, here. With `SIGN_IDENTITY` it signs
+  with the hardened runtime; if the app ever needs an entitlement, pass `--entitlements` here.
+- `scripts/package-release.sh`: checks a Developer ID build, makes the DMG (app + Applications link), notarizes it
+  with `notarytool`, staples the DMG and the app, and zips the stapled app for the updater.
 - `design/`: the app icon. `render-icons.swift` draws the concepts into `icons/` and the chosen one into
   `AppIcon.png`, which `scripts/build-app.sh` turns into `AppIcon.icns` with `sips` and `iconutil`. To
   change the icon, edit the script, run `swift design/render-icons.swift`, and commit the PNGs.
