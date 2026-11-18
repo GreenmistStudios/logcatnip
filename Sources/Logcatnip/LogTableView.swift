@@ -549,10 +549,22 @@ struct LogTableView: NSViewRepresentable {
             let tag = LogSession.quoted(entry.tag)
             menu.addItem(item("Show Only Tag “\(entry.tag)”", #selector(addTerm), "tag=:\(tag)"))
             menu.addItem(item("Hide Tag “\(entry.tag)”", #selector(addTerm), "-tag=:\(tag)"))
+            if !entry.tag.isEmpty {
+                if session.ignoreList.ignoresTag(entry.tag) {
+                    menu.addItem(item("Stop Ignoring Tag “\(entry.tag)”", #selector(stopIgnoringTag), entry.tag))
+                } else {
+                    menu.addItem(item("Ignore Tag “\(entry.tag)” Everywhere", #selector(ignoreTag), entry.tag))
+                }
+            }
             if let process = session.processName(for: entry) {
                 let package = LogEntry.packageName(forProcess: process)
                 menu.addItem(item("Show Only Package “\(package)”", #selector(addTerm), "package=:\(LogSession.quoted(package))"))
                 menu.addItem(item("Hide Package “\(package)”", #selector(addTerm), "-package=:\(LogSession.quoted(package))"))
+                if session.ignoreList.ignoresPackage(package) {
+                    menu.addItem(item("Stop Ignoring Package “\(package)”", #selector(stopIgnoringPackage), package))
+                } else {
+                    menu.addItem(item("Ignore Package “\(package)” Everywhere", #selector(ignorePackage), package))
+                }
             }
             menu.addItem(item("Show Only PID \(entry.pid)", #selector(addTerm), "pid:\(entry.pid)"))
             menu.addItem(item("Show Only TID \(entry.tid)", #selector(addTerm), "tid:\(entry.tid)"))
@@ -579,6 +591,26 @@ struct LogTableView: NSViewRepresentable {
         @objc private func addTerm(_ sender: NSMenuItem) {
             guard let term = sender.representedObject as? String else { return }
             session?.addTerm(term)
+        }
+
+        @objc private func ignoreTag(_ sender: NSMenuItem) {
+            guard let tag = sender.representedObject as? String else { return }
+            session?.ignoreTagEverywhere(tag)
+        }
+
+        @objc private func stopIgnoringTag(_ sender: NSMenuItem) {
+            guard let tag = sender.representedObject as? String else { return }
+            session?.stopIgnoringTag(tag)
+        }
+
+        @objc private func ignorePackage(_ sender: NSMenuItem) {
+            guard let package = sender.representedObject as? String else { return }
+            session?.ignorePackageEverywhere(package)
+        }
+
+        @objc private func stopIgnoringPackage(_ sender: NSMenuItem) {
+            guard let package = sender.representedObject as? String else { return }
+            session?.stopIgnoringPackage(package)
         }
 
         @objc private func setLevel(_ sender: NSMenuItem) {

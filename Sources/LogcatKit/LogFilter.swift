@@ -67,10 +67,19 @@ public struct LogFilter: Sendable {
     }
 
     public func matches(_ entry: LogEntry, context: FilterContext) -> Bool {
-        if entry.kind == .marker { return true }
-        guard let root else { return true }
+        evaluate(entry, context: context) == .shown
+    }
+
+    /// Ignore lists apply before the query, but ignored entries are still checked against it so the "N ignored"
+    /// count is what showing them would add.
+    public func evaluate(_ entry: LogEntry, context: FilterContext) -> FilterOutcome {
+        if entry.kind == .marker { return .shown }
+        // The common case of no query and no lists should not pay for building a subject per entry.
+        if root == nil, context.ignoreList.isEmpty { return .shown }
         var subject = FilterSubject(entry: entry, context: context)
-        return root.evaluate(&subject)
+        let ignored = subject.isIgnored()
+        if let root, !root.evaluate(&subject) { return .filteredOut }
+        return ignored ? .ignored : .shown
     }
 }
 
@@ -82,11 +91,19 @@ public struct FilterContext: Sendable {
     public var myPackages: Set<String>
     /// Reference time for `age:`, seconds since 1970.
     public var now: Double
+    /// Tags and packages hidden before the query applies.
+    public var ignoreList: IgnoreList
 
-    public init(processNames: [Int32: String] = [:], myPackages: Set<String> = [], now: Double = Date().timeIntervalSince1970) {
+    public init(
+        processNames: [Int32: String] = [:],
+        myPackages: Set<String> = [],
+        now: Double = Date().timeIntervalSince1970,
+        ignoreList: IgnoreList = IgnoreList()
+    ) {
         self.processNames = processNames
         self.myPackages = myPackages
         self.now = now
+        self.ignoreList = ignoreList
     }
 }
 
@@ -559,6 +576,15 @@ struct FilterSubject {
 
     mutating func package() -> String? {
         process().map(LogEntry.packageName(forProcess:))
+    }
+
+    /// Whether the tag or package is on the ignore list. Tags are checked first because they need no lookup.
+    mutating func isIgnored() -> Bool {
+        let list = context.ignoreList
+        if list.isEmpty { return false }
+        if list.ignoresTag(entry.tag) { return true }
+        guard list.hasPackages, let package = package() else { return false }
+        return list.ignoresPackage(package)
     }
 
     mutating func line() -> String {

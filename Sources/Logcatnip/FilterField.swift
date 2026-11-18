@@ -11,6 +11,8 @@ struct FilterField: NSViewRepresentable {
     let focusRequest: Int
     let suggestions: @MainActor (_ query: String, _ cursor: Int) -> [FilterSuggestion]
     let onSubmit: @MainActor () -> Void
+    /// False dims the field and stops editing, for a setting another option overrides.
+    var isEditable = true
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -73,6 +75,9 @@ struct FilterField: NSViewRepresentable {
         coordinator.parent = self
         guard let textView = coordinator.textView else { return }
         textView.placeholder = placeholder
+        textView.isEditable = isEditable
+        scrollView.alphaValue = isEditable ? 1 : 0.5
+        if !isEditable { coordinator.hidePanel() }
         if textView.string != text {
             // Changed from outside the field: the context menu, the level picker, the clear button, a saved filter.
             textView.string = text
