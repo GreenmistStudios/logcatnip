@@ -20,7 +20,10 @@ scripts/next-version.sh [--bump auto|patch|minor|major]   # the version the next
 ```
 
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions; `LOGCATNIP_FIND='text'` opens the find bar
+with that query (the debug output then includes `find=... check=ok|MISMATCH`, a recount from scratch);
+`LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. `LOGCATNIP_PERF_TESTS=1 swift test
+--filter FindPerformance` runs the opt-in find timings on 500,000 rows.
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch and `LOGCATNIP_UPDATE_INSTALL=1` installs what it finds
 without clicking; `LOGCATNIP_UPDATE_FEED=/path/release.json|URL` and `LOGCATNIP_UPDATE_VERSION=0.1.0` point it at a
 local feed and fake the running version. With `LOGCATNIP_DEBUG=1` each step logs an `update:` line.
@@ -56,6 +59,10 @@ record; nothing is committed back. The commit type you choose therefore decides 
     events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
+  - `LogFinder.swift`: find-in-results queries (plain, regex, whole word) and the rows they match.
+  - `FindResults.swift`: matching row indexes kept across appends, front trims and resets, and the
+    next/previous jump targets.
+  - `ScrollMarkerLayout.swift`: pixel runs for scroller tick marks (find now, the crash navigator later).
   - `SoftwareUpdate.swift`: `SemanticVersion`, the GitHub Releases feed, and the updater's download, SHA-256 and
     bundle checks, and the shell that swaps the app after it quits.
   - `UpdateController.swift`: the update flow (check, skip, daily schedule, download, install) as a
@@ -65,6 +72,9 @@ record; nothing is committed back. The commit type you choose therefore decides 
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
+  - `FindController.swift`, `FindBar.swift`: the find bar, its state, and incremental off-main scans.
+  - `ScrollMarkers.swift`: the tick marks drawn over the table's vertical scroller, one layer per kind of
+    mark.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
   - `Updater.swift`: wires `UpdateController` to the bundle and the `LOGCATNIP_UPDATE_*` hooks, the Software Update

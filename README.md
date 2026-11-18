@@ -23,6 +23,11 @@ Android Studio's Logcat window.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
   lines scroll horizontally, or turn on Wrap Lines in the toolbar to wrap them to the window width.
+- **Find in results.** ⌘F opens a find bar that searches the tag and message of the rows shown (after the
+  filter), with match case, regex and whole word options. Every match is highlighted, the current one in
+  orange, with an "N of M" counter and tick marks on the scroller. Return or ⌘G goes to the next match,
+  ⇧Return or ⇧⌘G to the previous (both wrap), ⌘E searches for the selected text or line, and Esc closes the
+  bar. ⌘L focuses the filter.
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or set the
   minimum level.
 - **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker.
@@ -81,7 +86,10 @@ check the image and run again; on CI (`CI` set) it is only recorded. A mismatch 
 and a diff to `.build/snapshot-failures/`.
 
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, `LOGCATNIP_FIND='text'` opens the find bar
+with that query, and `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. With
+`LOGCATNIP_DEBUG=1` the find bar's state is printed too, including a recount from scratch (`check=ok`).
+`LOGCATNIP_PERF_TESTS=1 swift test --filter FindPerformance` times find on 500,000 rows.
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch, and `LOGCATNIP_UPDATE_INSTALL=1` with it downloads and
 installs what it finds without clicking. `LOGCATNIP_UPDATE_FEED=/path/release.json` (or a URL) reads releases from
 a copy of the GitHub API response instead, and `LOGCATNIP_UPDATE_VERSION=0.1.0` pretends to be that version. With
@@ -161,7 +169,7 @@ device's unified log.
 ## Layout
 
 - `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, unified log NDJSON), the filter language,
-  adb (device tracking, logcat streaming, process names) and simctl (simulators, `log stream`). No UI
+  find, adb (device tracking, logcat streaming, process names) and simctl (simulators, `log stream`). No UI
   dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
 - `scripts/`: `build-app.sh` builds the app bundle; `next-version.sh` picks the next release version.
