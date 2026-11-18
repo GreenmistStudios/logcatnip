@@ -24,7 +24,7 @@ Android Studio's Logcat window.
   `is:crash`, `is:stacktrace`, `is:firebase`, `is:<level>`, `name:`, plus `pid:` and `tid:`. Every text key
   supports contains (`key:`), exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with
   `&`, `|` and parentheses. Spaces have the lowest precedence, and same-key terms are ORed, as in Android
-  Studio.
+  Studio. Logcatnip adds `is:anr`, `is:leak` and `is:jank` for ANRs, leaks and skipped frames.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
@@ -173,6 +173,9 @@ VERSION=1.2.3 SIGN_IDENTITY="$ID" NOTARY_PROFILE=logcatnip scripts/package-relea
 | `level:WARN` | WARN and above (`V D I W E A` work too) |
 | `age:30s`, `age:5m`, `age:2h`, `age:1d` | recent entries only |
 | `is:crash`, `is:stacktrace` | crashes and ANRs; entries containing stack frames |
+| `is:anr` | ANR reports and the input dispatch timeouts that precede them |
+| `is:leak` | LeakCanary leaks, StrictMode leak violations, leaked windows, receivers and service connections |
+| `is:jank` | 30+ skipped frames, `Davey!` frames, other StrictMode violations, long monitor contention |
 | `is:error` (any level name) | exactly that level (`level:` is that level and above) |
 | `is:firebase` | Firebase SDK tags (`FA`, `FirebaseMessaging`, …) |
 | `pid:1234`, `tid:5678` | process or thread id |

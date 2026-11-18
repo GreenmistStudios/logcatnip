@@ -1,0 +1,34 @@
+--------- beginning of main
+[      1763460901.002 10234:18210:18210 I/Choreographer ]
+Skipped 45 frames!  The application may be doing too much work on its main thread.
+
+[      1763460901.415 10234:18210:18210 I/Choreographer ]
+Skipped 3 frames!  The application may be doing too much work on its main thread.
+
+[      1763460901.833 10234:18210:18262 I/OpenGLRenderer ]
+Davey! duration=812ms; Flags=0, FrameTimelineVsyncId=2843951, IntendedVsync=1052380112874, Vsync=1052380112874, InputEventId=0, HandleInputStart=1052380114293, AnimationStart=1052380114296, PerformTraversalsStart=1052380114297, DrawStart=1052380911382, FrameDeadline=1052380129540, FrameInterval=1052380114281, FrameStartTime=16666666, SyncQueued=1052380919811, SyncStart=1052380919950, IssueDrawCommandsStart=1052380920213, SwapBuffers=1052380923820, FrameCompleted=1052380925102, DequeueBufferDuration=21302, QueueBufferDuration=331566, GpuCompleted=1052380925102, SwapBuffersCompleted=1052380924503, DisplayPresentTime=0, CommandSubmissionCompleted=1052380923820, 
+
+[      1763460902.120 10234:18210:18210 D/StrictMode ]
+StrictMode policy violation; ~duration=38 ms: android.os.strictmode.DiskReadViolation
+	at android.os.StrictMode$AndroidBlockGuardPolicy.onReadFromDisk(StrictMode.java:1708)
+	at libcore.io.BlockGuardOs.access(BlockGuardOs.java:74)
+	at libcore.io.ForwardingOs.access(ForwardingOs.java:128)
+	at android.app.ActivityThread$AndroidOs.access(ActivityThread.java:8462)
+	at java.io.UnixFileSystem.checkAccess(UnixFileSystem.java:332)
+	at java.io.File.exists(File.java:829)
+	at com.example.app.feed.FeedCache.isWarm(FeedCache.kt:22)
+	at com.example.app.MainActivity.onCreate(MainActivity.kt:37)
+	at android.app.Activity.performCreate(Activity.java:8595)
+
+[      1763460903.540 10234:18210:18275 W/com.example.app ]
+Long monitor contention with owner DefaultDispatcher-worker-3 (18290) at void com.example.app.cache.ImageCache.trim()(ImageCache.kt:64) waiters=0 in android.graphics.Bitmap com.example.app.cache.ImageCache.get(java.lang.String) for 1.204s
+
+[      1763460905.771 10234:18210:18301 I/com.example.app ]
+Background young concurrent copying GC freed 128812(6403KB) AllocSpace objects, 2(40KB) LOS objects, 4% free, 243MB/256MB, paused 61us,22us total 112.483ms
+
+[      1763460905.902 10234:18210:18301 W/com.example.app ]
+Throwing OutOfMemoryError "Failed to allocate a 134217744 byte allocation with 25165824 free bytes and 94MB until OOM, target footprint 268435456, growth limit 268435456" (VmSize 17023988 kB)
+
+[      1763460911.215  1069:  588:  588 I/lowmemorykiller ]
+Kill 'com.example.app:sync' (18355), uid 10234, oom_score_adj 905 to free 178432kB rss, 64012kB swap; reason: low watermark is breached and swap is low (122880kB < 314572kB)
+

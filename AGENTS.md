@@ -70,6 +70,8 @@ an ad-hoc signed release once signed ones exist.
     events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
+  - `LogSignal.swift`, `CrashSignature.swift`: signal rules (crashes, native crashes, ANRs, out of memory, leaks,
+    jank) as data, and the signatures that group identical occurrences.
   - `LogFinder.swift`: find-in-results queries (plain, regex, whole word) and the rows they match.
   - `FindResults.swift`: matching row indexes kept across appends, front trims and resets, and the
     next/previous jump targets.
@@ -92,7 +94,8 @@ an ad-hoc signed release once signed ones exist.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
   - `Updater.swift`: wires `UpdateController` to the bundle and the `LOGCATNIP_UPDATE_*` hooks, the Software Update
     window and the Check for Updates… command.
-- `Tests/LogcatKitTests/`: Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`). Device tests
+- `Tests/LogcatKitTests/`: Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`). `Fixtures/` holds
+  `-v long -v epoch -v uid` logs in real device wording, loaded with `Bundle.module`. Device tests
   are gated on `LOGCATNIP_DEVICE_TESTS=1`. Update tests never touch the network: `UpdateTestSupport.swift` has a
   `MockURLProtocol` (one host per test, so parallel suites don't collide) and builds signed fake app bundles.
 - `Tests/LogcatnipTests/`: screenshot tests of the app (it `@testable import`s the executable target).
