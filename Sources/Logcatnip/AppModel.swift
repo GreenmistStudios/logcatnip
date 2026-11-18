@@ -212,7 +212,7 @@ final class AppModel {
                 switch event {
                 case let .devices(descriptors):
                     self.adbError = nil
-                    self.update(descriptors)
+                    self.updateDevices(descriptors)
                 case let .failed(message):
                     self.adbError = message.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
@@ -283,7 +283,7 @@ final class AppModel {
         devices.first { $0.serial == serial }
     }
 
-    private func update(_ descriptors: [DeviceDescriptor]) {
+    func updateDevices(_ descriptors: [DeviceDescriptor]) {
         let previous = Dictionary(uniqueKeysWithValues: devices.map { ($0.serial, $0) })
         devices = descriptors.map { descriptor in
             var device = Device(descriptor: descriptor)
