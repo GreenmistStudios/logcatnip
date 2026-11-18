@@ -46,7 +46,7 @@ public struct LogFilter: Sendable {
     public init(_ query: String, caseSensitive: Bool = false) throws(FilterError) {
         self.query = query
         self.caseSensitive = caseSensitive
-        var parser = FilterParser(tokens: try FilterLexer.tokenize(query), caseSensitive: caseSensitive)
+        var parser = FilterParser(located: try FilterLexer.locatedTokens(query), caseSensitive: caseSensitive)
         let parsed = try parser.parse()
         self.root = parsed.root
         self.name = parsed.name
@@ -92,12 +92,23 @@ public struct FilterContext: Sendable {
 
 public struct FilterError: Error, Sendable, Equatable, CustomStringConvertible {
     public let message: String
-    /// Character offset into the query where the problem is, when known.
+    /// Character offset into the query where the problem starts, when known. Equal to `range?.lowerBound` when
+    /// there is a range.
     public let offset: Int?
+    /// The characters to underline: the bad value, the unbalanced parenthesis or the dangling operator. Character
+    /// offsets, like `offset`; use `FilterTextOffsets` to get UTF-16 ranges for AppKit.
+    public let range: Range<Int>?
 
     public init(_ message: String, offset: Int? = nil) {
         self.message = message
         self.offset = offset
+        self.range = nil
+    }
+
+    public init(_ message: String, range: Range<Int>) {
+        self.message = message
+        self.offset = range.lowerBound
+        self.range = range
     }
 
     public var description: String { message }
@@ -128,8 +139,15 @@ public enum FilterKey: String, Sendable, CaseIterable {
 
 // MARK: - Lexer
 
+/// How a term compares its value: `tag:` contains, `tag=:` equals, `tag~:` matches a regular expression.
+public enum FilterOperator: String, Sendable {
+    case contains = ":"
+    case exact = "=:"
+    case regex = "~:"
+}
+
 enum FilterToken: Equatable {
-    enum Operator: Equatable { case contains, exact, regex }
+    typealias Operator = FilterOperator
 
     case leftParen
     case rightParen
@@ -144,6 +162,18 @@ struct LocatedToken: Equatable {
     let token: FilterToken
     /// Character offsets into the query, in the same units as `FilterToken` offsets and `FilterError.offset`.
     let range: Range<Int>
+    /// For a term, the characters of its value including quotes. Empty for `tag:` with nothing after it.
+    var valueRange: Range<Int>?
+    /// False for a quoted value or quoted text whose closing quote is missing, so completion knows the cursor
+    /// is still inside it.
+    var terminated = true
+}
+
+/// What the lexer found, and the first problem it ran into.
+struct ScanResult {
+    var tokens: [LocatedToken]
+    /// The first problem, which `FilterLexer.locatedTokens` throws.
+    var error: FilterError?
 }
 
 enum FilterLexer {
@@ -152,8 +182,17 @@ enum FilterLexer {
     }
 
     static func locatedTokens(_ query: String) throws(FilterError) -> [LocatedToken] {
+        let result = scan(query)
+        if let error = result.error { throw error }
+        return result.tokens
+    }
+
+    /// Lexes the whole query, recording the first problem instead of stopping at it. Highlighting and completion
+    /// need the tokens of a half-typed query, such as `tag:a level: "open`; the filter itself still rejects it.
+    static func scan(_ query: String) -> ScanResult {
         let chars = Array(query)
         var tokens: [LocatedToken] = []
+        var firstError: FilterError?
         var i = 0
         var openParens = 0
 
@@ -199,26 +238,41 @@ enum FilterLexer {
                 i = valueStart
                 let value: String
                 var trailingParens = 0
+                var terminated = true
                 if i < chars.count, chars[i] == "\"" || chars[i] == "'" {
-                    value = try readQuoted(chars, at: &i)
+                    let quoteStart = i
+                    (value, terminated) = readQuoted(chars, at: &i)
+                    if !terminated, firstError == nil {
+                        firstError = FilterError("Unterminated quote", range: quoteStart..<chars.count)
+                    }
                 } else {
                     // Regular expressions use `|` themselves, so only whitespace ends them.
                     let raw = readBare(chars, at: &i, stopAtOperators: op != .regex)
                     (value, trailingParens) = splitTrailingParens(raw, openParens: openParens)
                 }
-                if value.isEmpty, key != .name {
-                    throw FilterError("Missing value for \(key.rawValue)", offset: start)
+                if value.isEmpty, key != .name, firstError == nil {
+                    // Underline the `key:` the user has to finish, including a leading `-`.
+                    firstError = FilterError("Missing value for \(key.rawValue)", range: start..<valueStart)
                 }
                 let term = FilterToken.term(key: key, op: op, value: value, negated: negated, offset: start)
-                tokens.append(LocatedToken(token: term, range: start..<i - trailingParens))
+                tokens.append(LocatedToken(
+                    token: term,
+                    range: start..<i - trailingParens,
+                    valueRange: valueStart..<i - trailingParens,
+                    terminated: terminated
+                ))
                 appendRightParens(trailingParens, endingAt: i, to: &tokens, openParens: &openParens)
                 continue
             }
 
             if i < chars.count, chars[i] == "\"" || chars[i] == "'" {
-                let value = try readQuoted(chars, at: &i)
+                let quoteStart = i
+                let (value, terminated) = readQuoted(chars, at: &i)
+                if !terminated, firstError == nil {
+                    firstError = FilterError("Unterminated quote", range: quoteStart..<chars.count)
+                }
                 let text = FilterToken.text(value: value, negated: negated, quoted: true, offset: start)
-                tokens.append(LocatedToken(token: text, range: start..<i))
+                tokens.append(LocatedToken(token: text, range: start..<i, terminated: terminated))
                 continue
             }
             let raw = readBare(chars, at: &i, stopAtOperators: true)
@@ -232,7 +286,7 @@ enum FilterLexer {
             }
             appendRightParens(trailingParens, endingAt: i, to: &tokens, openParens: &openParens)
         }
-        return tokens
+        return ScanResult(tokens: tokens, error: firstError)
     }
 
     /// Recognises `key:`, `key=:` and `key~:` at `index`. Returns the key, operator and where the value starts.
@@ -254,9 +308,9 @@ enum FilterLexer {
         return nil
     }
 
-    private static func readQuoted(_ chars: [Character], at i: inout Int) throws(FilterError) -> String {
+    /// Reads a quoted value. Without a closing quote it runs to the end of the query.
+    private static func readQuoted(_ chars: [Character], at i: inout Int) -> (value: String, terminated: Bool) {
         let quote = chars[i]
-        let start = i
         i += 1
         var value = ""
         while i < chars.count {
@@ -268,12 +322,12 @@ enum FilterLexer {
             }
             if c == quote {
                 i += 1
-                return value
+                return (value, true)
             }
             value.append(c)
             i += 1
         }
-        throw FilterError("Unterminated quote", offset: start)
+        return (value, false)
     }
 
     private static func readBare(_ chars: [Character], at i: inout Int, stopAtOperators: Bool) -> String {
@@ -589,6 +643,8 @@ struct FilterParser {
     }
 
     private let tokens: [FilterToken]
+    /// Where each token came from, so errors can point at it. Nil when the parser was built from bare tokens.
+    private let locations: [LocatedToken]?
     private let caseSensitive: Bool
     private let grammar: Grammar
     private var position = 0
@@ -596,8 +652,28 @@ struct FilterParser {
 
     init(tokens: [FilterToken], caseSensitive: Bool, grammar: Grammar = .androidStudio) {
         self.tokens = tokens
+        self.locations = nil
         self.caseSensitive = caseSensitive
         self.grammar = grammar
+    }
+
+    init(located: [LocatedToken], caseSensitive: Bool, grammar: Grammar = .androidStudio) {
+        self.tokens = located.map(\.token)
+        self.locations = located
+        self.caseSensitive = caseSensitive
+        self.grammar = grammar
+    }
+
+    /// An error that underlines the token at `index`, when the parser knows where its tokens came from.
+    private func error(_ message: String, at index: Int) -> FilterError {
+        guard let locations, locations.indices.contains(index) else { return FilterError(message) }
+        return FilterError(message, range: locations[index].range)
+    }
+
+    /// An error that underlines a term's value, or the whole term when only its offset is known.
+    private func valueError(_ message: String, offset: Int, valueRange: Range<Int>?) -> FilterError {
+        guard let valueRange else { return FilterError(message, offset: offset) }
+        return FilterError(message, range: valueRange)
     }
 
     mutating func parse() throws(FilterError) -> (root: FilterNode?, name: String?) {
@@ -606,7 +682,7 @@ struct FilterParser {
         case .androidStudio:
             let node = try parseQuery()
             // `parseQuery` only stops early at a `)` that closes nothing.
-            if position < tokens.count { throw FilterError("Unbalanced )") }
+            if position < tokens.count { throw error("Unbalanced )", at: position) }
             return (node.flatMap(simplify), name)
         case .legacy:
             let node = try legacyParseOr()
@@ -656,7 +732,7 @@ struct FilterParser {
             let element = try parseOrExpression()
             result.append(TopLevelElement(element: element, tokens: start..<position))
         }
-        if position < tokens.count { throw FilterError("Unbalanced )") }
+        if position < tokens.count { throw error("Unbalanced )", at: position) }
         return result
     }
 
@@ -693,14 +769,16 @@ struct FilterParser {
     }
 
     private mutating func parsePrimary() throws(FilterError) -> Element {
-        guard let token = current else { throw FilterError("Expected a term at the end") }
+        // Past the end only happens after an operator was consumed, so the dangling one is the token before.
+        guard let token = current else { throw error("Expected a term at the end", at: position - 1) }
         switch token {
         case .and, .or, .rightParen:
-            throw FilterError("Expected a term")
+            throw error("Expected a term", at: position)
         case .leftParen:
+            let open = position
             position += 1
             let inner = try parseQuery()
-            guard current == .rightParen else { throw FilterError("Missing )") }
+            guard current == .rightParen else { throw error("Missing )", at: open) }
             position += 1
             // `()` is Android Studio's EmptyFilter, which matches everything.
             return Element(node: inner ?? .predicate(.always))
@@ -710,12 +788,13 @@ struct FilterParser {
             if negated { return Element(node: .not(contains)) }
             return Element(node: contains, phraseWord: quoted ? nil : value)
         case let .term(key, op, value, negated, offset):
+            let index = position
             position += 1
             if key == .name {
                 name = value
                 return Element(node: .predicate(.always), isName: true)
             }
-            let node = try predicate(key: key, op: op, value: value, offset: offset)
+            let node = try predicate(key: key, op: op, value: value, offset: offset, valueRange: locations?[index].valueRange)
             if negated { return Element(node: .not(node)) }
             guard case let .predicate(predicate) = node else { return Element(node: node) }
             return Element(node: node, orGroup: predicate.implicitOrGroup)
@@ -829,7 +908,7 @@ struct FilterParser {
                     sawAny = true
                     continue
                 }
-                let node = try predicate(key: key, op: op, value: value, offset: offset)
+                let node = try predicate(key: key, op: op, value: value, offset: offset, valueRange: nil)
                 if negated {
                     others.append(.not(node))
                 } else {
@@ -853,7 +932,13 @@ struct FilterParser {
         return nodes.count == 1 ? nodes[0] : .and(nodes)
     }
 
-    private func predicate(key: FilterKey, op: FilterToken.Operator, value: String, offset: Int) throws(FilterError) -> FilterNode {
+    private func predicate(
+        key: FilterKey,
+        op: FilterToken.Operator,
+        value: String,
+        offset: Int,
+        valueRange: Range<Int>?
+    ) throws(FilterError) -> FilterNode {
         switch key {
         case .tag, .package, .process, .message, .line:
             if key == .package, op == .contains, value == "mine" {
@@ -866,15 +951,15 @@ struct FilterParser {
             case .message: .message
             default: .line
             }
-            return .predicate(.text(field, try matcher(op: op, value: value, offset: offset)))
+            return .predicate(.text(field, try matcher(op: op, value: value, offset: offset, valueRange: valueRange)))
         case .level:
             guard let level = LogLevel(name: value) else {
-                throw FilterError("Unknown level \"\(value)\". Use VERBOSE, DEBUG, INFO, WARN, ERROR or ASSERT.", offset: offset)
+                throw valueError("Unknown level \"\(value)\". Use VERBOSE, DEBUG, INFO, WARN, ERROR or ASSERT.", offset: offset, valueRange: valueRange)
             }
             return .predicate(.minLevel(level))
         case .age:
             guard let seconds = Self.parseAge(value) else {
-                throw FilterError("Invalid age \"\(value)\". Use a number followed by s, m, h or d, e.g. age:5m.", offset: offset)
+                throw valueError("Invalid age \"\(value)\". Use a number followed by s, m, h or d, e.g. age:5m.", offset: offset, valueRange: valueRange)
             }
             return .predicate(.maxAge(seconds: seconds))
         case .is:
@@ -884,13 +969,13 @@ struct FilterParser {
             case "firebase": return .predicate(.firebase)
             default:
                 guard let level = LogLevel(name: value) else {
-                    throw FilterError("Unknown is:\(value). Use is:crash, is:stacktrace, is:firebase or a level such as is:error.", offset: offset)
+                    throw valueError("Unknown is:\(value). Use is:crash, is:stacktrace, is:firebase or a level such as is:error.", offset: offset, valueRange: valueRange)
                 }
                 return .predicate(.exactLevel(level))
             }
         case .pid, .tid:
             guard let number = Int32(value) else {
-                throw FilterError("\(key.rawValue): needs a number", offset: offset)
+                throw valueError("\(key.rawValue): needs a number", offset: offset, valueRange: valueRange)
             }
             return .predicate(key == .pid ? .pid(number) : .tid(number))
         case .name:
@@ -898,7 +983,7 @@ struct FilterParser {
         }
     }
 
-    private func matcher(op: FilterToken.Operator, value: String, offset: Int) throws(FilterError) -> TextMatcher {
+    private func matcher(op: FilterToken.Operator, value: String, offset: Int, valueRange: Range<Int>?) throws(FilterError) -> TextMatcher {
         switch op {
         case .contains:
             return .contains(value, caseSensitive: caseSensitive)
@@ -909,7 +994,7 @@ struct FilterParser {
                 let regex = try NSRegularExpression(pattern: value, options: caseSensitive ? [] : [.caseInsensitive])
                 return .regex(CompiledRegex(regex: regex))
             } catch {
-                throw FilterError("Invalid regular expression \"\(value)\"", offset: offset)
+                throw valueError("Invalid regular expression \"\(value)\"", offset: offset, valueRange: valueRange)
             }
         }
     }

@@ -13,6 +13,7 @@ enum SettingsKey {
     static let wrapLines = "wrapLines"
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
+    static let filterHistoryAutocomplete = "filterHistoryAutocomplete"
 }
 
 enum Defaults {
@@ -27,6 +28,7 @@ enum Defaults {
             SettingsKey.wrapLines: false,
             SettingsKey.logcatBuffers: "",
             SettingsKey.filterPrecedenceChecked: false,
+            SettingsKey.filterHistoryAutocomplete: false,
         ])
     }
 

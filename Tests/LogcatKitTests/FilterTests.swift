@@ -270,6 +270,76 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
         }
     }
 
+    private func failure(_ query: String) -> FilterError? {
+        do {
+            _ = try LogFilter(query)
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    @Test func errorsUnderlineTheFailingToken() {
+        let cases: [(query: String, underlined: String)] = [
+            ("tag:", "tag:"), ("-tag: foo", "-tag:"), ("(tag:)", "tag:"),
+            ("level:loud", "loud"), ("age:soon", "soon"), ("is:bad", "bad"), ("pid:x", "x"), ("tid:1.5", "1.5"),
+            ("tag~:[unclosed", "[unclosed"), ("level:\"x y\"", "\"x y\""),
+            ("message:\"open", "\"open"), ("foo \"open", "\"open"),
+            ("(tag:a", "("), ("tag:a (", "("), ("tag:a )", ")"), ("(tag:a | )", ")"),
+            ("tag:a |", "|"), ("& tag:a", "&"), ("(tag:a | level:x)", "x"),
+            ("tag:é level:ü", "ü"),
+        ]
+        for (query, underlined) in cases {
+            do {
+                _ = try LogFilter(query)
+                Issue.record("\(query) should not parse")
+            } catch {
+                guard let range = error.range else {
+                    Issue.record("\(query) has no range: \(error.message)")
+                    continue
+                }
+                #expect(String(Array(query)[range]) == underlined, "\(query)")
+                #expect(error.offset == range.lowerBound, "\(query)")
+            }
+        }
+        // Offsets count characters, not UTF-16 code units, and point at the second of two equal tokens.
+        #expect(failure("tag:é level:ü")?.range == 12..<13)
+        #expect(failure("tag:a | | tag:b")?.range == 8..<9)
+    }
+
+    @Test func scanKeepsLexingPastErrors() throws {
+        let query = "tag:a level: \"open"
+        let result = FilterLexer.scan(query)
+        let chars = Array(query)
+        #expect(result.tokens.map { String(chars[$0.range]) } == ["tag:a", "level:", "\"open"])
+        #expect(result.error?.message == "Missing value for level")
+        #expect(result.tokens.last?.terminated == false)
+        #expect(throws: FilterError.self) { try FilterLexer.locatedTokens(query) }
+        do {
+            _ = try FilterLexer.locatedTokens(query)
+        } catch {
+            #expect(error.message == result.error?.message)
+        }
+
+        let empty = FilterLexer.scan("tag:")
+        #expect(empty.tokens.count == 1)
+        #expect(empty.tokens.first?.valueRange == 4..<4)
+        #expect(empty.error?.message == "Missing value for tag")
+        if case let .term(_, _, value, _, _)? = empty.tokens.first?.token {
+            #expect(value.isEmpty)
+        } else {
+            Issue.record("expected a term")
+        }
+
+        let valid = "(tag:a | -tag=:\"b c\") level:W"
+        let scanned = FilterLexer.scan(valid)
+        let validChars = Array(valid)
+        let values = scanned.tokens.compactMap(\.valueRange).map { String(validChars[$0]) }
+        #expect(values == ["a", "\"b c\"", "W"])
+        #expect(scanned.error == nil)
+        #expect(scanned.tokens == (try FilterLexer.locatedTokens(valid)))
+    }
+
     @Test func detectsQueriesWhosePrecedenceChanged() {
         let changed = [
             "foo bar tag:bar1 | tag:bar2",
