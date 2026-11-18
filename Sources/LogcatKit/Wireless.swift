@@ -511,26 +511,29 @@ public enum WirelessMatching {
             }
     }
 
-    /// The online transport, with a known identity, of the device adb just paired. `guid` is the
-    /// `adb-<serial>-<id>` adb reports; adb auto-connects the device under `<guid>._adb-tls-connect._tcp`.
+    /// The online transport of the device adb just paired. `guid` is the `adb-<serial>-<id>` adb reports; adb
+    /// auto-connects the device under `<guid>._adb-tls-connect._tcp`. The name match works before the identity
+    /// is read from the device, which can take a while; only the identity match needs it.
     public static func pairedTransport(guid: String, in transports: [TransportState]) -> TransportState? {
         let serial = MdnsService.deviceSerial(fromInstance: guid).map { DeviceIdentity(kind: .serialNumber, value: $0) }
         return transports.first { state in
-            guard state.isOnline, let identity = state.identity else { return false }
-            return state.serial.hasPrefix(guid + ".") || identity == serial
+            guard state.isOnline else { return false }
+            return state.serial.hasPrefix(guid + ".") || (serial != nil && state.identity == serial)
         }
     }
 
-    /// The online transport, with a known identity, that `adb connect` made for a Discovered service. adb
-    /// reports the transport serial it used, but a service can also end up as `ip:port`, or as its mDNS
-    /// name when adb's own auto-connect got there first, so every name this device could have is accepted.
+    /// The online transport that `adb connect` made for a Discovered service. adb reports the transport
+    /// serial it used, but a service can also end up as `ip:port`, or as its mDNS name when adb's own
+    /// auto-connect got there first, so every name this device could have is accepted. Names match before
+    /// the identity is known.
     public static func connectedTransport(for service: MdnsService, reportedSerial: String?,
                                           in transports: [TransportState]) -> TransportState? {
         let identity = service.deviceSerial.map { DeviceIdentity(kind: .serialNumber, value: $0) }
         return transports.first { state in
-            guard state.isOnline, let candidate = state.identity else { return false }
+            guard state.isOnline else { return false }
             return state.serial == reportedSerial || state.serial == service.mdnsName
-                || (service.address != nil && state.serial == service.address) || candidate == identity
+                || (service.address != nil && state.serial == service.address)
+                || (identity != nil && state.identity == identity)
         }
     }
 }

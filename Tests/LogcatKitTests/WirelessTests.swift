@@ -515,7 +515,7 @@ import Testing
     @Test func pairedTransportFindsAutoConnectedDevice() {
         let name = "adb-SER1-x._adb-tls-connect._tcp"
         #expect(WirelessMatching.pairedTransport(guid: "adb-SER1-x", in: [transport(name, .wifi, phone("SER1"))])?.serial == name)
-        #expect(WirelessMatching.pairedTransport(guid: "adb-SER1-x", in: [transport(name, .wifi, nil)]) == nil)
+        #expect(WirelessMatching.pairedTransport(guid: "adb-SER1-x", in: [transport(name, .wifi, nil)])?.serial == name)
         #expect(WirelessMatching.pairedTransport(guid: "adb-SER1-x", in: [transport(name, .wifi, phone("SER1"), online: false)]) == nil)
     }
 
@@ -530,9 +530,10 @@ import Testing
         #expect(WirelessMatching.connectedTransport(for: Self.a, reportedSerial: nil, in: [other]) == nil)
     }
 
-    @Test func connectedTransportNeedsAnOnlineKnownIdentity() {
+    @Test func connectedTransportNeedsOnlineButNotIdentity() {
         let name = "adb-SER1-x._adb-tls-connect._tcp"
-        #expect(WirelessMatching.connectedTransport(for: Self.a, reportedSerial: name, in: [transport(name, .wifi, nil)]) == nil)
+        #expect(WirelessMatching.connectedTransport(for: Self.a, reportedSerial: name, in: [transport(name, .wifi, nil)])?.serial == name)
+        #expect(WirelessMatching.connectedTransport(for: Self.a, reportedSerial: nil, in: [transport("unrelated", .wifi, nil)]) == nil)
         #expect(WirelessMatching.connectedTransport(for: Self.a, reportedSerial: name, in: [transport(name, .wifi, phone("SER1"), online: false)]) == nil)
     }
 

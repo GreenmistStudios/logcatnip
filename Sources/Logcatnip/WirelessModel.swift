@@ -62,6 +62,9 @@ final class WirelessModel {
     @ObservationIgnored private var discoveryTask: Task<Void, Never>?
     /// The sheet's one in-flight action; closing the sheet cancels it, which kills the running adb.
     @ObservationIgnored private var sheetTask: Task<Void, Never>?
+    @ObservationIgnored private var availabilityTask: Task<Void, Never>?
+    /// Discovered-row connects in flight, by `MdnsService.id`; a backend change cancels them.
+    @ObservationIgnored private var connectTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var lastFailure: String?
 
     /// Services that could be connected to right now: not online over any transport yet.
@@ -79,7 +82,7 @@ final class WirelessModel {
     // MARK: Lifecycle
 
     func start(adb: ADB, app: AppModel) {
-        discoveryTask?.cancel()
+        cancelWork()
         self.adb = adb
         self.app = app
         services = []
@@ -95,13 +98,39 @@ final class WirelessModel {
                 }
             }
         }
+        if isSheetPresented { probeAvailability(adb) }
     }
 
     func stop() {
+        cancelWork()
+    }
+
+    /// Drops everything tied to the previous adb: work in flight would otherwise write state, or open a
+    /// session, after the backend changed, and a flow stuck in `.working` would keep the sheet busy.
+    private func cancelWork() {
         discoveryTask?.cancel()
         discoveryTask = nil
         sheetTask?.cancel()
         sheetTask = nil
+        availabilityTask?.cancel()
+        availabilityTask = nil
+        for task in connectTasks.values { task.cancel() }
+        connectTasks = [:]
+        connecting = []
+        connectErrors = [:]
+        qrPhase = .idle
+        codePhase = .idle
+        ipPhase = .idle
+        availability = nil
+    }
+
+    private func probeAvailability(_ adb: ADB) {
+        availabilityTask?.cancel()
+        availabilityTask = Task { [weak self] in
+            let result = await adb.mdnsAvailability()
+            guard !Task.isCancelled else { return }
+            self?.availability = result
+        }
     }
 
     func presentSheet(tab: Tab? = nil) {
@@ -114,12 +143,7 @@ final class WirelessModel {
         ipPhase = .idle
         recentHosts = WirelessHosts.recent
         isSheetPresented = true
-        if let adb {
-            Task { [weak self] in
-                let result = await adb.mdnsAvailability()
-                self?.availability = result
-            }
-        }
+        if let adb { probeAvailability(adb) }
         matchQRCode()
     }
 
@@ -191,10 +215,13 @@ final class WirelessModel {
         }
         let serial = await waitForDevice(timeout: .seconds(20), reconnectAfter: .seconds(5), reconnect: reconnect) { states in
             if let guid { return WirelessMatching.pairedTransport(guid: guid, in: states) }
-            return states.first { $0.isOnline && $0.identity != nil && $0.transport == .wifi && !before.contains($0.serial) }
+            return states.first { $0.isOnline && $0.transport == .wifi && !before.contains($0.serial) }
         }
         guard !Task.isCancelled else { return }
         if let serial {
+            setPhase(.working("Connected. Reading device properties…"), for: flow)
+            await waitForIdentity(serial: serial)
+            guard !Task.isCancelled else { return }
             finish(flow, serial: serial)
         } else {
             setPhase(.failed("Paired, but the device didn't connect within 20 seconds. Make sure Wireless debugging is still on, then connect it from Discovered in the sidebar."), for: flow)
@@ -219,10 +246,13 @@ final class WirelessModel {
                 WirelessHosts.remember(address.description)
                 self.recentHosts = WirelessHosts.recent
                 let found = await self.waitForDevice(timeout: .seconds(20), reconnectAfter: nil, reconnect: nil) { states in
-                    states.first { $0.isOnline && $0.identity != nil && $0.serial == serial }
+                    states.first { $0.isOnline && $0.serial == serial }
                 }
                 guard !Task.isCancelled else { return }
                 if let found {
+                    self.setPhase(.working("Connected. Reading device properties…"), for: .ip)
+                    await self.waitForIdentity(serial: found)
+                    guard !Task.isCancelled else { return }
                     self.finish(.ip, serial: found)
                 } else {
                     self.setPhase(.failed("adb connected to \(serial), but the device didn't come online. Check the device for an authorization prompt."), for: .ip)
@@ -241,14 +271,14 @@ final class WirelessModel {
         guard let adb, let app, !connecting.contains(service.id) else { return }
         connecting.insert(service.id)
         connectErrors[service.id] = nil
-        Task { [weak self] in
+        connectTasks[service.id] = Task { [weak self] in
             var reported: String?
             var failure: String?
             do {
                 reported = try await adb.connect(service.mdnsName)
             } catch {
                 failure = "\(error)"
-                if let address = service.address {
+                if let address = service.address, !Task.isCancelled {
                     do {
                         reported = try await adb.connect(address)
                         failure = nil
@@ -257,20 +287,24 @@ final class WirelessModel {
                     }
                 }
             }
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             if let failure {
                 self.connectErrors[service.id] = failure
             } else {
                 let serial = await self.waitForDevice(timeout: .seconds(20), reconnectAfter: nil, reconnect: nil) { states in
                     WirelessMatching.connectedTransport(for: service, reportedSerial: reported, in: states)
                 }
+                guard !Task.isCancelled else { return }
                 if let serial {
+                    await self.waitForIdentity(serial: serial)
+                    guard !Task.isCancelled else { return }
                     app.showDevice(serial: serial)
                 } else {
                     self.connectErrors[service.id] = "adb connected, but the device didn't come online. Check the device for an authorization prompt."
                 }
             }
             self.connecting.remove(service.id)
+            self.connectTasks[service.id] = nil
         }
     }
 
@@ -314,25 +348,41 @@ final class WirelessModel {
     }
 
     /// Polls the device list until `matches` finds a transport, or `timeout` passes. After `reconnectAfter`
-    /// it calls `reconnect` once: some devices pair but are not picked up by adb's own auto-connect.
+    /// it starts `reconnect` once in the background: some devices pair but are not picked up by adb's own
+    /// auto-connect. It runs as its own task so a slow `adb connect` cannot hold up the deadline.
     private func waitForDevice(timeout: Duration, reconnectAfter: Duration?, reconnect: (@Sendable () async -> Void)?,
                                matches: ([TransportState]) -> TransportState?) async -> String? {
         guard let app else { return nil }
         let clock = ContinuousClock()
         let start = clock.now
-        var reconnected = false
+        var reconnectTask: Task<Void, Never>?
+        defer { reconnectTask?.cancel() }
         while !Task.isCancelled {
             if let found = matches(app.devices.map(\.resolvedState)) { return found.serial }
             let elapsed = clock.now - start
             if elapsed >= timeout { return nil }
-            if let reconnectAfter, let reconnect, !reconnected, elapsed >= reconnectAfter {
-                reconnected = true
-                await reconnect()
-                continue
+            if let reconnectAfter, let reconnect, reconnectTask == nil, elapsed >= reconnectAfter {
+                reconnectTask = Task { await reconnect() }
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
         return nil
+    }
+
+    /// Waits for getprop to give `serial` an identity. `showDevice` uses it to reuse an existing session for
+    /// the same device, so it is worth a wait, but a slow device must not turn a connection into a failure:
+    /// on the cap the caller opens the session anyway and it adopts the identity later. The cap sits above
+    /// getprop's own 30 second timeout.
+    private func waitForIdentity(serial: String, cap: Duration = .seconds(35)) async {
+        guard let app else { return }
+        let clock = ContinuousClock()
+        let start = clock.now
+        while !Task.isCancelled {
+            guard let device = app.device(serial: serial), device.isOnline else { return }
+            if device.identity != nil { return }
+            if clock.now - start >= cap { return }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
     }
 
     /// Waits for a Discovered or pairing candidate, for the launch hooks.
