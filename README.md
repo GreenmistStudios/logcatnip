@@ -89,7 +89,7 @@ a copy of the GitHub API response instead, and `LOGCATNIP_UPDATE_VERSION=0.1.0` 
 
 ## Releases
 
-Every merge to `master` runs `.github/workflows/release.yml`. `scripts/next-version.sh` reads the conventional
+Every merge to `main` runs `.github/workflows/release.yml`. `scripts/next-version.sh` reads the conventional
 commits since the last `vX.Y.Z` tag and picks the bump:
 
 | Commits since the last tag | Bump |

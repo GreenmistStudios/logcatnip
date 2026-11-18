@@ -28,7 +28,7 @@ local feed and fake the running version. With `LOGCATNIP_DEBUG=1` each step logs
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`, and uploads the zipped app as an artifact. Run all three before you call a change done.
 
-Releases (`.github/workflows/release.yml`) run on every push to `master`: `scripts/next-version.sh` picks the bump
+Releases (`.github/workflows/release.yml`) run on every push to `main`: `scripts/next-version.sh` picks the bump
 from the conventional commits since the last `vX.Y.Z` tag (breaking → major, minor before 1.0; `feat` → minor;
 `fix`/`perf`/`refactor`/`revert` → patch; anything else → no release), then the workflow tests, builds with
 `VERSION`, and publishes a GitHub release with `Logcatnip-X.Y.Z.zip` and its `.sha256`. Tags are the only version
@@ -111,7 +111,7 @@ record; nothing is committed back. The commit type you choose therefore decides 
 
 ## Git
 
-- Default branch: `master`. Remote: `GreenmistStudios/logcatnip`; use the `geoff-powell` gh account.
+- Default branch: `main`. Remote: `GreenmistStudios/logcatnip`; use the `geoff-powell` gh account.
 - Commit subjects use conventional commits: `feat: ...`, `fix: ...`, lowercase and imperative. Reference
   issues in the body (`Fixes #8.`).
 - Other agents may have uncommitted work in the tree. Stage only your own files.
