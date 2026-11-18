@@ -117,6 +117,8 @@ public struct DeviceProperties: Sendable, Hashable {
     public var release: String? { values["ro.build.version.release"] }
     public var manufacturer: String? { values["ro.product.manufacturer"] }
     public var model: String? { values["ro.product.model"] }
+    /// `google/shiba/shiba:14/UQ1A.240205.004/11269751:user/release-keys`, which pins the exact build.
+    public var fingerprint: String? { values["ro.build.fingerprint"] }
     public var avdName: String? {
         values["ro.boot.qemu.avd_name"] ?? values["ro.kernel.qemu.avd_name"]
     }

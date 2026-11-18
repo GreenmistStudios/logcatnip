@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.autoOpenSessions) private var autoOpenSessions = true
     @AppStorage(SettingsKey.showSimulators) private var showSimulators = true
     @AppStorage(SettingsKey.checkForUpdates) private var checkForUpdates = true
+    @AppStorage(SettingsKey.crashReportContextLines) private var crashReportContextLines = Defaults.crashReportContextLines
 
     var body: some View {
         Form {
@@ -66,6 +67,9 @@ struct SettingsView: View {
                     ForEach([50_000, 100_000, 250_000, 500_000, 1_000_000], id: \.self) { count in
                         Text("\(count.formatted()) entries").tag(count)
                     }
+                }
+                Stepper(value: $crashReportContextLines, in: 0...500, step: 10) {
+                    Text("Crash report context: \(crashReportContextLines) lines")
                 }
             }
 
