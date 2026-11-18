@@ -112,8 +112,8 @@ private extension DeviceTransport {
     }
 }
 
-/// One row per physical device. The leading icon is the transport sessions stream over; other online
-/// transports of the same device (a phone on both USB and Wi-Fi) get a small glyph before the button.
+/// One row per physical device. The leading icon tells a phone from an emulator; each online USB or Wi-Fi
+/// transport (a phone can be on both) gets a small glyph before the button.
 private struct DeviceRow: View {
     @Environment(AppModel.self) private var model
     let group: DeviceGroup
@@ -121,9 +121,8 @@ private struct DeviceRow: View {
     var body: some View {
         let primary = group.primary
         HStack(spacing: 8) {
-            Image(systemName: primary.transport.symbolName)
+            DeviceIcon(platform: .android, isVirtual: primary.transport == .emulator)
                 .foregroundStyle(group.isOnline ? .primary : .tertiary)
-                .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(group.displayName)
                     .lineLimit(1)
@@ -133,8 +132,8 @@ private struct DeviceRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
-            ForEach(group.transports.dropFirst().filter(\.isOnline)) { other in
-                Image(systemName: other.transport.symbolName)
+            ForEach(group.transports.filter { $0.isOnline && $0.transport != .emulator }) { connection in
+                Image(systemName: connection.transport.symbolName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -181,15 +180,14 @@ private struct DeviceRow: View {
     }
 }
 
-/// A booted simulator. Shares the Devices section with Android devices; the Apple logo marks the platform.
+/// A booted simulator. Shares the Devices section with Android devices; the icon's badge marks the platform.
 struct SimulatorRow: View {
     @Environment(AppModel.self) private var model
     let simulator: SimulatorDevice
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "apple.logo")
-                .frame(width: 18)
+            DeviceIcon(platform: .apple, isVirtual: true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(simulator.name)
                     .lineLimit(1)
@@ -217,6 +215,61 @@ struct SimulatorRow: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(simulator.udid, forType: .string)
             }
+        }
+    }
+}
+
+/// The sidebar glyph for a device. Hardware gets a phone of its platform; emulators and simulators get a
+/// computer with a platform badge, so the two kinds of device read apart at a glance.
+struct DeviceIcon: View {
+    enum Platform {
+        case android
+        case apple
+    }
+
+    let platform: Platform
+    let isVirtual: Bool
+
+    var body: some View {
+        Group {
+            if isVirtual {
+                Image(systemName: "desktopcomputer")
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: badgeSymbol)
+                            .font(.system(size: 8, weight: .semibold))
+                            .padding(1.5)
+                            .background(.background, in: RoundedRectangle(cornerRadius: 2.5))
+                            .offset(x: 4, y: 3)
+                    }
+            } else {
+                Image(systemName: phoneSymbol)
+            }
+        }
+        .frame(width: 18)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// Android has no system symbol of its own, so a plain phone stands in for it, next to the notched iPhone.
+    private var phoneSymbol: String {
+        switch platform {
+        case .android: "smartphone"
+        case .apple: "iphone"
+        }
+    }
+
+    private var badgeSymbol: String {
+        switch platform {
+        case .android: "smartphone"
+        case .apple: "apple.logo"
+        }
+    }
+
+    private var accessibilityLabel: String {
+        switch (platform, isVirtual) {
+        case (.android, false): "Android device"
+        case (.android, true): "Android emulator"
+        case (.apple, false): "iPhone"
+        case (.apple, true): "Simulator"
         }
     }
 }

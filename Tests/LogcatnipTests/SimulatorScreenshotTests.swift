@@ -34,6 +34,23 @@ struct SimulatorScreenshotTests {
             size: CGSize(width: 260, height: 160)
         )
     }
+
+    /// Phones and emulators/simulators get different icons on both platforms.
+    @Test func sidebarWithEveryDeviceKind() async throws {
+        let model = AppModel()
+        model.updateDevices([
+            DeviceDescriptor(serial: "R5CT1234ABC", state: .device, attributes: ["model": "Pixel_9"]),
+            DeviceDescriptor(serial: "192.168.1.20:5555", state: .device, attributes: ["model": "Galaxy_S24"]),
+            DeviceDescriptor(serial: "emulator-5554", state: .device, attributes: ["model": "sdk_gphone64_arm64"]),
+            DeviceDescriptor(serial: "0A091FDD4003VD", state: .offline, attributes: ["model": "Pixel_7"]),
+        ])
+        model.updateSimulators([SimulatorFixtures.simulator])
+        try await Snapshot.assertSnapshot(
+            of: SidebarView().environment(model),
+            named: "sidebar-devices",
+            size: CGSize(width: 260, height: 300)
+        )
+    }
 }
 
 enum SimulatorFixtures {
