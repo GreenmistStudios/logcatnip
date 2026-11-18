@@ -1,12 +1,12 @@
 name: Release
 
-# Every merge to master that carries a feat, fix, perf, refactor, revert or breaking commit is tested, built,
+# Every merge to main that carries a feat, fix, perf, refactor, revert or breaking commit is tested, built,
 # tagged vX.Y.Z and published as a GitHub release with Logcatnip-X.Y.Z.zip. The app's updater reads that feed.
 # See scripts/next-version.sh for how the version is chosen. Run it by hand to force a bump.
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
     inputs:
       bump:
