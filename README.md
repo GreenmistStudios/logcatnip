@@ -14,6 +14,12 @@ Android Studio's Logcat window.
   logs and resume where they left off when it comes back, even on a new Wi-Fi port, as an emulator on
   another port, or over Wi-Fi after you unplug USB. When both USB and Wi-Fi are connected, logs stream over
   USB.
+- **Wireless debugging.** Devices › + › Connect over Wi-Fi… (⇧⌘N) pairs an Android 11 or later device with a
+  QR code or a pairing code, or connects to `host:port` (recent hosts are remembered). Devices that
+  advertise wireless debugging but aren't connected appear under Discovered with a Connect button. Devices
+  connected by address can be disconnected from their context menu; adb can't disconnect devices it
+  connected over mDNS, so turn off Wireless debugging on the device for those. If `adb server-status` shows
+  `mdns_enabled: false`, the window explains how to turn mDNS on.
 - **Android Studio filter syntax.** `tag:`, `package:`, `process:`, `message:`, `line:`, `level:`, `age:`,
   `is:crash`, `is:stacktrace`, `is:firebase`, `is:<level>`, `name:`, plus `pid:` and `tid:`. Every text key
   supports contains (`key:`), exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with
@@ -69,6 +75,8 @@ needs the app in a folder you can write to; when it isn't, the window links to t
 - Xcode 16 / Swift 6 toolchain to build
 - `adb` from the Android SDK platform-tools. Logcatnip looks in `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`,
   `~/Library/Android/sdk`, Homebrew and `PATH`, or you can set the path in Settings.
+- Wireless pairing needs recent platform-tools with mDNS (`adb mdns check`) and the Mac and device on the
+  same network.
 - Xcode, only for iOS simulator logs. Logcatnip uses `simctl` from the developer directory that
   `xcode-select -p` reports (or `$DEVELOPER_DIR`). Without Xcode, simulators are hidden and Settings says why.
 
@@ -102,6 +110,9 @@ and a diff to `.build/snapshot-failures/`.
 with that query, and `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. With
 `LOGCATNIP_DEBUG=1` the find bar's state is printed too, including a recount from scratch (`check=ok`).
 `LOGCATNIP_PERF_TESTS=1 swift test --filter FindPerformance` times find on 500,000 rows.
+`LOGCATNIP_WIFI_SHEET=qr|code|ip` opens the Connect over Wi-Fi sheet, `LOGCATNIP_WIFI_CONNECT=host:port|discovered`
+connects, and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` pairs, without clicking.
+
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch, and `LOGCATNIP_UPDATE_INSTALL=1` with it downloads and
 installs what it finds without clicking. `LOGCATNIP_UPDATE_FEED=/path/release.json` (or a URL) reads releases from
 a copy of the GitHub API response instead, and `LOGCATNIP_UPDATE_VERSION=0.1.0` pretends to be that version. With
@@ -204,7 +215,8 @@ device's unified log.
 ## Layout
 
 - `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, unified log NDJSON), the filter language,
-  find, adb (device tracking, logcat streaming, process names) and simctl (simulators, `log stream`). No UI
+  find, adb (device tracking, logcat streaming, process names, wireless pairing and mDNS discovery) and
+  simctl (simulators, `log stream`). No UI
   dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
 - `scripts/`: `build-app.sh` builds the app bundle; `package-release.sh` makes the notarized DMG and zip;
