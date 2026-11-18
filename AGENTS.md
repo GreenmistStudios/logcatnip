@@ -93,6 +93,10 @@ an ad-hoc signed release once signed ones exist.
   `Snapshot.swift` renders a SwiftUI view in an offscreen window at 2x and compares it with
   `__Snapshots__/macOS-<major>/<name>.png`; mismatches write `.actual.png` and `.diff.png` files to
   `.build/snapshot-failures/`. `SessionScreenshotTests.swift` holds the fixture log.
+- `scripts/install.sh`: the `curl | bash` installer in the README. It installs the latest (or `LOGCATNIP_VERSION`)
+  release without quarantine, so Gatekeeper doesn't block it (that matters for the ad-hoc releases before 0.4).
+  Keep it working with macOS's bash 3.2 and the release asset names in `release.yml`; CI installs the latest
+  release with it.
 - `scripts/next-version.sh`: the next release version from conventional commits, for the release workflow.
 - `scripts/build-app.sh`: assembles the `.app` bundle and writes `Info.plist` inline (bundle id
   `studio.greenmist.logcatnip`). Add new bundle resources, such as an app icon, here. With `SIGN_IDENTITY` it signs

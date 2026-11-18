@@ -45,6 +45,18 @@ open it and drag Logcatnip onto Applications. Releases are signed with a Develop
 macOS opens them without a warning. (Releases before Developer ID signing were ad-hoc signed; if macOS blocks one
 of those, run `xattr -dr com.apple.quarantine /Applications/Logcatnip.app`.)
 
+Or install from Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/GreenmistStudios/logcatnip/main/scripts/install.sh | bash
+```
+
+It downloads the latest release, checks it against the release's SHA-256 and the app's code signature, installs
+it to `/Applications` (or `~/Applications` when that isn't writable) and opens it. Run it again to update.
+`LOGCATNIP_VERSION=X.Y.Z` installs a specific release, `LOGCATNIP_INSTALL_DIR` picks another folder and
+`LOGCATNIP_NO_OPEN=1` skips opening the app. curl doesn't quarantine what it downloads, so this also installs the
+older ad-hoc signed releases without a warning.
+
 Logcatnip checks GitHub Releases once a day (Settings › Updates; Logcatnip › Check for Updates… at any time).
 When there is a newer release it shows the release notes and offers to download it. The download is checked
 against the release's SHA-256, the bundle identifier, the version and the code signature before Install and
