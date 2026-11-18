@@ -106,6 +106,8 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var packageTracker = PackageUIDTracker()
     @ObservationIgnored private var packageRefreshInFlight = false
     @ObservationIgnored private var packageRefreshQueued = false
+    @ObservationIgnored private var packageRefreshForced = false
+    @ObservationIgnored private var packageRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var lastPackageRefresh = Date.distantPast
     /// How many `pm list packages` reads this session ran. For debug output.
     @ObservationIgnored private(set) var packageLookupCount = 0
@@ -159,7 +161,7 @@ final class LogSession: Identifiable {
 
     /// The owners of the entry's uid, without building a `ResolvedPackage`, for the table's per-row path.
     func packageOwner(for entry: LogEntry) -> PackageUIDMap.Owner? {
-        packageTracker.map.owner(forUID: entry.uid)
+        packageTracker.map.owner(for: entry)
     }
 
     /// How many app ids have a known owner. For debug output.
@@ -177,6 +179,7 @@ final class LogSession: Identifiable {
         let token = UUID()
         streamToken = token
         requestProcessNames(force: true)
+        cancelScheduledPackageRefresh()
         packageTracker.reset()
         requestPackages(force: true)
 
@@ -201,6 +204,7 @@ final class LogSession: Identifiable {
 
     func stop() {
         streamToken = nil
+        cancelScheduledPackageRefresh()
         streamTask?.cancel()
         streamTask = nil
         ageRefresh?.cancel()
@@ -219,6 +223,7 @@ final class LogSession: Identifiable {
     func deviceWentOffline() {
         guard serial != nil, status != .disconnected, status != .stopped else { return }
         streamToken = nil
+        cancelScheduledPackageRefresh()
         streamTask?.cancel()
         status = .disconnected
         appendMarker("Device disconnected")
@@ -298,6 +303,7 @@ final class LogSession: Identifiable {
             entry.id = nextID
             nextID += 1
             processResolver.stamp(&entry, now: now)
+            packageTracker.map.stamp(&entry)
             if entry.processName == nil, let uid = PackageUIDMap.uid(fromLogcat: entry.uid) {
                 packageTracker.note(uid: uid)
             }
@@ -318,7 +324,7 @@ final class LogSession: Identifiable {
         switch event {
         case let .started(pid, process, uid):
             update.merge(processResolver.processStarted(pid: pid, name: process, seq: seq))
-            if let uid { packageTracker.note(uid: uid) }
+            if let uid { packageTracker.processStarted(uid: uid, process: process) }
         }
     }
 
@@ -568,8 +574,11 @@ final class LogSession: Identifiable {
     private func applyNameUpdate(_ update: ProcessNameResolver.Update) {
         // Cells only change when entries got a name, so skip the refresh otherwise.
         guard update.apply(to: &entries) > 0 else { return }
-        // Entries the filter has not seen yet are filtered with their names at the next flush.
-        guard update.assignments.values.contains(where: { $0.firstSeq <= lastFilteredID }) else { return }
+        // An in-flight snapshot may already contain these entries even though lastFilteredID has not
+        // advanced. Restart it so its stale names cannot become the final filtering result.
+        guard refilterInFlight || update.assignments.values.contains(where: { $0.firstSeq <= lastFilteredID }) else {
+            return
+        }
         if filter.dependsOnProcessNames {
             refilter()
         } else {
@@ -579,14 +588,22 @@ final class LogSession: Identifiable {
 
     // MARK: Packages by uid
 
-    /// Reads `pm list packages -U` when the stream starts and when an entry carries an app uid the map lacks
-    /// (each app id at most once, see `PackageUIDTracker`). Entries whose process was never seen can then
+    private func cancelScheduledPackageRefresh() {
+        packageRefreshTask?.cancel()
+        packageRefreshTask = nil
+        packageRefreshQueued = false
+        packageRefreshForced = false
+    }
+
+    /// Reads `pm list packages -U` at stream start, for missing uids and conflicting start identities
+    /// (see `PackageUIDTracker`). Entries whose process was never seen can then
     /// still be attributed to their app. Lookups are at least 2 s apart.
     private func requestPackages(force: Bool = false) {
-        guard let serial, adb != nil else { return }
+        guard let serial, adb != nil, let token = streamToken else { return }
         // `pm list packages -U` needs Android 8.0. Start proc events cover older releases.
         if let api = model?.device(serial: serial)?.properties?.apiLevel, api < 26 { return }
-        guard force || packageTracker.needsRefresh else { return }
+        if force { packageRefreshForced = true }
+        guard packageRefreshForced || packageTracker.needsRefresh else { return }
         if packageRefreshInFlight {
             packageRefreshQueued = true
             return
@@ -598,16 +615,18 @@ final class LogSession: Identifiable {
             return
         }
         packageRefreshQueued = true
-        Task { [weak self] in
+        packageRefreshTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(wait))
-            guard let self else { return }
+            guard !Task.isCancelled, let self, self.streamToken == token else { return }
             self.packageRefreshQueued = false
-            if force || self.packageTracker.needsRefresh { self.runPackageLookup() }
+            self.packageRefreshTask = nil
+            if self.packageRefreshForced || self.packageTracker.needsRefresh { self.runPackageLookup() }
         }
     }
 
     private func runPackageLookup() {
-        guard let serial, let adb, !packageRefreshInFlight else { return }
+        guard let serial, let adb, let token = streamToken, !packageRefreshInFlight else { return }
+        packageRefreshForced = false
         packageRefreshInFlight = true
         lastPackageRefresh = Date()
         packageLookupCount += 1
@@ -616,13 +635,21 @@ final class LogSession: Identifiable {
             let map = try? await adb.packagesByUID(serial: serial)
             guard let self else { return }
             self.packageRefreshInFlight = false
+            guard self.streamToken == token else {
+                self.packageRefreshQueued = false
+                if self.streamToken != nil { self.requestPackages(force: true) }
+                return
+            }
             // A device with apps never lists none, so an empty list is an error message, not an answer.
             if let map, map.count > 0 {
-                if self.packageTracker.finishRefresh(refresh, with: map) { self.packagesChanged() }
+                self.packageTracker.map.stamp(&self.entries)
+                let changed = self.packageTracker.finishRefresh(refresh, with: map)
+                self.packageTracker.map.stamp(&self.entries)
+                if changed { self.packagesChanged() }
             } else {
                 self.packageTracker.failRefresh(refresh)
             }
-            if self.packageRefreshQueued {
+            if self.packageRefreshQueued || self.packageTracker.needsRefresh {
                 self.packageRefreshQueued = false
                 self.requestPackages()
             }

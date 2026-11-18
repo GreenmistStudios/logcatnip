@@ -407,7 +407,7 @@ struct FilterSubject {
     /// process was never named, each package that owns its uid.
     mutating func anyPackage(_ test: (String) -> Bool) -> Bool {
         if let process = process() { return test(LogEntry.packageName(forProcess: process)) }
-        guard let owner = context.packages.owner(forUID: entry.uid) else { return false }
+        guard let owner = context.packages.owner(for: entry) else { return false }
         return owner.packages.contains(where: test)
     }
 
