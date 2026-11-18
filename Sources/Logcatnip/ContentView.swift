@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         @Bindable var model = model
@@ -39,6 +40,8 @@ struct ContentView: View {
         } message: {
             Text(model.wireless.alertMessage ?? "")
         }
+        // Menus built in AppKit (the table's) ask for Settings through the model.
+        .onChange(of: model.sourceOpener.settingsRequest) { openSettings() }
     }
 }
 

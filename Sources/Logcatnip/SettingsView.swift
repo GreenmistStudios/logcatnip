@@ -13,6 +13,8 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.showSimulators) private var showSimulators = true
     @AppStorage(SettingsKey.checkForUpdates) private var checkForUpdates = true
     @AppStorage(SettingsKey.crashReportContextLines) private var crashReportContextLines = Defaults.crashReportContextLines
+    @AppStorage(SettingsKey.editor) private var editor = Editor.androidStudio
+    @AppStorage(SettingsKey.customEditorTemplate) private var customEditorTemplate = ""
 
     var body: some View {
         Form {
@@ -73,6 +75,14 @@ struct SettingsView: View {
                 }
             }
 
+            SourceCodeSettings(
+                editor: $editor,
+                customTemplate: $customEditorTemplate,
+                roots: model.sourceOpener.roots,
+                add: addSourceRoots,
+                remove: { model.sourceOpener.removeRoots($0) }
+            )
+
             Section("Appearance") {
                 Stepper(value: $fontSize, in: 9...20, step: 1) {
                     Text("Font size: \(Int(fontSize)) pt")
@@ -104,5 +114,69 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 520)
         .padding(.vertical)
+    }
+
+    private func addSourceRoots() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Choose the folders of your Android projects."
+        guard panel.runModal() == .OK else { return }
+        model.sourceOpener.addRoots(panel.urls)
+    }
+}
+
+/// Open in Editor settings. Takes its values as arguments so screenshot tests can render it.
+struct SourceCodeSettings: View {
+    @Binding var editor: Editor
+    @Binding var customTemplate: String
+    let roots: [String]
+    let add: () -> Void
+    let remove: (Set<String>) -> Void
+    @State private var selection: Set<String> = []
+
+    var body: some View {
+        Section("Source Code") {
+            Picker("Open stack frames in", selection: $editor) {
+                ForEach(Editor.allCases) { editor in
+                    Text(editor.title).tag(editor)
+                }
+            }
+            if editor == .custom {
+                TextField("Command or URL", text: $customTemplate, prompt: Text("zed {file}:{line}"))
+                Text("{file} and {line} are replaced with the path and line. A command is run without a shell; a URL such as subl://open?url=file://{file}&line={line} is opened.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Source folders")
+                List(roots, id: \.self, selection: $selection) { root in
+                    Text(root)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(root)
+                }
+                .frame(height: 90)
+                .overlay {
+                    if roots.isEmpty {
+                        Text("No folders")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Button("Add…", action: add)
+                    Button("Remove") {
+                        remove(selection)
+                        selection = []
+                    }
+                    .disabled(selection.isEmpty)
+                }
+            }
+            Text("Right-click a stack frame to open its file. Folders are searched for the file at its package path; build output is skipped.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }

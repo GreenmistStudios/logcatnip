@@ -647,6 +647,10 @@ struct LogTableView: NSViewRepresentable {
                let occurrence = session.signals.occurrence(id: occurrenceID) {
                 menu.addItem(item(occurrence.kind.copyReportTitle, #selector(copyCrashReport), occurrenceID))
             }
+            if let openItem = openSourceItem(line: Self.line(Int(session.rows[clicked].line), of: entry.message)) {
+                menu.addItem(.separator())
+                menu.addItem(openItem)
+            }
             guard entry.kind == .log else { return }
 
             menu.addItem(.separator())
@@ -661,6 +665,29 @@ struct LogTableView: NSViewRepresentable {
             menu.addItem(item("Show Only PID \(entry.pid)", #selector(addTerm), "pid:\(entry.pid)"))
             menu.addItem(item("Show Only TID \(entry.tid)", #selector(addTerm), "tid:\(entry.tid)"))
             menu.addItem(item("Show \(entry.level.name) and Above", #selector(setLevel), entry.level.rawValue))
+        }
+
+        /// Open in Editor for a stack frame line. Reads the source index as it is: before the first walk has
+        /// finished the item resolves on click, and framework frames that aren't in a source folder get no item.
+        private func openSourceItem(line: String) -> NSMenuItem? {
+            guard let opener = session?.sourceOpener, LogClassifier.isStackFrame(line),
+                  let reference = SourceReference(line: line)
+            else { return nil }
+            let editor = Defaults.editor
+            let openTitle = "Open \(reference.displayName) in \(editor.menuName)"
+            switch opener.lookup(reference) {
+            case nil:
+                return reference.isFramework ? nil : item("Set Source Folder…", #selector(showSourceSettings))
+            case .pending:
+                return item(openTitle, #selector(openSource), reference)
+            case let .found(location):
+                return item(openTitle, #selector(openSource), location)
+            case .notFound:
+                guard !reference.isFramework else { return nil }
+                let missing = NSMenuItem(title: "\(reference.fileName) not found in source folders", action: nil, keyEquivalent: "")
+                missing.isEnabled = false
+                return missing
+            }
         }
 
         private func item(_ title: String, _ action: Selector, _ value: Any? = nil) -> NSMenuItem {
@@ -683,6 +710,19 @@ struct LogTableView: NSViewRepresentable {
         @objc private func copyCrashReport(_ sender: NSMenuItem) {
             guard let occurrenceID = sender.representedObject as? Int else { return }
             session?.copyCrashReport(for: occurrenceID)
+        }
+
+        @objc private func openSource(_ sender: NSMenuItem) {
+            guard let opener = session?.sourceOpener else { return }
+            if let location = sender.representedObject as? SourceLocation {
+                opener.open(location)
+            } else if let reference = sender.representedObject as? SourceReference {
+                opener.open(reference)
+            }
+        }
+
+        @objc private func showSourceSettings() {
+            session?.sourceOpener?.showSettings()
         }
 
         @objc private func addTerm(_ sender: NSMenuItem) {

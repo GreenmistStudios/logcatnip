@@ -101,6 +101,7 @@ final class AppModel {
     private(set) var sessions: [LogSession] = []
     var selectedSessionID: LogSession.ID?
     let wireless = WirelessModel()
+    let sourceOpener = SourceOpener()
 
     @ObservationIgnored private var trackingTask: Task<Void, Never>?
     /// In-flight getprop requests by serial. The token lets a request that was overtaken (the transport went
