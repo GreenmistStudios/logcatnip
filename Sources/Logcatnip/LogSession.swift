@@ -77,9 +77,14 @@ final class LogSession: Identifiable {
     private(set) var visibleCount = 0
     /// Incremented to ask the filter field to take focus.
     var focusFilterRequest = 0
+    /// Counts and groups of `signals`, reassigned only when the index changes so views aren't invalidated
+    /// on every flush.
+    private(set) var signalSummary = SignalSummary()
 
     @ObservationIgnored private(set) var entries: [LogEntry] = []
     @ObservationIgnored private(set) var rows: [Row] = []
+    /// Crashes, ANRs, leaks and warnings in `entries`. Keyed by entry, so refilters leave it alone.
+    @ObservationIgnored private(set) var signals = SignalIndex()
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
@@ -89,6 +94,13 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var nextID = 0
     @ObservationIgnored private var lastFilteredID = -1
     @ObservationIgnored private var filterGeneration = 0
+    /// Bumped whenever `rows` changes, for caches of row indexes.
+    @ObservationIgnored private var rowsGeneration = 0
+    @ObservationIgnored private var signalRowsCache: (key: SignalRowsKey, rows: [Int])?
+    @ObservationIgnored private var signalDebugCheck: (key: [Int], verdict: String)?
+    /// The `signals.generation` that `signalSummary` was built from, so flushes without signal changes
+    /// don't rebuild and compare it.
+    @ObservationIgnored private var signalSummaryGeneration = -1
     @ObservationIgnored private var refilterInFlight = false
     @ObservationIgnored private var flushScheduled = false
     @ObservationIgnored private var filterDebounce: Task<Void, Never>?
@@ -363,6 +375,7 @@ final class LogSession: Identifiable {
 
     private func ingest(_ batch: [LogEntry]) {
         let now = ProcessInfo.processInfo.systemUptime
+        let start = entries.count
         entries.reserveCapacity(entries.count + batch.count)
         for var entry in batch {
             if let resumeAfter {
@@ -376,7 +389,9 @@ final class LogSession: Identifiable {
             lastTimestamp = entry.timestamp
             entries.append(entry)
         }
+        signals.ingest(entries[start...])
         trimIfNeeded()
+        updateSignalSummary()
         if processResolver.needsLookup { requestProcessNames() }
         scheduleFlush()
     }
@@ -402,6 +417,7 @@ final class LogSession: Identifiable {
         let drop = entries.count - limit * 9 / 10
         entries.removeFirst(drop)
         firstID += drop
+        signals.removeEntries(before: firstID, remaining: entries)
         let removedRows = firstRowIndex(atOrAfter: firstID)
         guard removedRows > 0 else { return }
         var removedEntries = 0
@@ -412,6 +428,7 @@ final class LogSession: Identifiable {
         }
         visibleCount = max(0, visibleCount - removedEntries)
         rows.removeFirst(removedRows)
+        rowsGeneration += 1
         find.rowsRemovedFront(removedRows)
         onRowsChanged?(.reloaded(removedFront: removedRows))
     }
@@ -456,6 +473,7 @@ final class LogSession: Identifiable {
         guard !newRows.isEmpty else { return }
         let start = rows.count
         rows.append(contentsOf: newRows)
+        rowsGeneration += 1
         visibleCount += matched
         find.rowsAppended()
         onRowsChanged?(.appended(start..<rows.count))
@@ -469,6 +487,61 @@ final class LogSession: Identifiable {
         for line in 0..<lines {
             rows.append(Row(entryID: entry.id, line: line))
         }
+    }
+
+    // MARK: Signals
+
+    private struct SignalRowsKey: Equatable {
+        let signals: Int
+        let rows: Int
+        let firstID: Int
+        let kinds: Set<SignalKind>
+    }
+
+    private func updateSignalSummary() {
+        guard signals.generation != signalSummaryGeneration else { return }
+        signalSummaryGeneration = signals.generation
+        let summary = SignalSummary(signals)
+        if summary != signalSummary { signalSummary = summary }
+    }
+
+    /// Ascending row indexes of the first line of each occurrence of `kinds` that the filter shows.
+    /// Cached, since scroller ticks ask on every redraw.
+    func visibleSignalRows(kinds: Set<SignalKind>) -> [Int] {
+        let key = SignalRowsKey(signals: signals.generation, rows: rowsGeneration, firstID: firstID, kinds: kinds)
+        if let cache = signalRowsCache, cache.key == key { return cache.rows }
+        var result: [Int] = []
+        for occurrence in signals.occurrences where kinds.contains(occurrence.kind) {
+            if let index = rowIndex(of: Row(entryID: occurrence.id, line: 0)) { result.append(index) }
+        }
+        signalRowsCache = (key, result)
+        return result
+    }
+
+    /// Whether the filter shows the occurrence's anchor entry.
+    func occurrenceIsVisible(_ occurrence: SignalOccurrence) -> Bool {
+        rowIndex(of: Row(entryID: occurrence.id, line: 0)) != nil
+    }
+
+    /// One line for `LOGCATNIP_DEBUG`. Rebuilds the index from the buffer and compares occurrence and anchor
+    /// ids, so it shows whether incremental ingest and trims kept it exact (see ``SignalIndex`` for when a trim
+    /// through a burst can't). Rebuilt once per state.
+    func signalDebugSummary() -> String {
+        let key = [signals.generation, firstID, entries.count]
+        if signalDebugCheck?.key != key {
+            var expected = SignalIndex()
+            expected.ingest(entries)
+            let actualIDs = signals.occurrences.map(\.anchorEntryIDs)
+            let expectedIDs = expected.occurrences.map(\.anchorEntryIDs)
+            let verdict = actualIDs == expectedIDs ? "ok" : "MISMATCH(\(expectedIDs.count) vs \(actualIDs.count))"
+            signalDebugCheck = (key, verdict)
+        }
+        let counts: [(String, SignalKind)] = [
+            ("crash", .crash), ("native", .nativeCrash), ("anr", .anr), ("leak", .leak), ("oom", .outOfMemory),
+            ("jank", .performance),
+        ]
+        let text = counts.map { "\($0.0)=\(signals.count(of: $0.1))" }.joined(separator: " ")
+        return "signals: \(text) groups=\(signals.groups.count) check=\(signalDebugCheck?.verdict ?? "-")"
     }
 
     // MARK: Filtering
@@ -525,6 +598,7 @@ final class LogSession: Identifiable {
             // Entries may have been trimmed while filtering.
             let firstValid = rows.firstIndex { $0.entryID >= self.firstID } ?? rows.count
             self.rows = firstValid == 0 ? rows : Array(rows[firstValid...])
+            self.rowsGeneration += 1
             self.visibleCount = firstValid == 0 ? visible : Set(self.rows.map(\.entryID)).count
             self.lastFilteredID = lastID
             self.find.rowsReplaced()
@@ -549,6 +623,9 @@ final class LogSession: Identifiable {
     func clear() {
         entries.removeAll(keepingCapacity: true)
         rows.removeAll(keepingCapacity: true)
+        rowsGeneration += 1
+        signals.reset()
+        updateSignalSummary()
         firstID = nextID
         lastFilteredID = nextID - 1
         filterGeneration += 1

@@ -178,6 +178,7 @@ final class AppModel {
                         + "markers=\(markers.count) lastMarker=\"\(markers.last?.message ?? "-")\" "
                         + "dups=\(Self.duplicateCount(in: session))\n"
                     FileHandle.standardError.write(Data(line.utf8))
+                    FileHandle.standardError.write(Data("[logcatnip]     \(session.signalDebugSummary())\n".utf8))
                     if session.find.isVisible {
                         FileHandle.standardError.write(Data("[logcatnip]     \(session.find.debugSummary())\n".utf8))
                     }
