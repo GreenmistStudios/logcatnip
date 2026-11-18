@@ -169,7 +169,7 @@ final class AppModel {
                 for session in self.sessions {
                     let stats = session.processNameStats
                     let markers = session.entries.filter { $0.kind == .marker }
-                    let line = "[logcatnip]   \(session.title): status=\(session.status.label) paused=\(session.isPaused) "
+                    let line = "[logcatnip]   \(session.title): status=\(session.status.label) format=\(session.streamsModernFormat ? "modern" : "legacy") paused=\(session.isPaused) "
                         + "follow=\(session.autoScroll) total=\(session.totalCount) visible=\(session.visibleCount) "
                         + "rows=\(session.rows.count) processes=\(stats.running) pending=\(stats.pending) "
                         + "unresolved=\(stats.unresolvable) "

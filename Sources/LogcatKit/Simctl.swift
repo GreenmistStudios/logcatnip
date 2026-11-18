@@ -115,12 +115,15 @@ public struct Simctl: Sendable {
                     onExit: { status, stderr in
                         let rest = parser.finish()
                         if !rest.isEmpty { continuation.yield(.entries(rest)) }
-                        continuation.yield(.ended(status: status, error: Self.meaningfulErrors(stderr)))
+                        continuation.yield(.ended(LogcatExit(
+                            status: status, stderr: Self.meaningfulErrors(stderr),
+                            receivedEntries: parser.receivedEntries, modernFormat: false
+                        )))
                         continuation.finish()
                     }
                 )
             } catch {
-                continuation.yield(.ended(status: -1, error: "\(error)"))
+                continuation.yield(.ended(LogcatExit(status: -1, stderr: "\(error)", modernFormat: false)))
                 continuation.finish()
             }
             continuation.onTermination = { _ in process.terminate() }
@@ -142,6 +145,13 @@ public typealias LogStreamEvent = ADB.LogcatEvent
 private final class UnifiedParserBox: @unchecked Sendable {
     private let lock = NSLock()
     private var parser = UnifiedLogParser()
-    func feed(_ data: Data) -> [LogEntry] { lock.withLock { parser.feed(data) } }
-    func finish() -> [LogEntry] { lock.withLock { parser.finish() } }
+    private var sawEntries = false
+    func feed(_ data: Data) -> [LogEntry] { lock.withLock { record(parser.feed(data)) } }
+    func finish() -> [LogEntry] { lock.withLock { record(parser.finish()) } }
+    var receivedEntries: Bool { lock.withLock { sawEntries } }
+
+    private func record(_ entries: [LogEntry]) -> [LogEntry] {
+        if !entries.isEmpty { sawEntries = true }
+        return entries
+    }
 }
