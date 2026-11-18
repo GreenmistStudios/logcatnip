@@ -40,16 +40,16 @@ Android Studio's Logcat window.
 
 ## Install and update
 
-Download `Logcatnip-X.Y.Z.zip` from the [releases page](https://github.com/GreenmistStudios/logcatnip/releases),
-unzip it and move `Logcatnip.app` to Applications. The app is ad-hoc signed, not notarized, so the first time
-macOS blocks it: Control-click the app, choose Open, then Open again (or run
-`xattr -dr com.apple.quarantine /Applications/Logcatnip.app`).
+Download `Logcatnip-X.Y.Z.dmg` from the [releases page](https://github.com/GreenmistStudios/logcatnip/releases),
+open it and drag Logcatnip onto Applications. Releases are signed with a Developer ID and notarized by Apple, so
+macOS opens them without a warning. (Releases before Developer ID signing were ad-hoc signed; if macOS blocks one
+of those, run `xattr -dr com.apple.quarantine /Applications/Logcatnip.app`.)
 
 Logcatnip checks GitHub Releases once a day (Settings › Updates; Logcatnip › Check for Updates… at any time).
 When there is a newer release it shows the release notes and offers to download it. The download is checked
 against the release's SHA-256, the bundle identifier, the version and the code signature before Install and
-Relaunch swaps it in. Updating in place needs the app in a folder you can write to; when it isn't, the window
-links to the release page instead.
+Relaunch swaps it in. A Developer ID build only installs updates signed by the same team. Updating in place
+needs the app in a folder you can write to; when it isn't, the window links to the release page instead.
 
 ## Requirements
 
@@ -107,11 +107,34 @@ commits since the last `vX.Y.Z` tag and picks the bump:
 | `fix:`, `perf:`, `refactor:`, `revert:` | patch |
 | only `docs:`, `chore:`, `ci:`, `test:`, `style:`, `build:` | no release |
 
-The workflow then runs the tests, builds the app with that version, and publishes a GitHub release tagged
-`vX.Y.Z` with `Logcatnip-X.Y.Z.zip`, its `.sha256` and notes generated from the merged pull requests. The tag
-is the only record of the version: nothing is committed back. To force a release, or to cut 1.0, run the
-Release workflow by hand and choose the bump. Local builds take the newest tag as their version (`0.0.0`
-before the first release); set `VERSION=` to override it.
+The workflow then runs the tests, builds the app with that version, signs it with the Developer ID, notarizes
+it, and publishes a GitHub release tagged `vX.Y.Z` with `Logcatnip-X.Y.Z.dmg` (the installer),
+`Logcatnip-X.Y.Z.zip` (what the updater downloads), a `.sha256` for each and notes generated from the merged
+pull requests. The tag is the only record of the version: nothing is committed back. To force a release, or to
+cut 1.0, run the Release workflow by hand and choose the bump. Local builds take the newest tag as their version
+(`0.0.0` before the first release); set `VERSION=` to override it.
+
+### Signing releases
+
+The release workflow needs five repository secrets (Settings › Secrets and variables › Actions). It fails
+rather than publish an unsigned release, because signed copies refuse updates from another team.
+
+| Secret | Value |
+| --- | --- |
+| `DEVELOPER_ID_P12` | The Developer ID Application certificate and its private key: in Keychain Access, select the certificate, File › Export Items… as `.p12`, then `base64 -i cert.p12 \| pbcopy` |
+| `DEVELOPER_ID_P12_PASSWORD` | The password you gave the `.p12` |
+| `NOTARY_KEY_P8` | An App Store Connect API key (Users and Access › Integrations › Team Keys, Developer access): `base64 -i AuthKey_XXXX.p8 \| pbcopy` |
+| `NOTARY_KEY_ID` | That key's ID |
+| `NOTARY_ISSUER` | The Issuer ID shown above the keys |
+
+To build and notarize a release locally, store notarization credentials once with
+`xcrun notarytool store-credentials logcatnip`, then:
+
+```sh
+ID="Developer ID Application: Name (TEAMID)"
+UNIVERSAL=1 VERSION=1.2.3 SIGN_IDENTITY="$ID" scripts/build-app.sh
+VERSION=1.2.3 SIGN_IDENTITY="$ID" NOTARY_PROFILE=logcatnip scripts/package-release.sh
+```
 
 ## Filter reference
 
@@ -172,7 +195,8 @@ device's unified log.
   find, adb (device tracking, logcat streaming, process names) and simctl (simulators, `log stream`). No UI
   dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
-- `scripts/`: `build-app.sh` builds the app bundle; `next-version.sh` picks the next release version.
+- `scripts/`: `build-app.sh` builds the app bundle; `package-release.sh` makes the notarized DMG and zip;
+  `next-version.sh` picks the next release version.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
 - `Tests/LogcatnipTests`: screenshot tests of the app's views.
 

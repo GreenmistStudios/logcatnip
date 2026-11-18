@@ -5,8 +5,10 @@
 #   CONFIG=debug scripts/build-app.sh
 #   VERSION=1.2.3 scripts/build-app.sh   # the release workflow passes the version it is about to tag
 #   UNIVERSAL=1 scripts/build-app.sh     # arm64 + x86_64, as releases ship (the default builds the Mac's own arch)
+#   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" scripts/build-app.sh   # as releases sign (default: ad hoc)
 #
 # Without VERSION the app takes the newest vX.Y.Z tag, so local builds compare with releases correctly.
+# scripts/package-release.sh turns a Developer ID build into the notarized zip and DMG that releases publish.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -74,5 +76,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP" >/dev/null
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    # Developer ID: notarization needs the hardened runtime and a secure timestamp. The app needs no
+    # entitlements; it isn't sandboxed and only launches adb, simctl and sh.
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+else
+    codesign --force --sign - "$APP" >/dev/null
+fi
 echo "Built $APP"

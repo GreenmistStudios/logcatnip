@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 /// A `major.minor.patch` version, as the release workflow tags it (`v1.2.3`) and writes it into
 /// `CFBundleShortVersionString`. Pre-release and build suffixes (`-beta.1`, `+42`) are dropped: the feed only
@@ -240,7 +241,7 @@ public enum UpdateInstaller {
     /// the unpacked `.app`, in a fresh temporary folder.
     /// `configuration` and `stagingRoot` are for tests: a mocked URL protocol and a folder they clean up.
     public static func prepare(
-        _ release: UpdateRelease, bundleIdentifier: String,
+        _ release: UpdateRelease, bundleIdentifier: String, team: String? = nil,
         configuration: URLSessionConfiguration = .ephemeral,
         stagingRoot: URL = FileManager.default.temporaryDirectory,
         progress: @escaping @Sendable (Double) -> Void
@@ -268,7 +269,7 @@ public enum UpdateInstaller {
             guard apps.count == 1, let app = apps.first else {
                 throw UpdateError.invalidBundle("expected one app in \(release.asset.name), found \(apps.count)")
             }
-            try validate(app: app, bundleIdentifier: bundleIdentifier, version: release.version)
+            try validate(app: app, bundleIdentifier: bundleIdentifier, version: release.version, team: team)
             return app
         } catch {
             try? FileManager.default.removeItem(at: folder)
@@ -286,9 +287,12 @@ public enum UpdateInstaller {
     }
 
     /// Checks the bundle identifier, the version, that it runs on `architecture`, and the code signature, so a
-    /// mislabelled, damaged or wrong-architecture zip is never swapped in over a working app.
+    /// mislabelled, damaged or wrong-architecture zip is never swapped in over a working app. With `team`, the
+    /// app must also carry an Apple-issued signature from that team, so a Developer ID build only ever updates to
+    /// another build by the same developer.
     public static func validate(
-        app: URL, bundleIdentifier: String, version: SemanticVersion, architecture: Int = runningArchitecture
+        app: URL, bundleIdentifier: String, version: SemanticVersion, architecture: Int = runningArchitecture,
+        team: String? = nil
     ) throws {
         let plistURL = app.appendingPathComponent("Contents/Info.plist")
         guard let data = try? Data(contentsOf: plistURL),
@@ -311,6 +315,45 @@ public enum UpdateInstaller {
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path]) {
             UpdateError.invalidBundle("code signature: \($0)")
         }
+        if let team, !isSigned(app, byTeam: team) {
+            throw UpdateError.invalidBundle("it isn't signed by this app's developer (team \(team))")
+        }
+    }
+
+    /// The team whose Apple-issued certificate (Developer ID, say) signed `app`, or nil for an ad-hoc signed,
+    /// unsigned or invalid app. The updater pins updates to the running app's team; ad-hoc builds, such as
+    /// releases before Developer ID signing and local `scripts/build-app.sh` builds, pin nothing.
+    public static func signingTeam(of app: URL) -> String? {
+        guard let code = staticCode(app), let requirement = requirement("anchor apple generic"),
+              SecStaticCodeCheckValidity(code, codeValidityFlags, requirement) == errSecSuccess
+        else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess
+        else { return nil }
+        return (info as? [String: Any])?[kSecCodeInfoTeamIdentifier as String] as? String
+    }
+
+    static func isSigned(_ app: URL, byTeam team: String) -> Bool {
+        // Only letters and digits, so the team can't change the requirement it is interpolated into.
+        guard !team.isEmpty, team.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }),
+              let code = staticCode(app),
+              let requirement = requirement("anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"")
+        else { return false }
+        return SecStaticCodeCheckValidity(code, codeValidityFlags, requirement) == errSecSuccess
+    }
+
+    private static let codeValidityFlags = SecCSFlags(
+        rawValue: kSecCSCheckAllArchitectures | kSecCSCheckNestedCode | kSecCSStrictValidate
+    )
+
+    private static func staticCode(_ app: URL) -> SecStaticCode? {
+        var code: SecStaticCode?
+        return SecStaticCodeCreateWithPath(app as CFURL, [], &code) == errSecSuccess ? code : nil
+    }
+
+    private static func requirement(_ text: String) -> SecRequirement? {
+        var requirement: SecRequirement?
+        return SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess ? requirement : nil
     }
 
     /// Starts a detached shell that waits for `pid` to exit, moves `newApp` over `appURL` (keeping the old app

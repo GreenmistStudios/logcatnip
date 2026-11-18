@@ -150,6 +150,37 @@ import Testing
         )
     }
 
+    @Test func pinsUpdatesToTheRunningAppsTeam() throws {
+        let scratch = try UpdateScratch()
+        let app = try FakeApp.make(in: scratch.url, version: "1.2.3")
+        // Ad-hoc builds have no team, so they pin nothing and can't satisfy a pinned team.
+        #expect(UpdateInstaller.signingTeam(of: app) == nil)
+        #expect {
+            try UpdateInstaller.validate(app: app, bundleIdentifier: id, version: SemanticVersion("1.2.3")!, team: "EY47F36LGH")
+        } throws: { error in
+            if case .invalidBundle(let detail) = error as? UpdateError { detail.contains("EY47F36LGH") } else { false }
+        }
+        // A team that would change the requirement it is checked with is never matched.
+        #expect(!UpdateInstaller.isSigned(app, byTeam: "\" or anchor apple generic or \""))
+        #expect(!UpdateInstaller.isSigned(app, byTeam: ""))
+    }
+
+    /// Needs a Developer ID certificate in the keychain:
+    /// `LOGCATNIP_SIGNING_IDENTITY="Developer ID Application: Name (TEAMID)" swift test --filter acceptsOnlyTheTeamThatSignedIt`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["LOGCATNIP_SIGNING_IDENTITY"] != nil))
+    func acceptsOnlyTheTeamThatSignedIt() throws {
+        let identity = ProcessInfo.processInfo.environment["LOGCATNIP_SIGNING_IDENTITY"]!
+        let scratch = try UpdateScratch()
+        let app = try FakeApp.make(in: scratch.url, version: "1.2.3")
+        try FakeApp.run("/usr/bin/codesign", ["--force", "--options", "runtime", "--sign", identity, app.path])
+        let team = try #require(UpdateInstaller.signingTeam(of: app))
+        #expect(identity.hasSuffix("(\(team))"))
+        try UpdateInstaller.validate(app: app, bundleIdentifier: id, version: SemanticVersion("1.2.3")!, team: team)
+        #expect(throws: UpdateError.self) {
+            try UpdateInstaller.validate(app: app, bundleIdentifier: id, version: SemanticVersion("1.2.3")!, team: "ABCDE12345")
+        }
+    }
+
     @Test func removesStaleAndDiscardedDownloads() throws {
         let scratch = try UpdateScratch()
         let stale = try scratch.folder("logcatnip-update-OLD")

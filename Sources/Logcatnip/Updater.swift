@@ -25,7 +25,9 @@ extension UpdateController {
             installBlocker: blocker,
             services: GitHubUpdateServices(
                 feed: feed, bundleIdentifier: bundle.bundleIdentifier ?? "studio.greenmist.logcatnip",
-                appURL: bundle.bundleURL
+                appURL: bundle.bundleURL,
+                // A Developer ID build only accepts updates from the same team.
+                team: UpdateInstaller.signingTeam(of: bundle.bundleURL)
             )
         )
         controller.quit = { NSApp.terminate(nil) }
