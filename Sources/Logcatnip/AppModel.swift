@@ -100,6 +100,7 @@ final class AppModel {
     private(set) var simulators: [SimulatorDevice] = []
     private(set) var sessions: [LogSession] = []
     var selectedSessionID: LogSession.ID?
+    let wireless = WirelessModel()
 
     @ObservationIgnored private var trackingTask: Task<Void, Never>?
     /// In-flight getprop requests by serial. The token lets a request that was overtaken (the transport went
@@ -129,6 +130,7 @@ final class AppModel {
         guard trackingTask == nil else { return }
         connectADB()
         connectSimulators()
+        wireless.runLaunchHooks(environment: ProcessInfo.processInfo.environment)
         if ProcessInfo.processInfo.environment["LOGCATNIP_DEBUG"] == "1" {
             startDebugReporting()
         }
@@ -146,6 +148,7 @@ final class AppModel {
         trackingTask = nil
         simulatorTask?.cancel()
         simulatorTask = nil
+        wireless.stop()
         for session in sessions {
             session.stop()
         }
@@ -162,6 +165,7 @@ final class AppModel {
                 let header = "[logcatnip] devices=\(devices) groups=\(self.deviceGroups.count) simulators=\(simulators) "
                     + "sessions=\(self.sessions.count)\n"
                 FileHandle.standardError.write(Data(header.utf8))
+                FileHandle.standardError.write(Data("[logcatnip] \(self.wireless.debugSummary)\n".utf8))
                 for session in self.sessions {
                     let stats = session.processNameStats
                     let markers = session.entries.filter { $0.kind == .marker }
@@ -210,11 +214,13 @@ final class AppModel {
         let override = UserDefaults.standard.string(forKey: SettingsKey.adbPath)
         guard let adb = ADB.locate(overridePath: override) else {
             self.adb = nil
+            wireless.stop()
             adbError = "adb not found. Install the Android SDK platform-tools or set the adb path in Settings."
             return
         }
         self.adb = adb
         adbError = nil
+        wireless.start(adb: adb, app: self)
         trackingTask = Task { [weak self] in
             for await event in adb.trackDevices() {
                 guard let self else { return }

@@ -26,7 +26,9 @@ Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr eve
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions; `LOGCATNIP_FIND='text'` opens the find bar
 with that query (the debug output then includes `find=... check=ok|MISMATCH`, a recount from scratch);
 `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. `LOGCATNIP_PERF_TESTS=1 swift test
---filter FindPerformance` runs the opt-in find timings on 500,000 rows.
+--filter FindPerformance` runs the opt-in find timings on 500,000 rows. `LOGCATNIP_WIFI_SHEET=qr|code|ip`,
+`LOGCATNIP_WIFI_CONNECT=host:port|discovered` and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` drive the
+Connect over Wi-Fi flows without clicking; the debug report has a `wireless:` line.
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch and `LOGCATNIP_UPDATE_INSTALL=1` installs what it finds
 without clicking; `LOGCATNIP_UPDATE_FEED=/path/release.json|URL` and `LOGCATNIP_UPDATE_VERSION=0.1.0` point it at a
 local feed and fake the running version. With `LOGCATNIP_DEBUG=1` each step logs an `update:` line.
@@ -60,6 +62,8 @@ an ad-hoc signed release once signed ones exist.
   - `Simctl.swift`, `Simulators.swift`: finding `simctl` without triggering the Xcode install prompt, polling
     booted simulators, and streaming `log stream` from one.
   - `UnifiedLogParser.swift`: `log stream --style ndjson` parsing into `LogEntry`.
+  - `Wireless.swift`: mDNS service parsing and tracking (`adb mdns`), the QR pairing payload, `adb pair`,
+    `connect` and `disconnect` output, and matching discovered services to devices.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
   - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
@@ -83,6 +87,8 @@ an ad-hoc signed release once signed ones exist.
   - `ScrollMarkers.swift`: the tick marks drawn over the table's vertical scroller, one layer per kind of
     mark.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
+  - `WirelessModel.swift`, `WirelessConnectView.swift`, `QRCodeImage.swift`: the Connect over Wi-Fi sheet,
+    its QR code, and the sidebar's Discovered list.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
   - `Updater.swift`: wires `UpdateController` to the bundle and the `LOGCATNIP_UPDATE_*` hooks, the Software Update
     window and the Check for Updates… command.
