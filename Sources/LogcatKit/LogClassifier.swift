@@ -207,7 +207,7 @@ public struct NativeFrame: Sendable, Hashable {
         symbol.map { "\(libraryName) (\($0))" } ?? libraryName
     }
 
-    private static func parenthesizedGroups(_ text: Substring) -> [Substring] {
+    static func parenthesizedGroups(_ text: Substring) -> [Substring] {
         var groups: [Substring] = []
         var depth = 0
         var start = text.startIndex

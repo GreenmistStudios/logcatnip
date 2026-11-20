@@ -98,10 +98,24 @@ public struct CrashSignature: Sendable, Hashable {
             }
         }
         let title = (lastCause ?? firstException).map(String.init) ?? "Unknown exception"
-        let frame = package.flatMap { package in
+        let frame = topAppFrame(of: frames, package: package)
+        return CrashSignature(kind: .crash, title: title, detail: frame?.displayText, package: package)
+    }
+
+    /// The frame a Java crash signature names, for Open Top Frame: the first frame in `package`, else the
+    /// first frame. `package` is the signature's, so this agrees with ``detail``.
+    public static func topAppFrame(in message: String, package: String?) -> JavaFrame? {
+        var frames: [JavaFrame] = []
+        message.enumerateLines { line, _ in
+            if let frame = JavaFrame.parse(line) { frames.append(frame) }
+        }
+        return topAppFrame(of: frames, package: package)
+    }
+
+    static func topAppFrame(of frames: [JavaFrame], package: String?) -> JavaFrame? {
+        package.flatMap { package in
             frames.first { $0.className.hasPrefix(package + ".") }
         } ?? frames.first
-        return CrashSignature(kind: .crash, title: title, detail: frame?.displayText, package: package)
     }
 
     /// Starts a native crash signature from libc's `Fatal signal` line or the tombstone's `*** *** ***`
@@ -280,7 +294,8 @@ public struct CrashSignature: Sendable, Hashable {
         return nil
     }
 
-    static func topFrame(in message: String, package: String?) -> JavaFrame? {
+    /// The first frame in `package`, with no fallback: what a StrictMode leak signature names.
+    public static func topFrame(in message: String, package: String?) -> JavaFrame? {
         guard let package else { return nil }
         var found: JavaFrame?
         message.enumerateLines { line, stop in

@@ -206,10 +206,17 @@ final class LogSession: Identifiable {
     // MARK: Lookup
 
     func entry(for row: Row) -> LogEntry? {
-        let index = row.entryID - firstID
+        entry(id: row.entryID)
+    }
+
+    func entry(id: Int) -> LogEntry? {
+        let index = id - firstID
         guard index >= 0, index < entries.count else { return nil }
         return entries[index]
     }
+
+    /// Open in Editor, shared by every session.
+    var sourceOpener: SourceOpener? { model?.sourceOpener }
 
     /// Id of the oldest entry still in the buffer. Entries are indexed by `id - firstEntryID`.
     var firstEntryID: Int { firstID }

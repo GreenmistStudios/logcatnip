@@ -198,7 +198,7 @@ import Testing
     }
 
     /// Recomputes every anchor row from the occurrences and the rows, and compares.
-    private func check(_ session: LogSession, sourceLocation: SourceLocation = #_sourceLocation) throws {
+    private func check(_ session: LogSession, sourceLocation: Testing.SourceLocation = #_sourceLocation) throws {
         var rowOf: [Int: Int] = [:]
         for (index, row) in session.rows.enumerated() where row.line == 0 {
             rowOf[row.entryID] = index

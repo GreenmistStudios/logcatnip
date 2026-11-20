@@ -17,6 +17,12 @@ enum SettingsKey {
     static let precedenceChangedFilters = "precedenceChangedFilters"
     /// Lines from the crashing process that Copy Crash Report includes before the crash.
     static let crashReportContextLines = "crashReportContextLines"
+    /// An `Editor` raw value: where Open in Editor sends stack frames.
+    static let editor = "editor"
+    /// Folders searched for the files stack frames name, as paths.
+    static let sourceRoots = "sourceRoots"
+    /// The Custom editor's URL or command line, with `{file}` and `{line}` placeholders.
+    static let customEditorTemplate = "customEditorTemplate"
     /// Owned by `UpdateController`, which also reads when it last checked and which version was skipped.
     static let checkForUpdates = UpdateController.Keys.automaticChecks
 }
@@ -38,6 +44,9 @@ enum Defaults {
             SettingsKey.filterPrecedenceChecked: false,
             SettingsKey.checkForUpdates: true,
             SettingsKey.crashReportContextLines: crashReportContextLines,
+            SettingsKey.editor: Editor.androidStudio.rawValue,
+            SettingsKey.sourceRoots: [String](),
+            SettingsKey.customEditorTemplate: "",
         ])
     }
 
@@ -53,6 +62,18 @@ enum Defaults {
 
     static var crashReportContextLinesValue: Int {
         max(0, UserDefaults.standard.integer(forKey: SettingsKey.crashReportContextLines))
+    }
+
+    static var editor: Editor {
+        UserDefaults.standard.string(forKey: SettingsKey.editor).flatMap(Editor.init(rawValue:)) ?? .androidStudio
+    }
+
+    static var customEditorTemplate: String {
+        UserDefaults.standard.string(forKey: SettingsKey.customEditorTemplate) ?? ""
+    }
+
+    static var sourceRoots: [String] {
+        UserDefaults.standard.stringArray(forKey: SettingsKey.sourceRoots) ?? []
     }
 
     static var maxEntriesValue: Int {

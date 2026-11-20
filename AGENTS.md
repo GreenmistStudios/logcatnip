@@ -82,6 +82,8 @@ an ad-hoc signed release once signed ones exist.
     next/previous jump targets.
   - `IncrementalRowIndex.swift`: row indexes of the entries a predicate picks (errors) or the caller inserts
     (signal anchors), kept across appends, front trims and refilters.
+  - `SourceLocator.swift`: Open in Editor's file lookup (source folders indexed by file name, ranked by package
+    path) and the launch URL or command for each editor.
   - `ScrollMarkerLayout.swift`: pixel runs for scroller tick marks (find, errors and signals).
   - `SoftwareUpdate.swift`: `SemanticVersion`, the GitHub Releases feed, and the updater's download, SHA-256 and
     bundle checks, and the shell that swaps the app after it quits.
@@ -97,6 +99,7 @@ an ad-hoc signed release once signed ones exist.
     mark.
   - `SignalsPopover.swift`: the status bar's crash badge, its popover of signal groups, and the occurrence
     context menu (`SignalOccurrenceMenu`).
+  - `SourceOpener.swift`: the source folders, their `SourceLocator`, and launching the chosen editor.
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
   - `WirelessModel.swift`, `WirelessConnectView.swift`, `QRCodeImage.swift`: the Connect over Wi-Fi sheet,
     its QR code, and the sidebar's Discovered list.
