@@ -182,9 +182,25 @@ final class AppModel {
                         FileHandle.standardError.write(Data("[logcatnip]     \(session.find.debugSummary())\n".utf8))
                     }
                 }
+                for session in self.sessions {
+                    guard let times = Self.fileTimesLine(for: session) else { continue }
+                    FileHandle.standardError.write(Data(times.utf8))
+                }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
+    }
+
+    /// The first and last log times of a file session as the table shows them and as Export writes them, to
+    /// check from a terminal that an import took the right year and that both agree on the milliseconds.
+    private static func fileTimesLine(for session: LogSession) -> String? {
+        guard case .file = session.source,
+              let first = session.entries.first(where: { $0.kind == .log }),
+              let last = session.entries.last(where: { $0.kind == .log })
+        else { return nil }
+        return "[logcatnip]   \(session.title) times: "
+            + "first=\"\(LogcatTime.format(first.timestamp))\" export=\(LogcatTime.formatEpoch(first.timestamp)) "
+            + "last=\"\(LogcatTime.format(last.timestamp))\" export=\(LogcatTime.formatEpoch(last.timestamp))\n"
     }
 
     private struct EntryKey: Hashable {

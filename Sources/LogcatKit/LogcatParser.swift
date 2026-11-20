@@ -35,11 +35,14 @@ public struct LogcatHeader: Sendable, Equatable {
 /// The header may carry an epoch (`-v epoch`) or a `[YYYY-]MM-DD HH:MM:SS.mmm` time, and an optional uid
 /// (`-v uid`) before the pid.
 public enum LogcatLongFormat {
-    public static func parseHeader(_ line: String) -> LogcatHeader? {
-        parseHeader(Substring(line))
+    /// `referenceDate` supplies the year of a header that has none (`nil` is now); see
+    /// ``LogcatTime/parse(date:time:timeZone:referenceDate:)``. It is optional so that non-header lines, which
+    /// are most of a stream, don't read the clock.
+    public static func parseHeader(_ line: String, referenceDate: Date? = nil) -> LogcatHeader? {
+        parseHeader(Substring(line), referenceDate: referenceDate)
     }
 
-    public static func parseHeader(_ line: Substring) -> LogcatHeader? {
+    public static func parseHeader(_ line: Substring, referenceDate: Date? = nil) -> LogcatHeader? {
         let utf8 = line.utf8
         guard utf8.first == UInt8(ascii: "["), utf8.last == UInt8(ascii: "]") else { return nil }
         let inner = line.dropFirst().dropLast()
@@ -73,7 +76,9 @@ public enum LogcatLongFormat {
         let timestamp: Double
         let idTokens: ArraySlice<Substring>
         if tokens[0].contains("-") {
-            guard tokens.count >= 2, let parsed = LogcatTime.parse(date: tokens[0], time: tokens[1]) else { return nil }
+            guard tokens.count >= 2,
+                  let parsed = LogcatTime.parse(date: tokens[0], time: tokens[1], referenceDate: referenceDate ?? Date())
+            else { return nil }
             timestamp = parsed
             idTokens = tokens.dropFirst(2)
         } else {
@@ -103,9 +108,10 @@ public enum LogcatLongFormat {
         return LogcatHeader(timestamp: timestamp, uid: uid, pid: pid, tid: tid, level: level, tag: String(tag))
     }
 
-    /// Formats an entry so that ``LogcatLongParser`` reads it back unchanged.
+    /// Formats an entry so that ``LogcatLongParser`` reads it back unchanged. The time is rounded like the
+    /// table's, so Export and the table never show different milliseconds.
     public static func format(_ entry: LogEntry) -> String {
-        let time = String(format: "%.3f", entry.timestamp)
+        let time = LogcatTime.formatEpoch(entry.timestamp)
         let uid = entry.uid.map { "\($0): " } ?? ""
         return "[ \(time) \(uid)\(entry.pid): \(entry.tid) \(entry.level.letter)/\(entry.tag) ]\n\(entry.message)\n\n"
     }
@@ -131,8 +137,13 @@ public struct LogcatLongParser: Sendable {
     private var pendingLines: [String] = []
     private var lastHeader: LogcatHeader?
     private var lastLineWasBlank = false
+    private let referenceDate: Date?
 
-    public init() {}
+    /// `referenceDate` supplies the year of headers that have none (a saved file's modification date). `nil`
+    /// means now, read per header, which is right for a live stream.
+    public init(referenceDate: Date? = nil) {
+        self.referenceDate = referenceDate
+    }
 
     public mutating func feed(_ data: Data) -> [LogEntry] {
         var output: [LogEntry] = []
@@ -170,8 +181,8 @@ public struct LogcatLongParser: Sendable {
     }
 
     /// Parses a complete text (for example a saved file).
-    public static func parse(_ text: String) -> [LogEntry] {
-        var parser = LogcatLongParser()
+    public static func parse(_ text: String, referenceDate: Date = Date()) -> [LogEntry] {
+        var parser = LogcatLongParser(referenceDate: referenceDate)
         var entries = parser.feed(Data(text.utf8))
         entries += parser.finish()
         return entries
@@ -179,7 +190,7 @@ public struct LogcatLongParser: Sendable {
 
     private mutating func consume(line rawLine: String, into output: inout [LogEntry]) {
         let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
-        if let header = LogcatLongFormat.parseHeader(line) {
+        if let header = LogcatLongFormat.parseHeader(line, referenceDate: referenceDate) {
             flush(into: &output)
             pendingHeader = header
             lastHeader = header
@@ -227,18 +238,19 @@ public struct LogcatLongParser: Sendable {
 ///
 /// Also accepts a leading year, an epoch time, and a uid column.
 public enum LogcatThreadtimeFormat {
-    public static func parseLine(_ line: String) -> LogEntry? {
-        parseLine(Substring(line))
+    /// `referenceDate` supplies the year of a line that has none; see ``LogcatTime/parse(date:time:timeZone:referenceDate:)``.
+    public static func parseLine(_ line: String, referenceDate: Date = Date()) -> LogEntry? {
+        parseLine(Substring(line), referenceDate: referenceDate)
     }
 
-    public static func parseLine(_ line: Substring) -> LogEntry? {
+    public static func parseLine(_ line: Substring, referenceDate: Date = Date()) -> LogEntry? {
         let tokens = line.split(separator: " ", maxSplits: 6, omittingEmptySubsequences: true)
         guard tokens.count >= 4 else { return nil }
 
         var cursor = 0
         let timestamp: Double
         if tokens[0].contains("-") {
-            guard let parsed = LogcatTime.parse(date: tokens[0], time: tokens[1]) else { return nil }
+            guard let parsed = LogcatTime.parse(date: tokens[0], time: tokens[1], referenceDate: referenceDate) else { return nil }
             timestamp = parsed
             cursor = 2
         } else {
@@ -292,11 +304,12 @@ public enum LogcatThreadtimeFormat {
     }
 
     /// Parses a whole threadtime file. Consecutive lines from the same record (same time, pid, tid, level and
-    /// tag, as logcat prints multi-line messages) are merged into one entry.
-    public static func parse(_ text: String) -> [LogEntry] {
+    /// tag, as logcat prints multi-line messages) are merged into one entry. One `referenceDate` serves every
+    /// line, so a file never straddles two guesses of the year.
+    public static func parse(_ text: String, referenceDate: Date = Date()) -> [LogEntry] {
         var entries: [LogEntry] = []
         text.enumerateLines { line, _ in
-            guard let entry = parseLine(line) else { return }
+            guard let entry = parseLine(line, referenceDate: referenceDate) else { return }
             if var last = entries.last,
                last.timestamp == entry.timestamp, last.pid == entry.pid, last.tid == entry.tid,
                last.level == entry.level, last.tag == entry.tag {
@@ -312,13 +325,22 @@ public enum LogcatThreadtimeFormat {
 
 /// Picks the right parser for a saved log file.
 public enum LogFileImporter {
-    public static func parse(_ text: String) -> [LogEntry] {
+    /// `referenceDate` supplies the year of lines that have none; see ``LogcatTime/parse(date:time:timeZone:referenceDate:)``.
+    public static func parse(_ text: String, referenceDate: Date = Date()) -> [LogEntry] {
         let firstLine = text.split(separator: "\n", maxSplits: 20, omittingEmptySubsequences: true)
             .first { !$0.hasPrefix("---------") }
         if let firstLine, firstLine.hasPrefix("[") {
-            return LogcatLongParser.parse(text)
+            return LogcatLongParser.parse(text, referenceDate: referenceDate)
         }
-        return LogcatThreadtimeFormat.parse(text)
+        return LogcatThreadtimeFormat.parse(text, referenceDate: referenceDate)
+    }
+
+    /// Reads and parses a saved log. Its modification date stands in for the year that threadtime and legacy
+    /// long lines lack; a file without one (or with unreadable attributes) falls back to now.
+    public static func load(contentsOf url: URL) throws -> [LogEntry] {
+        let data = try Data(contentsOf: url)
+        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return parse(String(decoding: data, as: UTF8.self), referenceDate: modified ?? Date())
     }
 }
 
