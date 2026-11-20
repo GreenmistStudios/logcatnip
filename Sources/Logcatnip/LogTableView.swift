@@ -643,6 +643,10 @@ struct LogTableView: NSViewRepresentable {
 
             menu.addItem(item("Copy", #selector(copyRows)))
             menu.addItem(item("Copy Message", #selector(copyMessage), entry.message))
+            if let occurrenceID = session.signals.occurrenceID(forEntryID: entry.id),
+               let occurrence = session.signals.occurrence(id: occurrenceID) {
+                menu.addItem(item(occurrence.kind.copyReportTitle, #selector(copyCrashReport), occurrenceID))
+            }
             guard entry.kind == .log else { return }
 
             menu.addItem(.separator())
@@ -674,6 +678,11 @@ struct LogTableView: NSViewRepresentable {
             guard let message = sender.representedObject as? String else { return }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(message, forType: .string)
+        }
+
+        @objc private func copyCrashReport(_ sender: NSMenuItem) {
+            guard let occurrenceID = sender.representedObject as? Int else { return }
+            session?.copyCrashReport(for: occurrenceID)
         }
 
         @objc private func addTerm(_ sender: NSMenuItem) {

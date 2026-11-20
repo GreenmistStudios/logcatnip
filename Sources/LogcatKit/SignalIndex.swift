@@ -133,6 +133,12 @@ public struct SignalIndex: Sendable {
         return ownerOfRelated[entryID]
     }
 
+    /// The newest occurrence of `kinds` whose anchor is at or before `entryID`.
+    public func occurrence(atOrBefore entryID: Int, kinds: Set<SignalKind> = Set(SignalKind.allCases)) -> SignalOccurrence? {
+        let end = entryID == .max ? occurrences.count : lowerBound(entryID + 1)
+        return occurrences[..<end].last { kinds.contains($0.kind) }
+    }
+
     // MARK: - Updates
 
     /// Classifies entries appended to the buffer. Entries must come in ascending id order across calls;

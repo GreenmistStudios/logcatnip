@@ -156,6 +156,17 @@ struct LogcatCommands: Commands {
             Button("Previous Crash") { session?.navigateSignal(.previous, kinds: SignalKind.fatal) }
                 .keyboardShortcut("'", modifiers: [.command, .shift])
                 .disabled(session?.hasCrashTargets != true)
+            Button("Copy Crash Report") {
+                guard let session else { return }
+                let selected = session.find.table?.selectedRowIndexes.first
+                if let id = session.reportOccurrenceID(nearRow: selected) {
+                    session.copyCrashReport(for: id)
+                } else {
+                    NSSound.beep()
+                }
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled((session?.signalSummary.fatalCount ?? 0) == 0)
             Button("Next Error") { session?.navigateError(.next) }
                 .keyboardShortcut("]")
                 .disabled(session?.hasErrorTargets != true)

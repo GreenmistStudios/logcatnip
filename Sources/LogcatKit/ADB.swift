@@ -226,8 +226,8 @@ public struct ADB: Sendable {
         guard result.status == 0 else { throw ADBError(result.stderr.isEmpty ? "adb start-server failed" : result.stderr) }
     }
 
-    public func shell(serial: String, _ command: String) async throws -> String {
-        let result = try await run(["-s", serial, "shell", command])
+    public func shell(serial: String, _ command: String, timeout: Duration = .seconds(30)) async throws -> String {
+        let result = try await run(["-s", serial, "shell", command], timeout: timeout)
         guard result.status == 0 else {
             throw ADBError(result.stderr.isEmpty ? "adb shell \(command) failed (\(result.status))" : result.stderr)
         }

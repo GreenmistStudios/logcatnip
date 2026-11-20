@@ -15,6 +15,8 @@ enum SettingsKey {
     static let recentWifiHosts = "recentWifiHosts"
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
+    /// Lines from the crashing process that Copy Crash Report includes before the crash.
+    static let crashReportContextLines = "crashReportContextLines"
     /// Owned by `UpdateController`, which also reads when it last checked and which version was skipped.
     static let checkForUpdates = UpdateController.Keys.automaticChecks
 }
@@ -22,6 +24,7 @@ enum SettingsKey {
 enum Defaults {
     static let maxEntries = 250_000
     static let fontSize = 12.0
+    static let crashReportContextLines = 50
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -34,6 +37,7 @@ enum Defaults {
             SettingsKey.recentWifiHosts: [String](),
             SettingsKey.filterPrecedenceChecked: false,
             SettingsKey.checkForUpdates: true,
+            SettingsKey.crashReportContextLines: crashReportContextLines,
         ])
     }
 
@@ -45,6 +49,10 @@ enum Defaults {
     static var logcatBuffers: [String] {
         let raw = UserDefaults.standard.string(forKey: SettingsKey.logcatBuffers) ?? ""
         return raw.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init)
+    }
+
+    static var crashReportContextLinesValue: Int {
+        max(0, UserDefaults.standard.integer(forKey: SettingsKey.crashReportContextLines))
     }
 
     static var maxEntriesValue: Int {

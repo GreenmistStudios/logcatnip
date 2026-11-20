@@ -139,6 +139,10 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var processRefreshQueued = false
     @ObservationIgnored private var lastProcessRefresh = Date.distantPast
     @ObservationIgnored private var processResolver = ProcessNameResolver()
+    /// `dumpsys package` results by package (a nil version when the device doesn't have it), so repeated copies
+    /// don't wait on adb. They expire after `appVersionLifetime` and on clear, since the app may be reinstalled.
+    @ObservationIgnored private var appVersions: [String: (version: AppVersion?, fetched: ContinuousClock.Instant)] = [:]
+    private static let appVersionLifetime: Duration = .seconds(30)
 
     init(source: Source, adb: ADB? = nil, simctl: Simctl? = nil, model: AppModel) {
         self.source = source
@@ -769,6 +773,7 @@ final class LogSession: Identifiable {
         visibilityGeneration += 1
         signals.reset()
         updateSignalSummary()
+        appVersions.removeAll()
         firstID = nextID
         lastFilteredID = nextID - 1
         filterGeneration += 1
@@ -886,12 +891,7 @@ final class LogSession: Identifiable {
     // MARK: Text output
 
     func formattedLine(for entry: LogEntry) -> String {
-        if entry.kind == .marker {
-            return "--------- \(entry.message)"
-        }
-        let time = LogcatTime.format(entry.timestamp)
-        let process = processName(for: entry) ?? "?"
-        return "\(time) \(entry.pid)-\(entry.tid) \(entry.tag) \(process) \(entry.level.letter)  \(entry.message)"
+        entry.formattedLine()
     }
 
     /// Text for the given rows, one line per entry (a multi-line message is copied once, in full).
@@ -904,6 +904,74 @@ final class LogSession: Identifiable {
             lines.append(formattedLine(for: entry))
         }
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: Crash reports
+
+    /// The crash, native crash or ANR the Copy Crash Report command means: the selected row's, otherwise the
+    /// newest one before the selection, otherwise the newest in the buffer. Leaks, out of memory and jank are
+    /// copied from their row or popover menus (Copy Report), so the command title always fits.
+    func reportOccurrenceID(nearRow rowIndex: Int?) -> Int? {
+        guard let rowIndex, rowIndex < rows.count else {
+            return signals.occurrence(atOrBefore: Int.max, kinds: SignalKind.fatal)?.id
+        }
+        let entryID = rows[rowIndex].entryID
+        if let id = signals.occurrenceID(forEntryID: entryID), signals.occurrence(id: id)?.kind.isFatal == true {
+            return id
+        }
+        return (signals.occurrence(atOrBefore: entryID, kinds: SignalKind.fatal)
+            ?? signals.occurrence(atOrBefore: Int.max, kinds: SignalKind.fatal))?.id
+    }
+
+    /// Markdown for one occurrence, with the device's model and build and the app's installed version. The
+    /// version comes from the device, so it's the one installed now; it's looked up once per package.
+    func crashReport(for occurrenceID: Int) async -> String? {
+        guard let occurrence = signals.occurrence(id: occurrenceID) else { return nil }
+        let context = CrashReport.contextEntries(
+            for: occurrence, in: entries, firstID: firstID, lines: Defaults.crashReportContextLinesValue
+        )
+        let anchorProcess = context.first { $0.id == occurrence.id }?.processName
+        let package = occurrence.package ?? anchorProcess.map(LogEntry.packageName(forProcess:))
+        var device: DeviceInfo?
+        var source: String?
+        switch self.source {
+        case let .device(serial, _):
+            device = model?.device(serial: serial)?.properties.map(DeviceInfo.init(properties:)) ?? DeviceInfo()
+        case let .file(url):
+            source = url.lastPathComponent
+        case .simulator:
+            source = baseTitle
+        }
+        let app = await appVersion(of: package)
+        return CrashReport(
+            occurrence: occurrence, device: device, source: source, app: app, package: package, context: context
+        ).markdown()
+    }
+
+    func copyCrashReport(for occurrenceID: Int) {
+        Task {
+            guard let report = await crashReport(for: occurrenceID) else {
+                NSSound.beep()
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(report, forType: .string)
+        }
+    }
+
+    private func appVersion(of package: String?) async -> AppVersion? {
+        // The name goes into a shell command, so only package-name characters are let through.
+        guard let package, let serial, let adb, !package.isEmpty,
+              package.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "_") })
+        else { return nil }
+        if let cached = appVersions[package], cached.fetched.duration(to: .now) < Self.appVersionLifetime {
+            return cached.version
+        }
+        let output = try? await adb.shell(serial: serial, "dumpsys package \(package)", timeout: .seconds(2))
+        let version = output.flatMap { AppVersion.parse(dumpsysPackage: $0) }
+        // A timeout or adb error is tried again next time; a package the device doesn't know isn't, until it expires.
+        if output != nil { appVersions[package] = (version, .now) }
+        return version
     }
 
     /// The buffer in `logcat -v long` format, which Logcatnip and Android Studio can both read back.
