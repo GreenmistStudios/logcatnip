@@ -109,6 +109,8 @@ final class AppModel {
     @ObservationIgnored private var simulatorTask: Task<Void, Never>?
     @ObservationIgnored private var autoOpenedIdentities: Set<DeviceIdentity> = []
     @ObservationIgnored private var autoOpenedSimulators: Set<String> = []
+    /// The longest the main actor was stuck since the last debug report; see `startDebugReporting`.
+    @ObservationIgnored private var mainLagMax: Duration = .zero
 
     /// Devices grouped by identity, one entry per physical device.
     var deviceGroups: [DeviceGroup] {
@@ -156,6 +158,17 @@ final class AppModel {
 
     /// Prints session state to stderr every few seconds, for diagnosing the app from a terminal.
     private func startDebugReporting() {
+        // A 50 ms timer on the main actor that notices when it fires late: that delay is how long the main thread
+        // was busy, which is what "the UI stays responsive" means while a big file loads.
+        Task { [weak self] in
+            let clock = ContinuousClock()
+            while let self {
+                let start = clock.now
+                try? await Task.sleep(for: .milliseconds(50))
+                let lag = clock.now - start - .milliseconds(50)
+                if lag > self.mainLagMax { self.mainLagMax = lag }
+            }
+        }
         Task { [weak self] in
             while let self {
                 let devices = self.devices.map {
@@ -165,6 +178,10 @@ final class AppModel {
                 let header = "[logcatnip] devices=\(devices) groups=\(self.deviceGroups.count) simulators=\(simulators) "
                     + "sessions=\(self.sessions.count)\n"
                 FileHandle.standardError.write(Data(header.utf8))
+                let lagMilliseconds = Int(self.mainLagMax.components.seconds * 1000
+                    + self.mainLagMax.components.attoseconds / 1_000_000_000_000_000)
+                FileHandle.standardError.write(Data("[logcatnip] mainLagMax=\(lagMilliseconds)ms\n".utf8))
+                self.mainLagMax = .zero
                 FileHandle.standardError.write(Data("[logcatnip] \(self.wireless.debugSummary)\n".utf8))
                 for session in self.sessions {
                     let stats = session.processNameStats
@@ -186,6 +203,10 @@ final class AppModel {
                     guard let times = Self.fileTimesLine(for: session) else { continue }
                     FileHandle.standardError.write(Data(times.utf8))
                 }
+                for session in self.sessions {
+                    guard let load = Self.fileLoadLine(for: session) else { continue }
+                    FileHandle.standardError.write(Data(load.utf8))
+                }
                 try? await Task.sleep(for: .seconds(3))
             }
         }
@@ -201,6 +222,25 @@ final class AppModel {
         return "[logcatnip]   \(session.title) times: "
             + "first=\"\(LogcatTime.format(first.timestamp))\" export=\(LogcatTime.formatEpoch(first.timestamp)) "
             + "last=\"\(LogcatTime.format(last.timestamp))\" export=\(LogcatTime.formatEpoch(last.timestamp))\n"
+    }
+
+    /// How a file session's load is going and what it found: the format, progress, the device and the process name
+    /// of its first entry, to check an import from a terminal.
+    private static func fileLoadLine(for session: LogSession) -> String? {
+        guard case .file = session.source, let loader = session.fileLoader else { return nil }
+        let percent = Int((loader.progress?.fraction ?? 0) * 100)
+        let loadText: String
+        switch loader.state {
+        case .running: loadText = loader.progress?.phase == .extracting ? "extracting" : "running \(percent)%"
+        case .finished: loadText = "done " + String(format: "%.1fs", loader.elapsed ?? 0)
+        case .cancelled: loadText = "stopped \(percent)%"
+        case let .failed(message): loadText = "failed \(message)"
+        }
+        let firstProcess = session.entries.first { $0.kind == .log }.flatMap { session.processName(for: $0) }
+        return "[logcatnip]   \(session.title) file: format=\(loader.format?.rawValue ?? "?") "
+            + "section=\(session.fileSection.rawValue) load=\(loadText) "
+            + "delivered=\(loader.delivered[session.fileSection] ?? 0) firstProcess=\(firstProcess ?? "-") "
+            + "info=\"\(session.fileInfo?.summary ?? "-")\"\n"
     }
 
     private struct EntryKey: Hashable {
@@ -490,16 +530,24 @@ final class AppModel {
     }
 
     func openFile(_ url: URL) {
-        let session = LogSession(source: .file(url), model: self)
-        sessions.append(session)
+        let session = addFileSession(url: url, section: .main)
         selectedSessionID = session.id
+        FileLoader(url: url, primary: session, model: self).start()
+    }
+
+    /// A session for a file. Bug reports add one per extra buffer while they load.
+    @discardableResult
+    func addFileSession(url: URL, section: LogFileSection) -> LogSession {
+        let session = LogSession(source: .file(url), adb: adb, model: self)
+        session.fileSection = section
+        sessions.append(session)
         refreshTitles()
         if let initialFilter = ProcessInfo.processInfo.environment["LOGCATNIP_FILTER"] {
             session.filterQuery = initialFilter
             session.applyFilterNow()
         }
         applyDebugFind(to: session)
-        session.loadFile()
+        return session
     }
 
     func close(_ session: LogSession) {

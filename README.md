@@ -37,10 +37,14 @@ Android Studio's Logcat window.
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or set the
   minimum level.
 - **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker.
-- **Import and export.** Export in `logcat -v long` format. Open long or threadtime (`adb logcat` default,
-  bug report) files, or drop them on the window. Threadtime and old `-v long` lines have no year, so
-  Logcatnip takes it from the file's modification date, and a time more than a day after that date
-  belongs to the year before. Lines that carry a year (`-v year`) keep it.
+- **Import and export.** Open Android Studio `.logcat` files (with the filter they were saved with and the
+  device), bug reports from `adb bugreport` (`.zip` or `.txt`; the system, event and radio logs open as
+  separate sessions, with the device and build fingerprint in the status bar), Firebase Crashlytics logs, and
+  threadtime, `-v long`, `-v time` and `-v brief` text. Drop files on the window or use File › Open Log File…
+  (⌘O). Large files load in the background with a progress bar and Cancel; Logcatnip keeps the newest entries
+  up to Settings › Logcat › Keep up to. Export writes `logcat -v long` format. Threadtime and old `-v long`
+  lines have no year, so Logcatnip takes it from the file's modification date, and a time more than a day
+  after that date belongs to the year before. Lines that carry a year (`-v year`) keep it.
 - Pause, clear the view, clear the device buffer (`logcat -c`), and restart logcat.
 - Android 6.0 and older: their logcat has no `-v epoch` or `-v uid`, so Logcatnip reads device-local times
   (in the Mac's time zone) and shows no uid. It switches automatically when getprop or logcat reports an old
@@ -120,7 +124,8 @@ with that query, and `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at
 `LOGCATNIP_WIFI_SHEET=qr|code|ip` opens the Connect over Wi-Fi sheet, `LOGCATNIP_WIFI_CONNECT=host:port|discovered`
 connects, and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` pairs, without clicking.
 For files opened with `LOGCATNIP_OPEN`, `LOGCATNIP_DEBUG=1` also prints each file's first and last times as the
-table shows them and as Export writes them.
+table shows them and as Export writes them, and a `file:` line per opened file (format, load progress, device).
+The report also shows `mainLagMax`, the longest main-thread stall in the last few seconds.
 
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch, and `LOGCATNIP_UPDATE_INSTALL=1` with it downloads and
 installs what it finds without clicking. `LOGCATNIP_UPDATE_FEED=/path/release.json` (or a URL) reads releases from
@@ -226,7 +231,8 @@ device's unified log.
 
 ## Layout
 
-- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, unified log NDJSON), the filter language,
+- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, `-v brief`, unified log NDJSON), reading saved
+  logs (Android Studio `.logcat` files, bug reports, chunked and off the main thread), the filter language,
   find, adb (device tracking, logcat streaming, process names, wireless pairing and mDNS discovery) and
   simctl (simulators, `log stream`). No UI
   dependencies.
