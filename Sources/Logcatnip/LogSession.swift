@@ -3,13 +3,16 @@ import Foundation
 import LogcatKit
 import Observation
 
-/// One log view: a live logcat stream from a device, or an imported file. Owns the entry buffer, the
-/// filter, and the filtered rows the table shows.
+/// One log view: a live logcat stream from a device, a simulator's `log stream`, or an imported file. Owns
+/// the entry buffer, the filter, and the filtered rows the table shows.
 @MainActor
 @Observable
 final class LogSession: Identifiable {
     enum Source: Equatable {
-        case device(serial: String)
+        /// `serial` is the adb transport now in use; it changes when the device reconnects on a new port or
+        /// switches between USB and Wi-Fi. `identity` stays with the session.
+        case device(serial: String, identity: DeviceIdentity)
+        case simulator(udid: String)
         case file(URL)
     }
 
@@ -52,7 +55,9 @@ final class LogSession: Identifiable {
     }
 
     let id = UUID()
-    let source: Source
+    private(set) var source: Source
+    /// Find-in-results for this session's rows.
+    let find = FindController()
     private(set) var baseTitle = ""
     var title = ""
     private(set) var status: Status = .starting
@@ -75,10 +80,10 @@ final class LogSession: Identifiable {
 
     @ObservationIgnored private(set) var entries: [LogEntry] = []
     @ObservationIgnored private(set) var rows: [Row] = []
-    @ObservationIgnored private(set) var processNames: [Int32: String] = [:]
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
+    @ObservationIgnored private let simctl: Simctl?
     @ObservationIgnored private weak var model: AppModel?
     @ObservationIgnored private var firstID = 0
     @ObservationIgnored private var nextID = 0
@@ -93,30 +98,71 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var streamToken: UUID?
     @ObservationIgnored private var lastTimestamp: Double?
     @ObservationIgnored private var resumeAfter: Double?
-    @ObservationIgnored private var useLegacyFormat = false
+    /// Set when logcat itself reported that it has no `-v epoch` / `-v uid`; a transient failure never sets it.
+    @ObservationIgnored private var legacyFormatDetected = false
+    /// Whether the current stream passes `-v epoch -v uid`; read by the debug report.
+    @ObservationIgnored private(set) var streamsModernFormat = true
     @ObservationIgnored private var restartAttempts = 0
 
     @ObservationIgnored private var processRefreshInFlight = false
     @ObservationIgnored private var processRefreshQueued = false
     @ObservationIgnored private var lastProcessRefresh = Date.distantPast
-    @ObservationIgnored private var unresolvablePids: Set<Int32> = []
+    @ObservationIgnored private var processResolver = ProcessNameResolver()
 
-    init(source: Source, adb: ADB?, model: AppModel) {
+    init(source: Source, adb: ADB? = nil, simctl: Simctl? = nil, model: AppModel) {
         self.source = source
         self.adb = adb
+        self.simctl = simctl
         self.model = model
+        find.session = self
     }
 
+    /// The adb serial of an Android device session.
     var serial: String? {
-        if case let .device(serial) = source { serial } else { nil }
+        if case let .device(serial, _) = source { serial } else { nil }
+    }
+
+    var identity: DeviceIdentity? {
+        if case let .device(_, identity) = source { identity } else { nil }
+    }
+
+    /// The UDID of a simulator session.
+    var udid: String? {
+        if case let .simulator(udid) = source { udid } else { nil }
+    }
+
+    /// Whether logs stream from a device or simulator, as opposed to a file.
+    var isStreamSource: Bool { serial != nil || udid != nil }
+
+    /// The command that produces the logs, for menus and markers.
+    var streamName: String { udid != nil ? "log stream" : "logcat" }
+
+    private var isSourceOnline: Bool {
+        switch source {
+        case let .device(serial, _): model?.device(serial: serial)?.isOnline ?? false
+        case let .simulator(udid): model?.simulator(udid: udid) != nil
+        case .file: false
+        }
     }
 
     var isLive: Bool { status == .streaming || status == .starting }
 
     func refreshBaseTitle() {
         switch source {
-        case let .device(serial):
-            baseTitle = model?.device(serial: serial)?.displayName ?? serial
+        case let .device(serial, _):
+            // A device that went away keeps its name while the session waits for it to come back.
+            if let device = model?.device(serial: serial) {
+                baseTitle = device.displayName
+            } else if baseTitle.isEmpty {
+                baseTitle = serial
+            }
+        case let .simulator(udid):
+            if let simulator = model?.simulator(udid: udid) {
+                baseTitle = simulator.name
+            } else if baseTitle.isEmpty {
+                // Keep the name once the simulator shuts down.
+                baseTitle = udid
+            }
         case let .file(url):
             baseTitle = url.lastPathComponent
         }
@@ -130,19 +176,45 @@ final class LogSession: Identifiable {
         return entries[index]
     }
 
-    func processName(for entry: LogEntry) -> String? {
-        entry.processName ?? processNames[entry.pid]
+    /// Id of the oldest entry still in the buffer. Entries are indexed by `id - firstEntryID`.
+    var firstEntryID: Int { firstID }
+
+    /// Index of `row` in `rows`, or nil when it is gone (trimmed, or filtered out).
+    func rowIndex(of row: Row) -> Int? {
+        let index = firstRowIndex(atOrAfter: row.entryID) + Int(row.line)
+        guard index < rows.count, rows[index] == row else { return nil }
+        return index
     }
+
+    /// Names are stamped on entries at ingestion or when a `ps` snapshot resolves them. There is no
+    /// pid-map fallback: a reused pid would rename the unresolved entries of the process that died.
+    func processName(for entry: LogEntry) -> String? {
+        entry.processName
+    }
+
+    /// How many pids the resolver knows, is waiting on, or gave up on. For debug output.
+    var processNameStats: ProcessNameResolver.Stats { processResolver.stats }
 
     // MARK: Streaming
 
     func start() {
-        guard case let .device(serial) = source, let adb else { return }
+        let stream: AsyncStream<LogStreamEvent>
+        switch source {
+        case let .device(serial, _):
+            guard let adb else { return }
+            let api = model?.device(serial: serial)?.properties?.apiLevel
+            let modern = !legacyFormatDetected && ADB.LogcatOptions.modernFormatSupported(apiLevel: api)
+            streamsModernFormat = modern
+            let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
+            stream = adb.logcat(serial: serial, options: options)
+        case let .simulator(udid):
+            guard let simctl else { return }
+            stream = simctl.logStream(udid: udid)
+        case .file:
+            return
+        }
         streamTask?.cancel()
         status = .starting
-        let api = model?.device(serial: serial)?.properties?.apiLevel
-        let modern = !useLegacyFormat && (api ?? 99) >= 24
-        let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
         let token = UUID()
         streamToken = token
         requestProcessNames()
@@ -150,7 +222,7 @@ final class LogSession: Identifiable {
         streamTask = Task { [weak self] in
             var receivedAny = false
             self?.status = .streaming
-            for await event in adb.logcat(serial: serial, options: options) {
+            for await event in stream {
                 guard let self, self.streamToken == token else { return }
                 switch event {
                 case let .entries(batch):
@@ -159,8 +231,8 @@ final class LogSession: Identifiable {
                         self.restartAttempts = 0
                     }
                     self.ingest(batch)
-                case let .ended(status, error):
-                    self.logcatEnded(status: status, error: error, receivedAny: receivedAny, modernFormat: modern)
+                case let .ended(exit):
+                    self.logcatEnded(exit)
                 }
             }
         }
@@ -174,57 +246,86 @@ final class LogSession: Identifiable {
         if isLive { status = .stopped }
     }
 
-    /// Clears the view and starts logcat again from the start of the device buffer.
+    /// Clears the view and starts the stream again: logcat from the start of the device buffer, a simulator's
+    /// `log stream` from now.
     func restart() {
         stop()
         clear()
         resumeAfter = nil
         lastTimestamp = nil
+        legacyFormatDetected = false
+        restartAttempts = 0
         start()
     }
 
     func deviceWentOffline() {
-        guard serial != nil, status != .disconnected, status != .stopped else { return }
+        guard isStreamSource, status != .disconnected, status != .stopped else { return }
         streamToken = nil
         streamTask?.cancel()
         status = .disconnected
-        appendMarker("Device disconnected")
+        appendMarker(disconnectedText)
     }
 
-    func deviceCameOnline() {
-        guard status == .disconnected else { return }
-        appendMarker("Device reconnected")
+    /// Replaces the identity once it is known, for a session opened before getprop answered.
+    func adopt(identity: DeviceIdentity) {
+        guard case let .device(serial, _) = source else { return }
+        source = .device(serial: serial, identity: identity)
+    }
+
+    /// Streams from `newSerial` from now on: the device came back, maybe on a new port or transport, or a
+    /// better transport of the same device appeared. Resumes after the last entry, so nothing repeats or
+    /// goes missing beyond what the device's buffer has already dropped.
+    func reattach(serial newSerial: String, transport: DeviceTransport) {
+        guard case let .device(_, identity) = source, status != .stopped else { return }
+        let reconnected = status == .disconnected
+        streamToken = nil
+        streamTask?.cancel()
+        streamTask = nil
+        source = .device(serial: newSerial, identity: identity)
+        let via = transport == .emulator ? newSerial : transport.label
+        appendMarker(reconnected ? "Device reconnected (\(via))" : "Switched to \(via)")
         resumeAfter = lastTimestamp
+        restartAttempts = 0
         start()
     }
 
-    private func logcatEnded(status exitStatus: Int32, error: String, receivedAny: Bool, modernFormat: Bool) {
+    /// Resumes a simulator session after the simulator boots again. Its UDID never changes, so unlike
+    /// `reattach` there is no transport to switch to.
+    func simulatorBooted() {
+        guard udid != nil, status == .disconnected else { return }
+        appendMarker("Simulator booted")
+        resumeAfter = lastTimestamp
+        restartAttempts = 0
+        start()
+    }
+
+    private func logcatEnded(_ exit: LogcatExit) {
         streamToken = nil
-        let message = error.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !receivedAny, modernFormat, exitStatus != 0, !useLegacyFormat {
-            // Pre-Nougat logcat rejects -v epoch / -v uid.
-            useLegacyFormat = true
+        switch exit.recovery(restartAttempts: restartAttempts, deviceOnline: isSourceOnline) {
+        case .useLegacyFormat:
+            legacyFormatDetected = true
+            appendMarker("logcat doesn't support -v epoch or -v uid; using the legacy format")
             start()
-            return
-        }
-        let online = serial.flatMap { model?.device(serial: $0)?.isOnline } ?? false
-        if online, restartAttempts < 3 {
+        case .restart:
             restartAttempts += 1
-            appendMarker("logcat exited\(message.isEmpty ? "" : ": \(message)"); restarting")
+            appendMarker("\(streamName) exited\(exit.detail.map { ": \($0)" } ?? " (\(exit.status))"); restarting")
             resumeAfter = lastTimestamp
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(1))
-                guard let self, self.streamToken == nil, self.status != .stopped else { return }
+                guard let self, self.streamToken == nil, self.isLive else { return }
                 self.start()
             }
-            return
-        }
-        if online {
-            status = .failed(message.isEmpty ? "logcat exited (\(exitStatus))" : message)
-        } else {
+        case .waitForDevice:
             status = .disconnected
-            appendMarker("Device disconnected")
+            appendMarker(disconnectedText)
+        case let .fail(message):
+            status = .failed(message)
+            appendMarker("\(streamName) failed: \(message)")
         }
+    }
+
+    private var disconnectedText: String {
+        udid != nil ? "Simulator shut down" : "Device disconnected"
     }
 
     func loadFile() {
@@ -252,8 +353,16 @@ final class LogSession: Identifiable {
 
     // MARK: Ingestion
 
+    /// Shows a fixed set of entries, as if loaded from a file, and filters them right away instead of on
+    /// the next flush. Screenshot tests use it to render the table without adb.
+    func show(_ batch: [LogEntry], status: Status = .loaded) {
+        ingest(batch)
+        self.status = status
+        flushRows()
+    }
+
     private func ingest(_ batch: [LogEntry]) {
-        var sawUnknownPid = false
+        let now = ProcessInfo.processInfo.systemUptime
         entries.reserveCapacity(entries.count + batch.count)
         for var entry in batch {
             if let resumeAfter {
@@ -263,18 +372,12 @@ final class LogSession: Identifiable {
             }
             entry.id = nextID
             nextID += 1
-            if entry.processName == nil, entry.pid > 0 {
-                if let name = processNames[entry.pid] {
-                    entry.processName = name
-                } else if !unresolvablePids.contains(entry.pid) {
-                    sawUnknownPid = true
-                }
-            }
+            processResolver.stamp(&entry, now: now)
             lastTimestamp = entry.timestamp
             entries.append(entry)
         }
         trimIfNeeded()
-        if sawUnknownPid { requestProcessNames() }
+        if processResolver.needsLookup { requestProcessNames() }
         scheduleFlush()
     }
 
@@ -309,6 +412,7 @@ final class LogSession: Identifiable {
         }
         visibleCount = max(0, visibleCount - removedEntries)
         rows.removeFirst(removedRows)
+        find.rowsRemovedFront(removedRows)
         onRowsChanged?(.reloaded(removedFront: removedRows))
     }
 
@@ -353,6 +457,7 @@ final class LogSession: Identifiable {
         let start = rows.count
         rows.append(contentsOf: newRows)
         visibleCount += matched
+        find.rowsAppended()
         onRowsChanged?(.appended(start..<rows.count))
     }
 
@@ -369,7 +474,7 @@ final class LogSession: Identifiable {
     // MARK: Filtering
 
     private func filterContext() -> FilterContext {
-        FilterContext(processNames: processNames, myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970)
+        FilterContext(myPackages: Defaults.myPackages, now: Date().timeIntervalSince1970)
     }
 
     private func scheduleFilterUpdate() {
@@ -422,6 +527,7 @@ final class LogSession: Identifiable {
             self.rows = firstValid == 0 ? rows : Array(rows[firstValid...])
             self.visibleCount = firstValid == 0 ? visible : Set(self.rows.map(\.entryID)).count
             self.lastFilteredID = lastID
+            self.find.rowsReplaced()
             self.onRowsChanged?(.reloaded(removedFront: 0))
             self.flushRows()
         }
@@ -449,6 +555,7 @@ final class LogSession: Identifiable {
         refilterInFlight = false
         totalCount = 0
         visibleCount = 0
+        find.rowsReplaced()
         onRowsChanged?(.reloaded(removedFront: 0))
     }
 
@@ -486,36 +593,28 @@ final class LogSession: Identifiable {
         }
         processRefreshInFlight = true
         lastProcessRefresh = Date()
+        let lookup = processResolver.beginLookup(seq: nextID)
         Task { [weak self] in
             let names = try? await adb.processes(serial: serial)
             guard let self else { return }
             self.processRefreshInFlight = false
-            if let names { self.applyProcessNames(names) }
-            if self.processRefreshQueued {
+            if let names {
+                self.applyProcessNames(names, from: lookup)
+            } else {
+                self.processResolver.cancelLookup(lookup)
+            }
+            // After a failure, retry only when asked again, so an unreachable device is not polled.
+            if self.processRefreshQueued || (names != nil && self.processResolver.needsLookup) {
                 self.processRefreshQueued = false
                 self.requestProcessNames()
             }
         }
     }
 
-    private func applyProcessNames(_ names: [Int32: String]) {
-        processNames.merge(names) { _, new in new }
-        // Fill in recent entries that arrived before their process was known; give up on pids that have
-        // already exited so they don't trigger refreshes forever.
-        var stillUnknown: Set<Int32> = []
-        var index = entries.count - 1
-        let stop = max(0, entries.count - 50_000)
-        while index >= stop {
-            if entries[index].processName == nil, entries[index].pid > 0 {
-                if let name = names[entries[index].pid] {
-                    entries[index].processName = name
-                } else {
-                    stillUnknown.insert(entries[index].pid)
-                }
-            }
-            index -= 1
-        }
-        unresolvablePids.formUnion(stillUnknown)
+    private func applyProcessNames(_ names: [Int32: String], from lookup: ProcessNameResolver.Lookup) {
+        let update = processResolver.applySnapshot(names, from: lookup, now: ProcessInfo.processInfo.systemUptime)
+        // Cells only change when entries got a name, so skip the refresh otherwise.
+        guard update.apply(to: &entries) > 0 else { return }
         if filter.dependsOnProcessNames {
             refilter()
         } else {

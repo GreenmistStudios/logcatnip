@@ -90,6 +90,39 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
         #expect(throws: FilterError.self) { try LogFilter("is:bad") }
     }
 
+    @Test func isCrashIncludesNativeSignalsAndInputTimeouts() throws {
+        let signal = entry(tag: "libc", message: "Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 1 (main), pid 1 (com.example.app)", level: .assert)
+        #expect(try matches("is:crash", signal))
+        let timeout = entry(tag: "InputDispatcher", message: "Application is not responding: Window{1 u0 com.example.app/com.example.app.MainActivity}. Input dispatching timed out", level: .info)
+        #expect(try matches("is:crash", timeout))
+        #expect(try !matches("is:crash", entry(tag: "LeakCanary", message: "┬───", level: .debug)))
+    }
+
+    @Test func isAnrLeakAndJank() throws {
+        let anr = entry(tag: "ActivityManager", message: "ANR in com.example.app\nPID: 1\nReason: executing service com.example.app/.SyncService", level: .error)
+        let reason = entry(tag: "ActivityManager", message: "Reason: executing service com.example.app/.SyncService", level: .error)
+        let leak = entry(tag: "WindowManager", message: "\nandroid.view.WindowLeaked: Activity com.example.app.MainActivity has leaked window DecorView@1[MainActivity] that was originally added here", level: .error)
+        let jank = entry(tag: "Choreographer", message: "Skipped 45 frames!  The application may be doing too much work on its main thread.")
+        let smallJank = entry(tag: "Choreographer", message: "Skipped 3 frames!  The application may be doing too much work on its main thread.")
+
+        #expect(try matches("is:anr", anr))
+        // Enrichment lines belong to an occurrence but aren't one.
+        #expect(try !matches("is:anr", reason))
+        #expect(try !matches("is:anr", leak))
+        #expect(try matches("is:leak", leak))
+        #expect(try !matches("is:leak", jank))
+        #expect(try matches("is:jank", jank))
+        #expect(try matches("IS:JANK", jank))
+        #expect(try !matches("is:jank", smallJank))
+        #expect(try !matches("is:jank", entry(level: .error)))
+
+        #expect(try matches("is:anr is:leak", leak))
+        #expect(try sameMeaning("is:anr is:leak", "is:anr | is:leak"))
+        #expect(try sameMeaning("is:jank is:crash", "is:jank | is:crash"))
+        #expect(try matches("-is:jank", smallJank))
+        #expect(try !matches("is:jank tag:Choreographer & level:error", jank))
+    }
+
     @Test func isLevelMatchesExactlyThatLevel() throws {
         for level in LogLevel.allCases {
             let query = "is:\(level.name.lowercased())"

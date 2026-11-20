@@ -4,20 +4,36 @@ A native macOS app for reading Android logcat. It follows every connected device
 per device (or several per device, each with its own filter), and filters with the same query language as
 Android Studio's Logcat window.
 
+![Logcatnip showing a live logcat session from a Samsung device, filtered with -message:setFrame](docs/screenshot.png)
+
 ## Features
 
-- **Devices and sessions.** Devices appear in the sidebar as adb reports them. Open one or more logcat
-  sessions per device; each has its own filter, pause state and buffer. When a device disconnects, its
-  sessions keep their logs and resume where they left off when it comes back.
+- **Devices and sessions.** Each physical device gets one sidebar row, with icons for how it is connected
+  (USB, Wi-Fi, emulator). Open one or more logcat sessions per device; each has its own filter, pause state
+  and buffer. Sessions follow the device rather than the adb serial: when it disconnects they keep their
+  logs and resume where they left off when it comes back, even on a new Wi-Fi port, as an emulator on
+  another port, or over Wi-Fi after you unplug USB. When both USB and Wi-Fi are connected, logs stream over
+  USB.
+- **Wireless debugging.** Devices › + › Connect over Wi-Fi… (⇧⌘N) pairs an Android 11 or later device with a
+  QR code or a pairing code, or connects to `host:port` (recent hosts are remembered). Devices that
+  advertise wireless debugging but aren't connected appear under Discovered with a Connect button. Devices
+  connected by address can be disconnected from their context menu; adb can't disconnect devices it
+  connected over mDNS, so turn off Wireless debugging on the device for those. If `adb server-status` shows
+  `mdns_enabled: false`, the window explains how to turn mDNS on.
 - **Android Studio filter syntax.** `tag:`, `package:`, `process:`, `message:`, `line:`, `level:`, `age:`,
   `is:crash`, `is:stacktrace`, `is:firebase`, `is:<level>`, `name:`, plus `pid:` and `tid:`. Every text key
   supports contains (`key:`), exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with
   `&`, `|` and parentheses. Spaces have the lowest precedence, and same-key terms are ORed, as in Android
-  Studio.
+  Studio. Logcatnip adds `is:anr`, `is:leak` and `is:jank` for ANRs, leaks and skipped frames.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header), and follow mode that stops when you scroll up. Long
   lines scroll horizontally, or turn on Wrap Lines in the toolbar to wrap them to the window width.
+- **Find in results.** ⌘F opens a find bar that searches the tag and message of the rows shown (after the
+  filter), with match case, regex and whole word options. Every match is highlighted, the current one in
+  orange, with an "N of M" counter and tick marks on the scroller. Return or ⌘G goes to the next match,
+  ⇧Return or ⇧⌘G to the previous (both wrap), ⌘E searches for the selected text or line, and Esc closes the
+  bar. ⌘L focuses the filter.
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or to show its
   level and above. The new term applies to the whole query: Show Only replaces the query's top-level terms
   for that key instead of ORing with them, and a query with a top-level `|` is wrapped in parentheses first.
@@ -26,6 +42,39 @@ Android Studio's Logcat window.
 - **Import and export.** Export in `logcat -v long` format. Open long or threadtime (`adb logcat` default,
   bug report) files, or drop them on the window.
 - Pause, clear the view, clear the device buffer (`logcat -c`), and restart logcat.
+- Android 6.0 and older: their logcat has no `-v epoch` or `-v uid`, so Logcatnip reads device-local times
+  (in the Mac's time zone) and shows no uid. It switches automatically when getprop or logcat reports an old
+  release.
+- If logcat rejects an option, for example an unknown buffer in Settings › Logcat › Buffers, the status bar
+  shows logcat's message. Fix the setting and choose Restart Logcat.
+- **iOS simulators.** Booted simulators (iOS, watchOS, tvOS, visionOS) appear in the sidebar next to Android
+  devices. A simulator session streams its unified log with `simctl spawn <udid> log stream`, and uses the
+  same table, filters and export. See [iOS simulator logs](#ios-simulator-logs).
+
+## Install and update
+
+Download `Logcatnip-X.Y.Z.dmg` from the [releases page](https://github.com/GreenmistStudios/logcatnip/releases),
+open it and drag Logcatnip onto Applications. Releases are signed with a Developer ID and notarized by Apple, so
+macOS opens them without a warning. (Releases before Developer ID signing were ad-hoc signed; if macOS blocks one
+of those, run `xattr -dr com.apple.quarantine /Applications/Logcatnip.app`.)
+
+Or install from Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/GreenmistStudios/logcatnip/main/scripts/install.sh | bash
+```
+
+It downloads the latest release, checks it against the release's SHA-256 and the app's code signature, installs
+it to `/Applications` (or `~/Applications` when that isn't writable) and opens it. Run it again to update.
+`LOGCATNIP_VERSION=X.Y.Z` installs a specific release, `LOGCATNIP_INSTALL_DIR` picks another folder and
+`LOGCATNIP_NO_OPEN=1` skips opening the app. curl doesn't quarantine what it downloads, so this also installs the
+older ad-hoc signed releases without a warning.
+
+Logcatnip checks GitHub Releases once a day (Settings › Updates; Logcatnip › Check for Updates… at any time).
+When there is a newer release it shows the release notes and offers to download it. The download is checked
+against the release's SHA-256, the bundle identifier, the version and the code signature before Install and
+Relaunch swaps it in. A Developer ID build only installs updates signed by the same team. Updating in place
+needs the app in a folder you can write to; when it isn't, the window links to the release page instead.
 
 ## Requirements
 
@@ -33,6 +82,10 @@ Android Studio's Logcat window.
 - Xcode 16 / Swift 6 toolchain to build
 - `adb` from the Android SDK platform-tools. Logcatnip looks in `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`,
   `~/Library/Android/sdk`, Homebrew and `PATH`, or you can set the path in Settings.
+- Wireless pairing needs recent platform-tools with mDNS (`adb mdns check`) and the Mac and device on the
+  same network.
+- Xcode, only for iOS simulator logs. Logcatnip uses `simctl` from the developer directory that
+  `xcode-select -p` reports (or `$DEVELOPER_DIR`). Without Xcode, simulators are hidden and Settings says why.
 
 ## Build and run
 
@@ -47,12 +100,71 @@ You can also open `Package.swift` in Xcode and run the `Logcatnip` scheme.
 ## Tests
 
 ```sh
-swift test                                   # parser and filter tests
+swift test                                   # parser, filter and screenshot tests
 LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached device
+LOGCATNIP_SIMULATOR_TESTS=1 swift test       # also stream from a booted simulator
+LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 ```
 
+Screenshot tests render the session view offscreen and compare it with PNGs in
+`Tests/LogcatnipTests/__Snapshots__/macOS-<major>/`. Text renders differently between macOS releases, so
+each major version has its own references. A missing reference is recorded and the test fails until you
+check the image and run again; on CI (`CI` set) it is only recorded. A mismatch writes the actual image
+and a diff to `.build/snapshot-failures/`.
+
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions.
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, `LOGCATNIP_FIND='text'` opens the find bar
+with that query, and `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. With
+`LOGCATNIP_DEBUG=1` the find bar's state is printed too, including a recount from scratch (`check=ok`).
+`LOGCATNIP_PERF_TESTS=1 swift test --filter FindPerformance` times find on 500,000 rows.
+`LOGCATNIP_WIFI_SHEET=qr|code|ip` opens the Connect over Wi-Fi sheet, `LOGCATNIP_WIFI_CONNECT=host:port|discovered`
+connects, and `LOGCATNIP_WIFI_PAIR="host:port|discovered CODE"` pairs, without clicking.
+
+`LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch, and `LOGCATNIP_UPDATE_INSTALL=1` with it downloads and
+installs what it finds without clicking. `LOGCATNIP_UPDATE_FEED=/path/release.json` (or a URL) reads releases from
+a copy of the GitHub API response instead, and `LOGCATNIP_UPDATE_VERSION=0.1.0` pretends to be that version. With
+`LOGCATNIP_DEBUG=1` each update step is logged as `update:`.
+
+## Releases
+
+Every merge to `main` runs `.github/workflows/release.yml`. `scripts/next-version.sh` reads the conventional
+commits since the last `vX.Y.Z` tag and picks the bump:
+
+| Commits since the last tag | Bump |
+| --- | --- |
+| `type!:` subject or a `BREAKING CHANGE:` footer | major (minor while the version is 0.x) |
+| `feat:` | minor |
+| `fix:`, `perf:`, `refactor:`, `revert:` | patch |
+| only `docs:`, `chore:`, `ci:`, `test:`, `style:`, `build:` | no release |
+
+The workflow then runs the tests, builds the app with that version, signs it with the Developer ID, notarizes
+it, and publishes a GitHub release tagged `vX.Y.Z` with `Logcatnip-X.Y.Z.dmg` (the installer),
+`Logcatnip-X.Y.Z.zip` (what the updater downloads), a `.sha256` for each and notes generated from the merged
+pull requests. The tag is the only record of the version: nothing is committed back. To force a release, or to
+cut 1.0, run the Release workflow by hand and choose the bump. Local builds take the newest tag as their version
+(`0.0.0` before the first release); set `VERSION=` to override it.
+
+### Signing releases
+
+The release workflow needs five repository secrets (Settings › Secrets and variables › Actions). It fails
+rather than publish an unsigned release, because signed copies refuse updates from another team.
+
+| Secret | Value |
+| --- | --- |
+| `DEVELOPER_ID_P12` | The Developer ID Application certificate and its private key: in Keychain Access, select the certificate, File › Export Items… as `.p12`, then `base64 -i cert.p12 \| pbcopy` |
+| `DEVELOPER_ID_P12_PASSWORD` | The password you gave the `.p12` |
+| `NOTARY_KEY_P8` | An App Store Connect API key (Users and Access › Integrations › Team Keys, Developer access): `base64 -i AuthKey_XXXX.p8 \| pbcopy` |
+| `NOTARY_KEY_ID` | That key's ID |
+| `NOTARY_ISSUER` | The Issuer ID shown above the keys |
+
+To build and notarize a release locally, store notarization credentials once with
+`xcrun notarytool store-credentials logcatnip`, then:
+
+```sh
+ID="Developer ID Application: Name (TEAMID)"
+UNIVERSAL=1 VERSION=1.2.3 SIGN_IDENTITY="$ID" scripts/build-app.sh
+VERSION=1.2.3 SIGN_IDENTITY="$ID" NOTARY_PROFILE=logcatnip scripts/package-release.sh
+```
 
 ## Filter reference
 
@@ -68,6 +180,9 @@ LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached devi
 | `level:WARN` | WARN and above (`V D I W E A` work too) |
 | `age:30s`, `age:5m`, `age:2h`, `age:1d` | recent entries only |
 | `is:crash`, `is:stacktrace` | crashes and ANRs; entries containing stack frames |
+| `is:anr` | ANR reports and the input dispatch timeouts that precede them |
+| `is:leak` | LeakCanary leaks, StrictMode leak violations, leaked windows, receivers and service connections |
+| `is:jank` | 30+ skipped frames, `Davey!` frames, other StrictMode violations, long monitor contention |
 | `is:error` (any level name) | exactly that level (`level:` is that level and above) |
 | `is:firebase` | Firebase SDK tags (`FA`, `FirebaseMessaging`, …) |
 | `pid:1234`, `tid:5678` | process or thread id |
@@ -88,12 +203,36 @@ hold a whole sequence, and `()` matches everything.
 Before 0.2, spaces bound tighter than `&` and `|`. Saved favorites and recent filters whose meaning changed
 are marked ⚠︎ in the filter menu once, until you remove them or choose Dismiss ⚠︎ Warnings.
 
+## iOS simulator logs
+
+Unified log fields map onto logcat's columns, so every filter works on simulator logs:
+
+| Logcatnip | Unified log |
+| --- | --- |
+| level | `Debug` → D, `Info` and `Default` → I, `Error` → E, `Fault` → A |
+| tag | `subsystem:category`, or the subsystem alone. Without a subsystem (`NSLog`, most system frameworks), the library that logged, such as `UIKitCore` |
+| package, process | the executable name, such as `Catnip` or `SpringBoard` |
+| PID, TID | `processID`, `threadID` |
+| message | `eventMessage` |
+
+`log stream` starts at the moment the session opens and has no backlog, so Restart clears the view and continues from now.
+Clear Device Log Buffer is not available for simulators. Swift `print()` writes to the app's stdout, not the
+unified log, so it doesn't appear; use `Logger` or `NSLog`.
+
+Physical iPhones and iPads aren't supported yet: Xcode has no public command that streams a connected
+device's unified log.
+
 ## Layout
 
-- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime), the filter language, and adb
-  (device tracking, logcat streaming, process names). No UI dependencies.
+- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, unified log NDJSON), the filter language,
+  find, adb (device tracking, logcat streaming, process names, wireless pairing and mDNS discovery) and
+  simctl (simulators, `log stream`). No UI
+  dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
+- `scripts/`: `build-app.sh` builds the app bundle; `package-release.sh` makes the notarized DMG and zip;
+  `next-version.sh` picks the next release version.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
+- `Tests/LogcatnipTests`: screenshot tests of the app's views.
 
-Long-running adb commands run under a small `sh` watchdog that stops them when the app exits, even if it
+Long-running adb and simctl commands run under a small `sh` watchdog that stops them when the app exits, even if it
 crashes.
