@@ -66,6 +66,8 @@ an ad-hoc signed release once signed ones exist.
     `connect` and `disconnect` output, and matching discovered services to devices.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
+  - `FilterQueryEditor.swift`: structural edits for the context menu and level picker (a new term ANDs with the
+    whole query), and `LogFilter.levelSelection`, the picker's value read from the parsed filter.
   - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
     events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
