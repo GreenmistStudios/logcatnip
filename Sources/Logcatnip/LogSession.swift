@@ -63,6 +63,8 @@ final class LogSession: Identifiable {
     private(set) var fileInfo: LogFileInfo?
     /// Observed, so the status bar follows a load's progress.
     private(set) var fileLoader: FileLoader?
+    /// The latest save, observed for the status bar.
+    private(set) var fileSaver: FileSaver?
     private(set) var baseTitle = ""
     var title = ""
     private(set) var status: Status = .starting
@@ -85,6 +87,15 @@ final class LogSession: Identifiable {
 
     @ObservationIgnored private(set) var entries: [LogEntry] = []
     @ObservationIgnored private(set) var rows: [Row] = []
+    /// The device a `.logcat` was saved with, or the live device as last seen in adb (kept current by
+    /// `refreshBaseTitle()`), so saving after the device is gone still names it.
+    @ObservationIgnored private(set) var fileDevice: LogcatFileDevice?
+    private struct DeviceKey: Equatable {
+        let serial: String
+        let isOnline: Bool
+        let properties: DeviceProperties
+    }
+    @ObservationIgnored private var rememberedDeviceKey: DeviceKey?
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
@@ -158,6 +169,7 @@ final class LogSession: Identifiable {
             // A device that went away keeps its name while the session waits for it to come back.
             if let device = model?.device(serial: serial) {
                 baseTitle = device.displayName
+                rememberDevice()
             } else if baseTitle.isEmpty {
                 baseTitle = serial
             }
@@ -365,6 +377,7 @@ final class LogSession: Identifiable {
 
     /// A `.logcat` file carries the filter it was saved with, and Android Studio applies it on open; so do we.
     func applyFileMetadata(_ metadata: LogcatFileMetadata) {
+        fileDevice = metadata.device
         if let device = metadata.device { fileInfo = LogFileInfo(device: device) }
         let query = metadata.filter(forMyPackages: Defaults.myPackages).trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return }
@@ -725,22 +738,65 @@ final class LogSession: Identifiable {
         return lines.joined(separator: "\n")
     }
 
-    /// The buffer in `logcat -v long` format, which Logcatnip and Android Studio can both read back.
-    func exportText(visibleOnly: Bool) -> String {
-        var output = ""
-        if visibleOnly {
-            var last = -1
-            for row in rows where row.entryID != last {
-                last = row.entryID
-                if let entry = entry(for: row), entry.kind == .log {
-                    output += LogcatLongFormat.format(entry)
-                }
-            }
-        } else {
-            for entry in entries where entry.kind == .log {
-                output += LogcatLongFormat.format(entry)
-            }
+    // MARK: Saving
+
+    var isSaving: Bool { fileSaver?.state == .running }
+
+    var isLoading: Bool { fileLoader?.state == .running }
+
+    /// Saving mid-load would write a partial buffer, possibly over the very file being read.
+    var canSave: Bool { !isSaving && !isLoading }
+
+    /// Cancels work that must not outlive the session, such as a save still writing. Not part of `stop()`, because
+    /// `restart()` stops too and a save works from its own snapshot.
+    func close() {
+        fileSaver?.cancel()
+        stop()
+    }
+
+    /// Saves what the table shows (`visibleOnly`) or the whole buffer, in the background. Taking the snapshot is
+    /// cheap: the buffer is copy-on-write, and only the row ids are copied. Process names travel on the entries,
+    /// which `ProcessNameResolver` stamps per process lifetime; a pid map would rename entries of a reused pid.
+    func save(to url: URL, format: LogSaveFormat, visibleOnly: Bool) {
+        guard canSave else { return }
+        let request = LogSaveRequest(
+            format: format, entries: entries, onlyEntryIDs: visibleOnly ? rows.map(\.entryID) : nil,
+            metadata: saveMetadata()
+        )
+        let saver = FileSaver(url: url, format: format, visibleOnly: visibleOnly)
+        fileSaver = saver
+        saver.start(request)
+    }
+
+    /// What a `.logcat` records besides the messages, as Android Studio's Save does: the device, the filter as typed,
+    /// and My packages (its "project application ids").
+    func saveMetadata() -> LogcatFileMetadata {
+        // Follow-up for the ignore lists: pass them as ignoredTags and ignoredPackages once they exist here.
+        LogcatFileMetadata(device: saveDevice(), filter: filterQuery, projectApplicationIds: Defaults.myPackages.sorted())
+    }
+
+    private func saveDevice() -> LogcatFileDevice? {
+        guard case .device = source else {
+            return fileDevice ?? fileInfo.flatMap(LogcatFileDevice.init(info:))
         }
-        return output
+        rememberDevice()
+        return fileDevice
+    }
+
+    /// Caches the live device's description while adb still lists it, so a save after it vanished still names it.
+    /// Skips the AVD lookup (a filesystem hit) when nothing it depends on changed.
+    private func rememberDevice() {
+        guard case let .device(serial, _) = source,
+              let device = model?.device(serial: serial), let properties = device.properties else { return }
+        let key = DeviceKey(serial: serial, isOnline: device.isOnline, properties: properties)
+        guard key != rememberedDeviceKey else { return }
+        rememberedDeviceKey = key
+        let avdPath = properties.avdName.flatMap {
+            AvdLocator.path(
+                forAvdName: $0, environment: ProcessInfo.processInfo.environment,
+                home: FileManager.default.homeDirectoryForCurrentUser
+            )
+        }
+        fileDevice = LogcatFileDevice(properties: properties, serial: serial, isOnline: device.isOnline, avdPath: avdPath)
     }
 }
