@@ -122,12 +122,46 @@ final class StreamingProcess: @unchecked Sendable {
             process.terminate()
         }
     }
+
+    /// Runs a command to completion, killing it after `timeout` or when the calling task is cancelled.
+    static func run(executable: URL, arguments: [String], timeout: Duration = .seconds(30)) async throws -> CommandResult {
+        let process = StreamingProcess(executable: executable, arguments: arguments)
+        let collected = DataBox()
+        let timedOut = FlagBox()
+        let timeoutTask = Task {
+            try await Task.sleep(for: timeout)
+            timedOut.set()
+            process.terminate()
+        }
+        defer { timeoutTask.cancel() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CommandResult, Error>) in
+                do {
+                    try process.start(
+                        onData: { collected.append($0) },
+                        onExit: { status, stderr in
+                            continuation.resume(returning: CommandResult(
+                                status: status, stdout: collected.data, stderr: stderr, timedOut: timedOut.isSet
+                            ))
+                        }
+                    )
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        } onCancel: {
+            process.terminate()
+        }
+    }
 }
 
 public struct CommandResult: Sendable {
     public var status: Int32
     public var stdout: Data
     public var stderr: String
+    /// True when `run` killed the process for exceeding its timeout. adb's own failures and our kill look
+    /// alike otherwise (empty output, a signal status), and the user should be told which one it was.
+    public var timedOut = false
 
     public var output: String { String(decoding: stdout, as: UTF8.self) }
 }
@@ -184,29 +218,7 @@ public struct ADB: Sendable {
 
     /// Runs `adb <arguments>` to completion.
     public func run(_ arguments: [String], timeout: Duration = .seconds(30)) async throws -> CommandResult {
-        let process = StreamingProcess(executable: executable, arguments: arguments)
-        let collected = DataBox()
-        let timeoutTask = Task {
-            try await Task.sleep(for: timeout)
-            process.terminate()
-        }
-        defer { timeoutTask.cancel() }
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CommandResult, Error>) in
-                do {
-                    try process.start(
-                        onData: { collected.append($0) },
-                        onExit: { status, stderr in
-                            continuation.resume(returning: CommandResult(status: status, stdout: collected.data, stderr: stderr))
-                        }
-                    )
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        } onCancel: {
-            process.terminate()
-        }
+        try await StreamingProcess.run(executable: executable, arguments: arguments, timeout: timeout)
     }
 
     public func startServer() async throws {
@@ -309,15 +321,25 @@ public struct ADB: Sendable {
             self.since = since
             self.modernFormat = modernFormat
         }
+
+        /// Whether to try `-v epoch -v uid`. An unknown API level (getprop hasn't answered) counts as yes: a
+        /// device that rejects them says so, and `LogcatExit` reads that.
+        public static func modernFormatSupported(apiLevel: Int?) -> Bool { (apiLevel ?? 24) >= 24 }
     }
 
     public enum LogcatEvent: Sendable {
         case entries([LogEntry])
-        /// logcat exited; the stream finishes after this.
-        case ended(status: Int32, error: String)
+        /// logcat exited; the stream finishes after this. The exit carries what logcat printed, so the session
+        /// can tell an old device from a transient failure or a rejected option.
+        case ended(LogcatExit)
     }
 
-    public static func logcatArguments(serial: String, options: LogcatOptions) -> [String] {
+    /// Pre-Nougat logcat only takes `-T 'MM-DD hh:mm:ss.mmm'`, so a legacy session formats its resume time that
+    /// way. Legacy timestamps are read in the Mac's time zone (`LogcatTime.parse`), so formatting them back in
+    /// the same zone reproduces the device's own text.
+    public static func logcatArguments(
+        serial: String, options: LogcatOptions, timeZone: TimeZone = .current
+    ) -> [String] {
         var arguments = ["-s", serial, "logcat", "-v", "long"]
         if options.modernFormat {
             arguments += ["-v", "epoch", "-v", "uid"]
@@ -326,7 +348,10 @@ public struct ADB: Sendable {
             arguments += ["-b", buffer]
         }
         if let since = options.since {
-            arguments += ["-T", String(format: "%.3f", since)]
+            let time = options.modernFormat
+                ? String(format: "%.3f", since)
+                : LogcatTime.formatMonthDay(since, timeZone: timeZone)
+            arguments += ["-T", time]
         }
         return arguments
     }
@@ -340,6 +365,7 @@ public struct ADB: Sendable {
                 stopsWithParent: true
             )
             let parser = ParserBox()
+            let modernFormat = options.modernFormat
             do {
                 try process.start(
                     onData: { data in
@@ -349,12 +375,16 @@ public struct ADB: Sendable {
                     onExit: { status, stderr in
                         let rest = parser.finish()
                         if !rest.isEmpty { continuation.yield(.entries(rest)) }
-                        continuation.yield(.ended(status: status, error: stderr))
+                        let (receivedEntries, leadingOutput) = parser.summary()
+                        continuation.yield(.ended(LogcatExit(
+                            status: status, stderr: stderr, leadingOutput: leadingOutput,
+                            receivedEntries: receivedEntries, modernFormat: modernFormat
+                        )))
                         continuation.finish()
                     }
                 )
             } catch {
-                continuation.yield(.ended(status: -1, error: "\(error)"))
+                continuation.yield(.ended(LogcatExit(status: -1, stderr: "\(error)", modernFormat: modernFormat)))
                 continuation.finish()
             }
             continuation.onTermination = { _ in process.terminate() }
@@ -371,15 +401,50 @@ private final class DataBox: @unchecked Sendable {
     var data: Data { lock.withLock { storage } }
 }
 
+/// Set by the timeout task, read from the process exit queue; the lock orders the two.
+private final class FlagBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
+}
+
 private final class DecoderBox: @unchecked Sendable {
     private let lock = NSLock()
     private var decoder = TrackDevicesDecoder()
     func feed(_ data: Data) -> [[DeviceDescriptor]] { lock.withLock { decoder.feed(data) } }
 }
 
+/// Also keeps the stdout that arrived before the first record. The parser drops it, but a device without
+/// adb's shell protocol prints logcat's error there. The lock orders the readability queue, which feeds it,
+/// and the exit queue, which reads it.
 private final class ParserBox: @unchecked Sendable {
     private let lock = NSLock()
     private var parser = LogcatLongParser()
-    func feed(_ data: Data) -> [LogEntry] { lock.withLock { parser.feed(data) } }
-    func finish() -> [LogEntry] { lock.withLock { parser.finish() } }
+    private var receivedEntries = false
+    private var leading = Data()
+
+    func feed(_ data: Data) -> [LogEntry] {
+        lock.withLock {
+            if !receivedEntries, leading.count < LogcatExit.leadingOutputLimit {
+                leading.append(data.prefix(LogcatExit.leadingOutputLimit - leading.count))
+            }
+            let entries = parser.feed(data)
+            if !entries.isEmpty { receivedEntries = true }
+            return entries
+        }
+    }
+
+    func finish() -> [LogEntry] {
+        lock.withLock {
+            let rest = parser.finish()
+            if !rest.isEmpty { receivedEntries = true }
+            return rest
+        }
+    }
+
+    /// Whether any record was parsed, and the stdout before the first one (empty once one was).
+    func summary() -> (receivedEntries: Bool, leadingOutput: String) {
+        lock.withLock { (receivedEntries, receivedEntries ? "" : String(decoding: leading, as: UTF8.self)) }
+    }
 }

@@ -165,12 +165,30 @@ public enum ProcessEvent: Sendable, Equatable {
         let userDigits = afterU.prefix { $0.isASCII && $0.isNumber }
         guard let user = digits(userDigits) else { return nil }
         let kind = afterU.dropFirst(userDigits.count)
-        let base = user * 100_000
-        if kind.hasPrefix("ai") { return digits(kind.dropFirst(2)).map { base + 90_000 + $0 } }
-        if kind.hasPrefix("a") { return digits(kind.dropFirst()).map { base + 10_000 + $0 } }
-        if kind.hasPrefix("i") { return digits(kind.dropFirst()).map { base + 99_000 + $0 } }
-        if kind.hasPrefix("s") { return digits(kind.dropFirst()).map { base + $0 } }
-        return nil
+        let (base, baseOverflow) = user.multipliedReportingOverflow(by: 100_000)
+        guard !baseOverflow else { return nil }
+        let offset: Int
+        let component: Substring
+        if kind.hasPrefix("ai") {
+            offset = 90_000
+            component = kind.dropFirst(2)
+        } else if kind.hasPrefix("a") {
+            offset = 10_000
+            component = kind.dropFirst()
+        } else if kind.hasPrefix("i") {
+            offset = 99_000
+            component = kind.dropFirst()
+        } else if kind.hasPrefix("s") {
+            offset = 0
+            component = kind.dropFirst()
+        } else {
+            return nil
+        }
+        guard let value = digits(component) else { return nil }
+        let (appBase, offsetOverflow) = base.addingReportingOverflow(offset)
+        guard !offsetOverflow else { return nil }
+        let (uid, componentOverflow) = appBase.addingReportingOverflow(value)
+        return componentOverflow ? nil : uid
     }
 
     /// `Int(_:)` also accepts a sign; a uid or pid in a log line never has one.

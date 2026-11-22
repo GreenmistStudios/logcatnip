@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -20,3 +20,17 @@ jobs:
         run: swift test
       - name: Build app bundle
         run: scripts/build-app.sh
+      - name: Install the latest release with scripts/install.sh
+        env:
+          LOGCATNIP_NO_OPEN: "1"
+        run: |
+          LOGCATNIP_INSTALL_DIR="$RUNNER_TEMP/install" bash < scripts/install.sh
+          codesign --verify --deep --strict "$RUNNER_TEMP/install/Logcatnip.app"
+      - name: Package app bundle
+        run: ditto -c -k --sequesterRsrc --keepParent build/Logcatnip.app build/Logcatnip.zip
+      - name: Upload app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Logcatnip-${{ github.sha }}
+          path: build/Logcatnip.zip
+          retention-days: 14

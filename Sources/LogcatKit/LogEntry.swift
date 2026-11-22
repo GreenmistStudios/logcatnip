@@ -26,6 +26,8 @@ public struct LogEntry: Sendable, Hashable {
     public var message: String
     /// Full process name (`com.example.app:remote`) when known at ingestion time.
     public var processName: String?
+    /// Captured once, so a later install reusing this uid cannot rename buffered entries.
+    public var uidOwner: PackageUIDMap.Owner?
 
     public init(
         id: Int = 0,
