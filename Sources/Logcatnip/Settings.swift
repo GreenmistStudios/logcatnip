@@ -11,6 +11,8 @@ enum SettingsKey {
     static let favoriteFilters = "favoriteFilters"
     static let autoOpenSessions = "autoOpenSessions"
     static let showSimulators = "showSimulators"
+    /// Soft wrap for sessions opened from now on: each session wraps on its own, and the last value chosen
+    /// with View > Soft Wrap (or the toolbar button) becomes the next session's starting point.
     static let wrapLines = "wrapLines"
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
