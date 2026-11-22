@@ -408,7 +408,6 @@ public struct SignalSummary: Sendable, Equatable {
     }
 
     public var isEmpty: Bool { counts.isEmpty }
-
     /// Out of memory, leaks and jank.
     public var warningCount: Int {
         counts.reduce(0) { $0 + ($1.key.isFatal ? 0 : $1.value) }

@@ -40,9 +40,11 @@ Android Studio's Logcat window.
   scroller marks crashes and ANRs in red, warnings in orange and every error line faintly, and crash rows are
   tinted. ⌘' and ⇧⌘' go to the next and previous crash or ANR, ⌘] and ⌘[ to the next and previous error.
   None of these change the filter; occurrences it hides are greyed out in the list.
-- **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or set the
-  minimum level.
-- **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker.
+- **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or to show its
+  level and above. The new term applies to the whole query: Show Only replaces the query's top-level terms
+  for that key instead of ORing with them, and a query with a top-level `|` is wrapped in parentheses first.
+- **Favorites and recents** for filter queries, a match-case toggle, and a minimum-level picker that edits
+  the top-level `level:` term and shows Mixed when the level comes from `is:<level>` or from inside a group.
 - **Import and export.** Export in `logcat -v long` format. Open long or threadtime (`adb logcat` default,
   bug report) files, or drop them on the window.
 - Pause, clear the view, clear the device buffer (`logcat -c`), and restart logcat.
