@@ -1,7 +1,7 @@
 import Foundation
 
-/// Where to draw scroller tick marks for marked rows. Shared by find matches and, later, the crash
-/// navigator.
+/// Where to draw scroller tick marks for marked rows. Shared by find matches, errors and the crash
+/// navigator's signals.
 public enum ScrollMarkerLayout {
     /// Pixel runs, top to bottom, in `0..<trackLength`. `rows` must be sorted. A pixel is marked when a
     /// marked row falls in the rows it stands for, so the cost is O(trackLength · log rows.count) and

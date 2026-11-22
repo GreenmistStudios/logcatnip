@@ -80,11 +80,31 @@ final class LogSession: Identifiable {
     /// Counts and groups of `signals`, reassigned only when the index changes so views aren't invalidated
     /// on every flush.
     private(set) var signalSummary = SignalSummary()
+    /// Whether Next Crash / Next Error have somewhere to go. Assigned only when they flip, so the menu
+    /// isn't rebuilt on every flush.
+    private(set) var hasCrashTargets = false
+    private(set) var hasErrorTargets = false
+    /// Bumped when which occurrences the filter shows may have changed: a refilter, trim or clear, a signal
+    /// change, or a flush that showed an anchor row. The popover reads it instead of `visibleCount`, which
+    /// changes on every flush and misses refilters that keep the count.
+    private(set) var visibilityGeneration = 0
 
     @ObservationIgnored private(set) var entries: [LogEntry] = []
     @ObservationIgnored private(set) var rows: [Row] = []
     /// Crashes, ANRs, leaks and warnings in `entries`. Keyed by entry, so refilters leave it alone.
     @ObservationIgnored private(set) var signals = SignalIndex()
+    /// Rows of the visible error and assert entries, for scroller ticks and Next Error.
+    @ObservationIgnored private(set) var errorRows = IncrementalRowIndex.errors
+    /// Every entry that matched an anchor rule of a crash, native crash or ANR (all of a burst's reports, not
+    /// just the first), so the table tints them with a set lookup. Kept from the index's changes.
+    @ObservationIgnored private(set) var fatalAnchorIDs: Set<Int> = []
+    /// The same for leaks, out of memory and jank.
+    @ObservationIgnored private(set) var warningAnchorIDs: Set<Int> = []
+    /// Rows of the visible entries in `fatalAnchorIDs` and `warningAnchorIDs`, for the scroller ticks and as
+    /// the source of Next Crash. A burst can have several; ``visibleSignalRows(kinds:)`` keeps one per
+    /// occurrence.
+    @ObservationIgnored private(set) var fatalAnchorRows = IncrementalRowIndex()
+    @ObservationIgnored private(set) var warningAnchorRows = IncrementalRowIndex()
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
@@ -96,7 +116,6 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var filterGeneration = 0
     /// Bumped whenever `rows` changes, for caches of row indexes.
     @ObservationIgnored private var rowsGeneration = 0
-    @ObservationIgnored private var signalRowsCache: (key: SignalRowsKey, rows: [Int])?
     @ObservationIgnored private var signalDebugCheck: (key: [Int], verdict: String)?
     /// The `signals.generation` that `signalSummary` was built from, so flushes without signal changes
     /// don't rebuild and compare it.
@@ -389,7 +408,7 @@ final class LogSession: Identifiable {
             lastTimestamp = entry.timestamp
             entries.append(entry)
         }
-        signals.ingest(entries[start...])
+        applySignalChanges(signals.ingest(entries[start...]))
         trimIfNeeded()
         updateSignalSummary()
         if processResolver.needsLookup { requestProcessNames() }
@@ -417,7 +436,7 @@ final class LogSession: Identifiable {
         let drop = entries.count - limit * 9 / 10
         entries.removeFirst(drop)
         firstID += drop
-        signals.removeEntries(before: firstID, remaining: entries)
+        applySignalChanges(signals.removeEntries(before: firstID, remaining: entries))
         let removedRows = firstRowIndex(atOrAfter: firstID)
         guard removedRows > 0 else { return }
         var removedEntries = 0
@@ -429,7 +448,12 @@ final class LogSession: Identifiable {
         visibleCount = max(0, visibleCount - removedEntries)
         rows.removeFirst(removedRows)
         rowsGeneration += 1
+        errorRows.removeFront(removedRows)
+        fatalAnchorRows.removeFront(removedRows)
+        warningAnchorRows.removeFront(removedRows)
+        visibilityGeneration += 1
         find.rowsRemovedFront(removedRows)
+        updateNavigationTargets()
         onRowsChanged?(.reloaded(removedFront: removedRows))
     }
 
@@ -465,17 +489,24 @@ final class LogSession: Identifiable {
         let context = filterContext()
         var newRows: [Row] = []
         var matched = 0
+        let start = rows.count
+        let anchorRowCount = fatalAnchorRows.count + warningAnchorRows.count
+        let hasAnchors = !fatalAnchorIDs.isEmpty || !warningAnchorIDs.isEmpty
         for entry in entries[startIndex...] where filter.matches(entry, context: context) {
             matched += 1
+            let row = start + newRows.count
+            errorRows.note(entry, firstRow: row)
+            if hasAnchors { noteAnchor(entry.id, row: row) }
             Self.appendRows(for: entry, to: &newRows)
         }
         lastFilteredID = nextID - 1
         guard !newRows.isEmpty else { return }
-        let start = rows.count
         rows.append(contentsOf: newRows)
         rowsGeneration += 1
         visibleCount += matched
+        if fatalAnchorRows.count + warningAnchorRows.count != anchorRowCount { visibilityGeneration += 1 }
         find.rowsAppended()
+        updateNavigationTargets()
         onRowsChanged?(.appended(start..<rows.count))
     }
 
@@ -491,36 +522,120 @@ final class LogSession: Identifiable {
 
     // MARK: Signals
 
-    private struct SignalRowsKey: Equatable {
-        let signals: Int
-        let rows: Int
-        let firstID: Int
-        let kinds: Set<SignalKind>
-    }
-
     private func updateSignalSummary() {
         guard signals.generation != signalSummaryGeneration else { return }
         signalSummaryGeneration = signals.generation
         let summary = SignalSummary(signals)
         if summary != signalSummary { signalSummary = summary }
+        visibilityGeneration += 1
+        updateNavigationTargets()
     }
 
-    /// Ascending row indexes of the first line of each occurrence of `kinds` that the filter shows.
-    /// Cached, since scroller ticks ask on every redraw.
-    func visibleSignalRows(kinds: Set<SignalKind>) -> [Int] {
-        let key = SignalRowsKey(signals: signals.generation, rows: rowsGeneration, firstID: firstID, kinds: kinds)
-        if let cache = signalRowsCache, cache.key == key { return cache.rows }
-        var result: [Int] = []
-        for occurrence in signals.occurrences where kinds.contains(occurrence.kind) {
-            if let index = rowIndex(of: Row(entryID: occurrence.id, line: 0)) { result.append(index) }
+    /// Keeps the anchor sets and rows in step with what the index added and trimmed, so no flush walks the
+    /// occurrences. Promotions move an occurrence's id but not its anchor entries, so they change nothing here.
+    private func applySignalChanges(_ changes: SignalIndexChanges) {
+        for anchor in changes.removedAnchors {
+            // Their rows were trimmed from the front with the entries, and `removeFront` drops them.
+            if anchor.kind.isFatal { fatalAnchorIDs.remove(anchor.entryID) } else { warningAnchorIDs.remove(anchor.entryID) }
         }
-        signalRowsCache = (key, result)
+        for anchor in changes.addedAnchors {
+            if anchor.kind.isFatal { fatalAnchorIDs.insert(anchor.entryID) } else { warningAnchorIDs.insert(anchor.entryID) }
+            // The index reports anchors as their entries arrive, so `flushRows` notes their rows. An entry that
+            // already has a row joins in order instead. A refilter in flight is fine either way: it took its
+            // snapshot of the sets with the entries, and flushes what came after.
+            if anchor.entryID <= lastFilteredID, !refilterInFlight,
+               let row = rowIndex(of: Row(entryID: anchor.entryID, line: 0)) {
+                if anchor.kind.isFatal { fatalAnchorRows.insert(row) } else { warningAnchorRows.insert(row) }
+            }
+        }
+    }
+
+    private func noteAnchor(_ entryID: Int, row: Int) {
+        if fatalAnchorIDs.contains(entryID) {
+            fatalAnchorRows.insert(row)
+        } else if warningAnchorIDs.contains(entryID) {
+            warningAnchorRows.insert(row)
+        }
+    }
+
+    /// Ascending rows, one per occurrence of `kinds` the filter shows: the first visible row among its anchor
+    /// entries, so a filter that hides one report of a burst (InputDispatcher's) still finds another
+    /// (ActivityManager's). Built from the anchor rows when asked, for navigation, so it costs the visible
+    /// anchor rows of `kinds` and flushes never pay for it.
+    func visibleSignalRows(kinds: Set<SignalKind>) -> [Int] {
+        let fatal = kinds.isDisjoint(with: SignalKind.fatal) ? [] : fatalAnchorRows.rows
+        let warnings = kinds.isDisjoint(with: SignalKind.warnings) ? [] : warningAnchorRows.rows
+        let candidates = fatal.isEmpty ? warnings : warnings.isEmpty ? fatal : (fatal + warnings).sorted()
+        var seen = Set<Int>()
+        var result: [Int] = []
+        for row in candidates where row < rows.count {
+            guard let id = signals.occurrenceID(forEntryID: rows[row].entryID), seen.insert(id).inserted,
+                  let occurrence = signals.occurrence(id: id), kinds.contains(occurrence.kind)
+            else { continue }
+            result.append(row)
+        }
         return result
     }
 
-    /// Whether the filter shows the occurrence's anchor entry.
+    /// The occurrence's first visible row among its anchor entries, or nil when the filter hides them all.
+    func visibleRow(ofOccurrence id: Int) -> Int? {
+        guard let occurrence = signals.occurrence(id: id) else { return nil }
+        for anchor in occurrence.anchorEntryIDs {
+            if let row = rowIndex(of: Row(entryID: anchor, line: 0)) { return row }
+        }
+        return nil
+    }
+
+    /// Whether the filter shows any of the occurrence's anchor entries.
     func occurrenceIsVisible(_ occurrence: SignalOccurrence) -> Bool {
-        rowIndex(of: Row(entryID: occurrence.id, line: 0)) != nil
+        occurrenceIsVisible(id: occurrence.id)
+    }
+
+    func occurrenceIsVisible(id: Int) -> Bool {
+        visibleRow(ofOccurrence: id) != nil
+    }
+
+    /// Whether `entryID` reported a crash, native crash or ANR, for the row tint.
+    func isFatalAnchor(_ entryID: Int) -> Bool {
+        fatalAnchorIDs.contains(entryID)
+    }
+
+    private func updateNavigationTargets() {
+        // Every anchor belongs to an occurrence, so any visible one is somewhere to go.
+        let crashes = !fatalAnchorRows.isEmpty
+        if crashes != hasCrashTargets { hasCrashTargets = crashes }
+        let errors = !errorRows.isEmpty
+        if errors != hasErrorTargets { hasErrorTargets = errors }
+    }
+
+    // MARK: Navigation
+
+    /// Selects and reveals the next or previous visible occurrence of `kinds`, wrapping around, from the
+    /// selection or the visible rows. Leaves the filter alone and stops following new logs, as find does.
+    func navigateSignal(_ direction: FindDirection, kinds: Set<SignalKind>) {
+        reveal(FindResults.target(in: visibleSignalRows(kinds: kinds), direction, from: navigationAnchor))
+    }
+
+    /// Selects and reveals the next or previous visible error or assert entry.
+    func navigateError(_ direction: FindDirection) {
+        reveal(errorRows.target(direction, from: navigationAnchor))
+    }
+
+    /// Jumps to one occurrence, for the signals popover. Beeps when the filter hides it.
+    func revealOccurrence(id: Int) {
+        reveal(visibleRow(ofOccurrence: id))
+    }
+
+    private var navigationAnchor: FindAnchor {
+        find.table?.findAnchor ?? .none
+    }
+
+    private func reveal(_ row: Int?) {
+        guard let row, let table = find.table else {
+            NSSound.beep()
+            return
+        }
+        table.revealFindMatch(row: row, highlight: nil)
     }
 
     /// One line for `LOGCATNIP_DEBUG`. Rebuilds the index from the buffer and compares occurrence and anchor
@@ -581,17 +696,31 @@ final class LogSession: Identifiable {
         let filter = filter
         let context = filterContext()
         let lastID = nextID - 1
+        let fatalIDs = fatalAnchorIDs
+        let warningIDs = warningAnchorIDs
         refilterInFlight = true
 
         Task { [weak self] in
-            let (rows, visible) = await Task.detached(priority: .userInitiated) {
+            let (rows, visible, errorRows, fatalRows, warningRows) = await Task.detached(priority: .userInitiated) {
+                var errors = IncrementalRowIndex.errors
+                var fatalRows = IncrementalRowIndex()
+                var warningRows = IncrementalRowIndex()
+                let hasAnchors = !fatalIDs.isEmpty || !warningIDs.isEmpty
                 var rows: [Row] = []
                 var visible = 0
                 for entry in snapshot where filter.matches(entry, context: context) {
                     visible += 1
+                    errors.note(entry, firstRow: rows.count)
+                    if hasAnchors {
+                        if fatalIDs.contains(entry.id) {
+                            fatalRows.insert(rows.count)
+                        } else if warningIDs.contains(entry.id) {
+                            warningRows.insert(rows.count)
+                        }
+                    }
                     LogSession.appendRows(for: entry, to: &rows)
                 }
-                return (rows, visible)
+                return (rows, visible, errors, fatalRows, warningRows)
             }.value
             guard let self, generation == self.filterGeneration else { return }
             self.refilterInFlight = false
@@ -599,9 +728,17 @@ final class LogSession: Identifiable {
             let firstValid = rows.firstIndex { $0.entryID >= self.firstID } ?? rows.count
             self.rows = firstValid == 0 ? rows : Array(rows[firstValid...])
             self.rowsGeneration += 1
+            self.errorRows = errorRows
+            self.errorRows.removeFront(firstValid)
+            self.fatalAnchorRows = fatalRows
+            self.fatalAnchorRows.removeFront(firstValid)
+            self.warningAnchorRows = warningRows
+            self.warningAnchorRows.removeFront(firstValid)
+            self.visibilityGeneration += 1
             self.visibleCount = firstValid == 0 ? visible : Set(self.rows.map(\.entryID)).count
             self.lastFilteredID = lastID
             self.find.rowsReplaced()
+            self.updateNavigationTargets()
             self.onRowsChanged?(.reloaded(removedFront: 0))
             self.flushRows()
         }
@@ -624,6 +761,12 @@ final class LogSession: Identifiable {
         entries.removeAll(keepingCapacity: true)
         rows.removeAll(keepingCapacity: true)
         rowsGeneration += 1
+        errorRows.reset()
+        fatalAnchorRows.reset()
+        warningAnchorRows.reset()
+        fatalAnchorIDs.removeAll()
+        warningAnchorIDs.removeAll()
+        visibilityGeneration += 1
         signals.reset()
         updateSignalSummary()
         firstID = nextID
@@ -633,6 +776,7 @@ final class LogSession: Identifiable {
         totalCount = 0
         visibleCount = 0
         find.rowsReplaced()
+        updateNavigationTargets()
         onRowsChanged?(.reloaded(removedFront: 0))
     }
 

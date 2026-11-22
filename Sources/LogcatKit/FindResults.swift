@@ -97,33 +97,38 @@ public struct FindResults: Sendable, Equatable {
 
     /// The match to jump to, wrapping around at either end. Nil when there are no matches.
     public func target(_ direction: FindDirection, from anchor: FindAnchor) -> Int? {
+        Self.target(in: rows, direction, from: anchor)
+    }
+
+    /// The row of the ascending `rows` to jump to from `anchor`, wrapping around at either end. Nil when
+    /// `rows` is empty. Shared by find, the crash navigator and error navigation so they all move the same
+    /// way.
+    public static func target(in rows: [Int], _ direction: FindDirection, from anchor: FindAnchor) -> Int? {
         guard let first = rows.first, let last = rows.last else { return nil }
+        func element(atOrAfter index: Int) -> Int? { index < rows.count ? rows[index] : nil }
+        func element(before index: Int) -> Int? { index > 0 ? rows[index - 1] : nil }
         switch (direction, anchor) {
         case (.next, .none):
             return first
         case (.previous, .none):
             return last
         case let (.next, .selection(range)):
-            return element(atOrAfter: upperBound(range.upperBound)) ?? first
+            return element(atOrAfter: upperBound(range.upperBound, in: rows)) ?? first
         case let (.previous, .selection(range)):
-            return element(before: lowerBound(range.lowerBound)) ?? last
+            return element(before: lowerBound(range.lowerBound, in: rows)) ?? last
         case let (.next, .viewport(range)):
-            return element(atOrAfter: lowerBound(range.lowerBound)) ?? first
+            return element(atOrAfter: lowerBound(range.lowerBound, in: rows)) ?? first
         case let (.previous, .viewport(range)):
-            return element(before: upperBound(range.upperBound)) ?? last
+            return element(before: upperBound(range.upperBound, in: rows)) ?? last
         }
     }
 
-    private func element(atOrAfter index: Int) -> Int? {
-        index < rows.count ? rows[index] : nil
-    }
-
-    private func element(before index: Int) -> Int? {
-        index > 0 ? rows[index - 1] : nil
-    }
-
-    /// Index of the first match `>= value`.
     private func lowerBound(_ value: Int) -> Int {
+        Self.lowerBound(value, in: rows)
+    }
+
+    /// Index of the first element of the ascending `rows` that is `>= value`.
+    static func lowerBound(_ value: Int, in rows: [Int]) -> Int {
         var low = 0
         var high = rows.count
         while low < high {
@@ -133,8 +138,8 @@ public struct FindResults: Sendable, Equatable {
         return low
     }
 
-    /// Index of the first match `> value`.
-    private func upperBound(_ value: Int) -> Int {
+    /// Index of the first element of the ascending `rows` that is `> value`.
+    static func upperBound(_ value: Int, in rows: [Int]) -> Int {
         var low = 0
         var high = rows.count
         while low < high {

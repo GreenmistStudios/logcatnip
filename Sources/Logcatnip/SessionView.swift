@@ -275,6 +275,9 @@ struct StatusBar: View {
                 Label(name, systemImage: "line.3.horizontal.decrease")
                     .foregroundStyle(.secondary)
             }
+            if !session.signalSummary.isEmpty {
+                SignalsBadge(session: session)
+            }
             Spacer()
             if session.isPaused {
                 Label("Paused", systemImage: "pause.circle.fill")

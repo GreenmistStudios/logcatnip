@@ -10,7 +10,7 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct SessionScreenshotTests {
-    private let size = CGSize(width: 1000, height: 340)
+    private let size = CGSize(width: 1000, height: 460)
 
     init() {
         // The table autosaves column widths and visibility; start every test from the defaults.
@@ -37,7 +37,7 @@ struct SessionScreenshotTests {
             named: "session-wrapped",
             // Tall enough not to scroll: rows under the header would show through, because its blur
             // material is not captured.
-            size: CGSize(width: 820, height: 480)
+            size: CGSize(width: 820, height: 820)
         )
     }
 
@@ -46,7 +46,7 @@ struct SessionScreenshotTests {
         try await Snapshot.assertSnapshot(
             of: content(session, fontSize: 14, showDate: true),
             named: "session-date-14pt",
-            size: CGSize(width: 1000, height: 400)
+            size: CGSize(width: 1000, height: 540)
         )
     }
 
@@ -55,7 +55,7 @@ struct SessionScreenshotTests {
         session.filterQuery = "level:WARN"
         session.applyFilterNow()
         // Warn, error and assert entries, plus the marker, which passes every filter.
-        try await waitUntil { session.visibleCount == 4 }
+        try await waitUntil { session.visibleCount == 6 }
         try await Snapshot.assertSnapshot(of: content(session), named: "session-filtered", size: size)
     }
 
@@ -71,6 +71,50 @@ struct SessionScreenshotTests {
         let session = makeSession(status: .streaming)
         session.isPaused = true
         try await Snapshot.assertSnapshot(of: content(session), named: "session-paused", size: size)
+    }
+
+    // MARK: Signals
+
+    // `session-light` already shows the badge, the tinted crash rows and the scroller ticks (errors, the jank
+    // warning, crashes and ANR).
+
+    @Test(arguments: [NSAppearance.Name.aqua, .darkAqua])
+    func signalsPopover(appearance: NSAppearance.Name) async throws {
+        let session = makeSession()
+        #expect(session.signalSummary.fatalText == "2 crashes · 1 ANR")
+        #expect(session.signalSummary.warningText == "1 warning")
+        try await Snapshot.assertSnapshot(
+            of: SignalsPopover(session: session, expanded: [try crashGroupID(session)]),
+            named: appearance == .aqua ? "signals-popover-light" : "signals-popover-dark",
+            size: SignalsPopover.size,
+            appearance: appearance
+        )
+    }
+
+    /// The filter hides the first crash: its tick and tint go, and the popover greys it out.
+    @Test func signalsFiltered() async throws {
+        let session = makeSession()
+        let groupID = try crashGroupID(session)
+        session.filterQuery = "-pid:1234"
+        session.applyFilterNow()
+        try await waitUntil { session.visibleCount == 6 }
+        #expect(session.visibleSignalRows(kinds: SignalKind.fatal).count == 2)
+        let view = HStack(spacing: 0) {
+            content(session)
+                .frame(width: size.width)
+            Divider()
+            SignalsPopover(session: session, expanded: [groupID])
+                .frame(maxHeight: .infinity, alignment: .top)
+        }
+        try await Snapshot.assertSnapshot(
+            of: view,
+            named: "session-signals-filtered",
+            size: CGSize(width: size.width + 1 + SignalsPopover.size.width, height: size.height)
+        )
+    }
+
+    private func crashGroupID(_ session: LogSession) throws -> String {
+        try #require(session.signalSummary.groups.first { $0.kind == .crash && $0.count == 2 }).id
     }
 
     // MARK: Helpers
@@ -102,7 +146,8 @@ struct SessionScreenshotTests {
     }
 }
 
-/// A short log covering each level, a stack trace, a marker, an unknown process and a long line.
+/// A short log covering each level, a stack trace, a marker, an unknown process and a long line, plus
+/// signals: skipped frames, an ANR and the same crash twice.
 enum Fixtures {
     /// Built in the local time zone so the rendered times are the same on every machine.
     static func time(_ hour: Int, _ minute: Int, _ second: Int, _ millis: Int) -> Double {
@@ -127,7 +172,25 @@ enum Fixtures {
         LogEntry(timestamp: time(9, 41, 2, 333), pid: 1234, tid: 1251, level: .debug, tag: "CatRepository",
                  message: "Loaded 24 cats from cache in 3 ms; refreshing from the network because the cache is older than 15 minutes and the user pulled to refresh",
                  processName: app),
+        LogEntry(timestamp: time(9, 41, 2, 871), pid: 1234, tid: 1234, level: .info, tag: "Choreographer",
+                 message: "Skipped 42 frames!  The application may be doing too much work on its main thread.",
+                 processName: app),
         LogEntry(timestamp: time(9, 41, 3, 900), pid: 1234, tid: 1234, level: .error, tag: "AndroidRuntime",
+                 message: """
+                 FATAL EXCEPTION: main
+                 java.lang.IllegalStateException: Bowl is empty
+                 \tat com.example.catnip.Bowl.serve(Bowl.kt:42)
+                 \tat com.example.catnip.MainActivity.onCreate(MainActivity.kt:18)
+                 """,
+                 processName: app),
+        LogEntry(timestamp: time(9, 41, 3, 920), pid: 812, tid: 836, level: .error, tag: "ActivityManager",
+                 message: """
+                 ANR in com.example.catnip (com.example.catnip/.MainActivity)
+                 PID: 1234
+                 Reason: Input dispatching timed out (Waiting to send non-key event because the touched window has not finished processing certain input events that were delivered to it over 500.0ms ago.)
+                 """,
+                 processName: "system_server"),
+        LogEntry(timestamp: time(9, 41, 3, 990), pid: 4321, tid: 4321, level: .error, tag: "AndroidRuntime",
                  message: """
                  FATAL EXCEPTION: main
                  java.lang.IllegalStateException: Bowl is empty

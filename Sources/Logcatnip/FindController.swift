@@ -3,7 +3,8 @@ import Foundation
 import LogcatKit
 import Observation
 
-/// What the log table offers the find controller: where a jump starts from, and how to show a match.
+/// What the log table offers the find controller, and the crash and error navigation that share its jumps:
+/// where a jump starts from, and how to show a match.
 @MainActor
 protocol FindTableNavigating: AnyObject {
     var findAnchor: FindAnchor { get }

@@ -86,4 +86,19 @@ enum LogColors {
 
     static let findMarker = ScrollMarkersView.Style(color: findMatch, minLength: 2)
     static let currentFindMarker = ScrollMarkersView.Style(color: currentFindMatch, minLength: 3)
+
+    // MARK: Signals
+
+    /// Every error line, faint and thin, so a noisy log doesn't paint the whole scroller red.
+    static let errorMarker = ScrollMarkersView.Style(color: NSColor.systemRed.withAlphaComponent(0.45), minLength: 1, width: 2)
+    /// Leaks, out of memory and jank.
+    static let warningMarker = ScrollMarkersView.Style(color: .systemOrange, minLength: 2, width: 3)
+    /// Crashes, native crashes and ANRs.
+    static let fatalMarker = ScrollMarkersView.Style(color: .systemRed, minLength: 3)
+
+    /// Behind the rows of an entry that reported a crash or ANR. Faint enough that the level colors still read.
+    static let fatalRowBackground = dynamic(
+        light: NSColor.systemRed.withAlphaComponent(0.09),
+        dark: NSColor.systemRed.withAlphaComponent(0.2)
+    )
 }

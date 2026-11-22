@@ -235,6 +235,30 @@ private let fatalException = """
         #expect(index.count(of: .anr) == 1)
     }
 
+    /// Every line of a burst finds its occurrence, under the new id after a trim promotes another anchor.
+    @Test func occurrenceOfEntryFollowsPromotion() throws {
+        let entries = try fixture("anr")
+        var index = index(entries)
+        let occurrence = try #require(index.occurrences.first)
+        #expect(index.occurrenceID(forEntryID: occurrence.id) == occurrence.id)
+        for id in occurrence.relatedEntryIDs + occurrence.anchorEntryIDs {
+            #expect(index.occurrenceID(forEntryID: id) == occurrence.id)
+        }
+        #expect(index.occurrenceID(forEntryID: 0) == nil)
+
+        let cut = occurrence.anchorEntryIDs[0] + 1
+        index.removeEntries(before: cut, remaining: entries[cut...])
+        let moved = try #require(index.occurrences.first)
+        #expect(moved.id == occurrence.anchorEntryIDs[1])
+        for id in [moved.id] + moved.relatedEntryIDs {
+            #expect(index.occurrenceID(forEntryID: id) == moved.id)
+        }
+        #expect(index.occurrenceID(forEntryID: occurrence.id) == nil)
+
+        index.reset()
+        #expect(index.occurrenceID(forEntryID: moved.id) == nil)
+    }
+
     @Test func trimThroughNativeBurstRebuildsSignature() throws {
         let entries = try fixture("native-crash")
         var index = index(entries)

@@ -98,6 +98,8 @@ public struct SignalIndex: Sendable {
     /// The latest occurrence of each mergeable kind, by id.
     private var open: [SignalKind: Int] = [:]
     private var lastEntryID = -1
+    /// Related entry id -> its occurrence's id, so a row of any line of a burst finds its occurrence.
+    private var ownerOfRelated: [Int: Int] = [:]
 
     public init() {}
 
@@ -123,6 +125,12 @@ public struct SignalIndex: Sendable {
 
     public func group(id: String) -> SignalGroup? {
         groupsByKey[id]
+    }
+
+    /// The occurrence an entry belongs to, as its anchor or one of its related entries.
+    public func occurrenceID(forEntryID entryID: Int) -> Int? {
+        if index(of: entryID) != nil { return entryID }
+        return ownerOfRelated[entryID]
     }
 
     // MARK: - Updates
@@ -162,11 +170,24 @@ public struct SignalIndex: Sendable {
             for id in occurrence.anchorEntryIDs[..<survivor] {
                 changes.removedAnchors.append(SignalAnchor(entryID: id, kind: occurrence.kind))
             }
+            for related in occurrence.relatedEntryIDs {
+                ownerOfRelated[related] = nil
+            }
+            for anchor in occurrence.anchorEntryIDs.dropFirst() {
+                ownerOfRelated[anchor] = nil
+            }
             removeFromGroup(occurrence)
             if survivor < occurrence.anchorEntryIDs.endIndex,
                let moved = promote(occurrence, from: survivor, remaining: remaining, rules: rules) {
                 changes.promotions.append(SignalPromotion(from: occurrence.id, to: moved.id))
                 if open[occurrence.kind] == occurrence.id { open[occurrence.kind] = moved.id }
+                // The surviving lines now belong to the occurrence under its new id.
+                for related in moved.relatedEntryIDs {
+                    ownerOfRelated[related] = moved.id
+                }
+                for anchor in moved.anchorEntryIDs.dropFirst() {
+                    ownerOfRelated[anchor] = moved.id
+                }
                 promoted.append(moved)
             } else {
                 counts[occurrence.kind, default: 0] -= 1
@@ -189,6 +210,7 @@ public struct SignalIndex: Sendable {
         groupsByKey.removeAll()
         counts.removeAll()
         open.removeAll()
+        ownerOfRelated.removeAll()
         lastEntryID = -1
         generation += 1
     }
@@ -267,9 +289,14 @@ public struct SignalIndex: Sendable {
         let oldKey = occurrences[position].signature.key
         if occurrences[position].relatedEntryIDs.count < Self.maxRelatedEntries {
             occurrences[position].relatedEntryIDs.append(entry.id)
+            ownerOfRelated[entry.id] = occurrences[position].id
         }
         let recordedAnchor = isAnchor && occurrences[position].anchorEntryIDs.count < Self.maxRelatedEntries
-        if recordedAnchor { occurrences[position].anchorEntryIDs.append(entry.id) }
+        if recordedAnchor {
+            occurrences[position].anchorEntryIDs.append(entry.id)
+            // Usually already set above; not when the related list is full.
+            ownerOfRelated[entry.id] = occurrences[position].id
+        }
         occurrences[position].lastTimestamp = entry.timestamp
         occurrences[position].signature.enrich(with: entry)
         let occurrence = occurrences[position]
@@ -381,4 +408,30 @@ public struct SignalSummary: Sendable, Equatable {
     }
 
     public var isEmpty: Bool { counts.isEmpty }
+    /// Out of memory, leaks and jank.
+    public var warningCount: Int {
+        counts.reduce(0) { $0 + ($1.key.isFatal ? 0 : $1.value) }
+    }
+
+    /// `2 crashes · 1 ANR` for the status bar, or nil when nothing fatal happened. Native crashes count as
+    /// crashes there: the popover tells them apart.
+    public var fatalText: String? {
+        let crashes = count(of: .crash) + count(of: .nativeCrash)
+        let anrs = count(of: .anr)
+        let parts = [
+            crashes > 0 ? Self.plural(crashes, "crash", "crashes") : nil,
+            anrs > 0 ? Self.plural(anrs, "ANR", "ANRs") : nil,
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// `3 warnings`, or nil when there are none.
+    public var warningText: String? {
+        let count = warningCount
+        return count > 0 ? Self.plural(count, "warning", "warnings") : nil
+    }
+
+    private static func plural(_ count: Int, _ one: String, _ many: String) -> String {
+        "\(count) \(count == 1 ? one : many)"
+    }
 }
