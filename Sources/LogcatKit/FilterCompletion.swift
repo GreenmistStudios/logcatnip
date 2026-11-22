@@ -342,7 +342,9 @@ public enum FilterCompletion {
 
     private static func isValues(_ matcher: PrefixMatcher) -> [Value] {
         let special: [Value] = [
-            ("crash", "Crashes and ANRs"), ("firebase", "Firebase SDK tags"), ("stacktrace", "Entries with a stack trace"),
+            ("crash", "Crashes and ANRs"), ("anr", "Application not responding"),
+            ("leak", "Memory leaks"), ("jank", "Skipped frames"),
+            ("firebase", "Firebase SDK tags"), ("stacktrace", "Entries with a stack trace"),
         ]
         let levels: [Value] = LogLevel.allCases.map { ($0.name.lowercased(), "\($0.name) only") }
         return (special + levels).filter { matcher.matches($0.label) }
@@ -487,6 +489,9 @@ private enum KeyCatalog {
 
     private static let isTerms: [KeyEntry] = [
         KeyEntry(text: "is:crash", detail: "Crashes and ANRs", isTerm: true),
+        KeyEntry(text: "is:anr", detail: "Application not responding", isTerm: true),
+        KeyEntry(text: "is:leak", detail: "Memory leaks", isTerm: true),
+        KeyEntry(text: "is:jank", detail: "Skipped frames", isTerm: true),
         KeyEntry(text: "is:firebase", detail: "Firebase SDK tags", isTerm: true),
         KeyEntry(text: "is:stacktrace", detail: "Entries with a stack trace", isTerm: true),
     ] + LogLevel.allCases.map {

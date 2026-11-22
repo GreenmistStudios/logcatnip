@@ -90,6 +90,39 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
         #expect(throws: FilterError.self) { try LogFilter("is:bad") }
     }
 
+    @Test func isCrashIncludesNativeSignalsAndInputTimeouts() throws {
+        let signal = entry(tag: "libc", message: "Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 1 (main), pid 1 (com.example.app)", level: .assert)
+        #expect(try matches("is:crash", signal))
+        let timeout = entry(tag: "InputDispatcher", message: "Application is not responding: Window{1 u0 com.example.app/com.example.app.MainActivity}. Input dispatching timed out", level: .info)
+        #expect(try matches("is:crash", timeout))
+        #expect(try !matches("is:crash", entry(tag: "LeakCanary", message: "┬───", level: .debug)))
+    }
+
+    @Test func isAnrLeakAndJank() throws {
+        let anr = entry(tag: "ActivityManager", message: "ANR in com.example.app\nPID: 1\nReason: executing service com.example.app/.SyncService", level: .error)
+        let reason = entry(tag: "ActivityManager", message: "Reason: executing service com.example.app/.SyncService", level: .error)
+        let leak = entry(tag: "WindowManager", message: "\nandroid.view.WindowLeaked: Activity com.example.app.MainActivity has leaked window DecorView@1[MainActivity] that was originally added here", level: .error)
+        let jank = entry(tag: "Choreographer", message: "Skipped 45 frames!  The application may be doing too much work on its main thread.")
+        let smallJank = entry(tag: "Choreographer", message: "Skipped 3 frames!  The application may be doing too much work on its main thread.")
+
+        #expect(try matches("is:anr", anr))
+        // Enrichment lines belong to an occurrence but aren't one.
+        #expect(try !matches("is:anr", reason))
+        #expect(try !matches("is:anr", leak))
+        #expect(try matches("is:leak", leak))
+        #expect(try !matches("is:leak", jank))
+        #expect(try matches("is:jank", jank))
+        #expect(try matches("IS:JANK", jank))
+        #expect(try !matches("is:jank", smallJank))
+        #expect(try !matches("is:jank", entry(level: .error)))
+
+        #expect(try matches("is:anr is:leak", leak))
+        #expect(try sameMeaning("is:anr is:leak", "is:anr | is:leak"))
+        #expect(try sameMeaning("is:jank is:crash", "is:jank | is:crash"))
+        #expect(try matches("-is:jank", smallJank))
+        #expect(try !matches("is:jank tag:Choreographer & level:error", jank))
+    }
+
     @Test func isLevelMatchesExactlyThatLevel() throws {
         for level in LogLevel.allCases {
             let query = "is:\(level.name.lowercased())"
@@ -417,7 +450,7 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
 
     @Test func hideTagAppliesToEveryOrBranch() throws {
         let result = add("-tag=:NetCache", "tag:Net | tag:Http")
-        #expect(result == "(tag:Net | tag:Http) & -tag=:NetCache")
+        #expect(result == "(tag:Net | tag:Http) -tag=:NetCache")
         #expect(try matches(result, entry(tag: "Net")))
         #expect(try matches(result, entry(tag: "Http")))
         #expect(try !matches(result, entry(tag: "NetCache")))
@@ -439,7 +472,7 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
 
     @Test func showOnlyNeverOrs() throws {
         let cases: [(query: String, term: String, expected: String, narrowed: LogEntry)] = [
-            ("tag:Net | tag:Http", "tag=:NetCache", "(tag:Net | tag:Http) & tag=:NetCache", entry(tag: "Http")),
+            ("tag:Net | tag:Http", "tag=:NetCache", "(tag:Net | tag:Http) tag=:NetCache", entry(tag: "Http")),
             ("tag:a & level:W", "tag=:b", "tag:a & level:W tag=:b", entry(tag: "a", level: .error)),
             ("-tag:a", "tag=:b", "-tag:a tag=:b", entry(tag: "other")),
             ("(tag:a | tag:b)", "tag=:c", "(tag:a | tag:b) tag=:c", entry(tag: "b")),
@@ -461,7 +494,18 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
 
     @Test func minimumLevelAppliesToEveryOrBranch() throws {
         let result = level(.warn, "tag:Net | tag:Http")
-        #expect(result == "(tag:Net | tag:Http) & level:WARN")
+        #expect(result == "(tag:Net | tag:Http) level:WARN")
+        #expect(try LogFilter(result).levelSelection == .minimum(.warn))
+        // The new term is a lone top-level element, so the picker can replace or remove it.
+        let info = level(.info, result)
+        #expect(info == "(tag:Net | tag:Http) level:INFO")
+        #expect(try LogFilter(info).levelSelection == .minimum(.info))
+        let cleared = level(nil, result)
+        #expect(cleared == "(tag:Net | tag:Http)")
+        #expect(try LogFilter(cleared).levelSelection == .any)
+        // Show Only on a wrapped query replaces the previous term too.
+        let shown = add("tag=:A", add("-tag=:B", "tag:Net | tag:Http"))
+        #expect(add("tag=:C", shown) == "(tag:Net | tag:Http) -tag=:B tag=:C")
         for tag in ["Net", "Http"] {
             #expect(try !matches(result, entry(tag: tag, level: .debug)))
             #expect(try matches(result, entry(tag: tag, level: .warn)))
@@ -535,8 +579,8 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
 
     @Test func repeatedEditsAreNoOps() {
         #expect(add("-tag=:b", "tag:a -tag=:b") == "tag:a -tag=:b")
-        #expect(add("-tag=:NetCache", "(tag:Net | tag:Http) & -tag=:NetCache") == "(tag:Net | tag:Http) & -tag=:NetCache")
-        #expect(add("tag=:NetCache", "(tag:Net | tag:Http) & tag=:NetCache") == "(tag:Net | tag:Http) & tag=:NetCache")
+        #expect(add("-tag=:NetCache", "(tag:Net | tag:Http) -tag=:NetCache") == "(tag:Net | tag:Http) -tag=:NetCache")
+        #expect(add("tag=:NetCache", "(tag:Net | tag:Http) tag=:NetCache") == "(tag:Net | tag:Http) tag=:NetCache")
         #expect(level(.warn, "level:w") == "level:w")
         #expect(add("tag=:Http", "tag=:Http") == "tag=:Http")
     }
@@ -562,13 +606,34 @@ private func sameMeaning(_ a: String, _ b: String, caseSensitive: Bool = false) 
     }
 
     @Test func invalidQueriesStayInvalid() {
-        #expect(add("-tag=:b", "tag:a |") == "(tag:a |) & -tag=:b")
-        #expect(add("-tag=:b", "(tag:a") == "((tag:a) & -tag=:b")
+        #expect(add("-tag=:b", "tag:a |") == "(tag:a |) -tag=:b")
+        #expect(add("-tag=:b", "(tag:a") == "((tag:a) -tag=:b")
         #expect(level(nil, "tag:a |") == "tag:a |")
-        #expect(level(.warn, "tag:a |") == "(tag:a |) & level:WARN")
+        #expect(level(.warn, "tag:a |") == "(tag:a |) level:WARN")
         for query in ["tag:a |", "(tag:a"] {
             #expect(throws: FilterError.self) { try LogFilter(add("-tag=:b", query)) }
         }
+        // Wrapping would make this valid with another meaning, so it is left alone.
+        let broken = "tag:a) | (tag:b"
+        #expect(add("tag=:z", broken) == broken)
+    }
+
+    @Test func wrappingNeverChangesHowTheQueryLexes() throws {
+        // At depth 0 the `)` is part of the value `x)`, which wrapping in parentheses would change.
+        let query = "tag:x) | tag:y"
+        let result = add("-tag=:x", query)
+        #expect(result == query)
+        let path = "message:C:\\"
+        let hidden = add("-tag=:x", path)
+        let admitsHidden = try matches(hidden, entry(tag: "x", message: "C:\\"))
+        #expect(hidden == path || !admitsHidden)
+        #expect(try !matches(hidden, entry(tag: "a", message: "other")))
+    }
+
+    @Test func emptyGroupsDoNotBlockLevelRemoval() throws {
+        #expect(level(nil, "() level:WARN") == "()")
+        #expect(try matches(level(nil, "() level:WARN"), entry(level: .debug)))
+        #expect(level(nil, "(name:foo) level:WARN") == "(name:foo)")
     }
 
     @Test func quotedValues() throws {
