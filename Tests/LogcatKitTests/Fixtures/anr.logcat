@@ -1,0 +1,36 @@
+--------- beginning of main
+[      1763460488.105 10234:16110:16110 D/MainActivity ]
+Loading feed from disk
+
+[      1763460493.311 system: 1523: 1688 W/InputDispatcher ]
+Window 4f2b1c9 com.example.app/com.example.app.MainActivity (server) is unresponsive: 4f2b1c9 com.example.app/com.example.app.MainActivity (server) is not responding. Waited 5001ms for MotionEvent(deviceId=4, eventTime=1052381932000, source=TOUCHSCREEN, displayId=0, action=DOWN, actionButton=0x00000000, flags=0x00000000, metaState=0x00000000, buttonState=0x00000000, classification=NONE, edgeFlags=0x00000000, xPrecision=1.0, yPrecision=1.0, xCursorPosition=nan, yCursorPosition=nan, pointers=[0: (540.0, 1210.0)]), policyFlags=0x62000000
+
+[      1763460493.312 system: 1523: 1688 W/InputDispatcher ]
+Canceling events for 4f2b1c9 com.example.app/com.example.app.MainActivity (server) because it is unresponsive
+
+[      1763460493.318 system: 1523: 1722 I/WindowManager ]
+ANR in Window{4f2b1c9 u0 com.example.app/com.example.app.MainActivity}. Reason:4f2b1c9 com.example.app/com.example.app.MainActivity (server) is not responding. Waited 5001ms for MotionEvent(deviceId=4, eventTime=1052381932000, source=TOUCHSCREEN, displayId=0, action=DOWN, actionButton=0x00000000, flags=0x00000000, metaState=0x00000000, buttonState=0x00000000, classification=NONE, edgeFlags=0x00000000, xPrecision=1.0, yPrecision=1.0, xCursorPosition=nan, yCursorPosition=nan, pointers=[0: (540.0, 1210.0)]), policyFlags=0x62000000
+
+[      1763460500.684 system: 1523:16251 E/ActivityManager ]
+ANR in com.example.app (com.example.app/.MainActivity)
+PID: 16110
+Reason: Input dispatching timed out (4f2b1c9 com.example.app/com.example.app.MainActivity (server) is not responding. Waited 5001ms for MotionEvent(deviceId=4, eventTime=1052381932000, source=TOUCHSCREEN, displayId=0, action=DOWN, actionButton=0x00000000, flags=0x00000000, metaState=0x00000000, buttonState=0x00000000, classification=NONE, edgeFlags=0x00000000, xPrecision=1.0, yPrecision=1.0, xCursorPosition=nan, yCursorPosition=nan, pointers=[0: (540.0, 1210.0)]), policyFlags=0x62000000)
+Parent: com.example.app/.MainActivity
+ErrorId: 7a1e2f3c-5b4d-4e6f-9a8b-0c1d2e3f4a5b
+Frozen: false
+Load: 6.12 / 5.48 / 4.97
+----- Output from /proc/pressure/memory -----
+some avg10=0.00 avg60=0.00 avg300=0.00 total=118463422
+full avg10=0.00 avg60=0.00 avg300=0.00 total=48293011
+----- End output from /proc/pressure/memory -----
+
+CPU usage from 0ms to 7362ms later (2025-11-18 10:08:13.410 to 2025-11-18 10:08:20.772):
+  94% 16110/com.example.app: 89% user + 4.6% kernel / faults: 2210 minor
+  31% 1523/system_server: 18% user + 13% kernel / faults: 4128 minor
+  6.2% 712/surfaceflinger: 3.1% user + 3% kernel / faults: 214 minor
+  0.9% 15/ksoftirqd/0: 0% user + 0.9% kernel
+36% TOTAL: 24% user + 10% kernel + 0.4% iowait + 0.8% irq + 0.4% softirq
+
+[      1763460500.712 system: 1523:16251 I/ActivityManager ]
+Killing 16110:com.example.app/u0a234 (adj 0): user request after error
+
