@@ -10,10 +10,14 @@ enum SettingsKey {
     static let filterHistory = "filterHistory"
     static let favoriteFilters = "favoriteFilters"
     static let autoOpenSessions = "autoOpenSessions"
+    static let showSimulators = "showSimulators"
     static let wrapLines = "wrapLines"
+    static let recentWifiHosts = "recentWifiHosts"
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
     static let filterHistoryAutocomplete = "filterHistoryAutocomplete"
+    /// Owned by `UpdateController`, which also reads when it last checked and which version was skipped.
+    static let checkForUpdates = UpdateController.Keys.automaticChecks
 }
 
 enum Defaults {
@@ -25,10 +29,13 @@ enum Defaults {
             SettingsKey.maxEntries: maxEntries,
             SettingsKey.fontSize: fontSize,
             SettingsKey.autoOpenSessions: true,
+            SettingsKey.showSimulators: true,
             SettingsKey.wrapLines: false,
             SettingsKey.logcatBuffers: "",
+            SettingsKey.recentWifiHosts: [String](),
             SettingsKey.filterPrecedenceChecked: false,
             SettingsKey.filterHistoryAutocomplete: false,
+            SettingsKey.checkForUpdates: true,
         ])
     }
 
@@ -108,5 +115,25 @@ enum FilterLibrary {
 
     static func dismissPrecedenceWarnings() {
         UserDefaults.standard.removeObject(forKey: SettingsKey.precedenceChangedFilters)
+    }
+}
+
+/// Hosts connected over Wi-Fi by address, newest first, so the Connect over Wi-Fi sheet can offer them again.
+enum WirelessHosts {
+    static let limit = 10
+
+    static var recent: [String] {
+        UserDefaults.standard.stringArray(forKey: SettingsKey.recentWifiHosts) ?? []
+    }
+
+    /// `host` is the normalized `host:port` that `adb connect` accepted.
+    static func remember(_ host: String) {
+        var items = recent.filter { $0 != host }
+        items.insert(host, at: 0)
+        UserDefaults.standard.set(Array(items.prefix(limit)), forKey: SettingsKey.recentWifiHosts)
+    }
+
+    static func forget(_ host: String) {
+        UserDefaults.standard.set(recent.filter { $0 != host }, forKey: SettingsKey.recentWifiHosts)
     }
 }

@@ -15,6 +15,7 @@ import Foundation
 /// | `level:WARN` | level is WARN or higher (`V D I W E A` or the full names) |
 /// | `age:5m` | logged in the last 5 minutes (`s`, `m`, `h`, `d`) |
 /// | `is:crash`, `is:stacktrace` | crash records, records containing a stack trace |
+/// | `is:anr`, `is:leak`, `is:jank` | ANRs, leaks (LeakCanary, StrictMode, leaked windows), jank and slow work |
 /// | `is:error` (any level name) | exactly that level, where `level:` means that level and above |
 /// | `is:firebase` | tag is one of Android Studio's Firebase SDK tags (exact, case-sensitive) |
 /// | `pid:123`, `tid:123` | process or thread id |
@@ -25,8 +26,8 @@ import Foundation
 /// so `foo bar tag:a | tag:b` means `"foo bar" & (tag:a | tag:b)`. Each whitespace-separated element is an
 /// `|`-expression of `&`-expressions (`&` binds tighter than `|`), and parentheses may hold a whole
 /// sequence. Among the elements, lone non-negated terms with the same key are ORed: `tag:a tag:b level:W`
-/// means `(tag:a | tag:b) & level:W`. `level:` and `is:<level>` share a key, `is:crash` and `is:stacktrace`
-/// share one, and `is:firebase` groups with `tag:`. Everything else is ANDed, including negated terms and
+/// means `(tag:a | tag:b) & level:W`. `level:` and `is:<level>` share a key, `is:crash`, `is:stacktrace`,
+/// `is:anr`, `is:leak` and `is:jank` share one, and `is:firebase` groups with `tag:`. Everything else is ANDed, including negated terms and
 /// `package:mine`. Adjacent free-text words join into one phrase: `foo bar` matches `foo bar`. Unquoted
 /// values end at whitespace, `&` or `|` (regex values only at whitespace, since `|` is alternation).
 public struct LogFilter: Sendable {
@@ -417,6 +418,7 @@ enum FilterPredicate: Sendable {
     case maxAge(seconds: Double)
     case crash
     case stacktrace
+    case signal(SignalKind)
     case firebase
     case pid(Int32)
     case tid(Int32)
@@ -530,6 +532,7 @@ extension FilterPredicate {
         case let .maxAge(seconds): "age<=\(seconds)"
         case .crash: "crash"
         case .stacktrace: "stacktrace"
+        case let .signal(kind): "signal=\(kind.rawValue)"
         case .firebase: "firebase"
         case let .pid(pid): "pid=\(pid)"
         case let .tid(tid): "tid=\(tid)"
@@ -592,6 +595,9 @@ struct FilterSubject {
             return LogClassifier.isCrash(entry)
         case .stacktrace:
             return LogClassifier.containsStackTrace(entry.message)
+        case let .signal(kind):
+            guard let match = LogClassifier.signal(for: entry) else { return false }
+            return match.kind == kind && match.isAnchor
         case .firebase:
             return FilterPredicate.firebaseTags.contains(entry.tag)
         case let .pid(pid):
@@ -624,7 +630,7 @@ extension FilterPredicate {
         case .firebase: .field(.tag)
         case .minLevel, .exactLevel: .level
         case .maxAge: .age
-        case .crash, .stacktrace: .is
+        case .crash, .stacktrace, .signal: .is
         case .pid: .pid
         case .tid: .tid
         case .myPackages, .always: nil
@@ -966,10 +972,13 @@ struct FilterParser {
             switch value.lowercased() {
             case "crash": return .predicate(.crash)
             case "stacktrace": return .predicate(.stacktrace)
+            case "anr": return .predicate(.signal(.anr))
+            case "leak": return .predicate(.signal(.leak))
+            case "jank": return .predicate(.signal(.performance))
             case "firebase": return .predicate(.firebase)
             default:
                 guard let level = LogLevel(name: value) else {
-                    throw valueError("Unknown is:\(value). Use is:crash, is:stacktrace, is:firebase or a level such as is:error.", offset: offset, valueRange: valueRange)
+                    throw valueError("Unknown is:\(value). Use is:crash, is:stacktrace, is:anr, is:leak, is:jank, is:firebase or a level such as is:error.", offset: offset, valueRange: valueRange)
                 }
                 return .predicate(.exactLevel(level))
             }
@@ -1010,7 +1019,7 @@ struct FilterParser {
         }
     }
 
-    private func simplify(_ node: FilterNode) -> FilterNode? {
+    func simplify(_ node: FilterNode) -> FilterNode? {
         if case .predicate(.always) = node { return nil }
         return node
     }

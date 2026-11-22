@@ -1,0 +1,125 @@
+--------- beginning of main
+[      1763460716.204 10234:17020:17020 D/LeakCanary ]
+Watching instance of com.example.app.MainActivity (com.example.app.MainActivity received Activity#onDestroy() callback) with key 5d1c8c4e-8f7a-4c0e-9d2b-6e4f3a2b1c0d
+
+[      1763460721.816 10234:17020:17041 D/LeakCanary ]
+Found 1 object retained, dumping heap now (app is invisible)
+
+[      1763460728.770 10234:17020:17041 I/com.example.app ]
+hprof: heap dump "/data/user/0/com.example.app/cache/leakcanary/2025-11-18_10-12-04_118.hprof" starting...
+
+[      1763460734.093 10234:17020:17077 D/LeakCanary ]
+====================================
+HEAP ANALYSIS RESULT
+====================================
+1 APPLICATION LEAKS
+
+References underlined with "~~~" are likely causes.
+Learn more at https://squ.re/leaks.
+
+51226 bytes retained by leaking objects
+Signature: c4797f3d9a1b3c5e7f9e1d2c3b4a59687f6e5d4c
+┬───
+│ GC Root: Thread object
+│
+├─ java.lang.Thread instance
+│    Leaking: UNKNOWN
+│    Retaining 2.4 kB in 47 objects
+│    Thread name: 'main'
+│    ↓ Thread.threadLocals
+│             ~~~~~~~~~~~~
+├─ com.example.app.analytics.Tracker instance
+│    Leaking: UNKNOWN
+│    Retaining 51.2 kB in 812 objects
+│    ↓ Tracker.listener
+│              ~~~~~~~~
+╰→ com.example.app.MainActivity instance
+​     Leaking: YES (ObjectWatcher was watching this because com.example.app.MainActivity received Activity#onDestroy() callback and Activity#mDestroyed is true)
+​     Retaining 51.2 kB in 811 objects
+​     key = 5d1c8c4e-8f7a-4c0e-9d2b-6e4f3a2b1c0d
+​     watchDurationMillis = 5612
+​     retainedDurationMillis = 607
+​     mApplication instance of com.example.app.ExampleApplication
+​     mBase instance of androidx.appcompat.view.ContextThemeWrapper
+====================================
+0 LIBRARY LEAKS
+
+A Library Leak is a leak caused by a known bug in 3rd party code that you do not have control over.
+See https://square.github.io/leakcanary/fundamentals-how-leakcanary-works/#4-categorizing-leaks
+====================================
+0 UNREACHABLE OBJECTS
+
+An unreachable object is still in memory but LeakCanary could not find a strong reference path
+from GC roots.
+====================================
+METADATA
+
+Please include this in bug reports and Stack Overflow questions.
+
+Build.VERSION.SDK_INT: 34
+Build.MANUFACTURER: Google
+LeakCanary version: 2.14
+App process name: com.example.app
+Class count: 28391
+Instance count: 214882
+Primitive array count: 152093
+Object array count: 30175
+Thread count: 37
+Heap total bytes: 31944511
+Bitmap count: 9
+Bitmap total bytes: 1281622
+Large bitmap count: 0
+Large bitmap total bytes: 0
+Db 1: open /data/user/0/com.example.app/databases/feed.db
+Stats: LruCache[maxSize=3000,hits=124410,misses=231870,hitRate=34%]
+RandomAccess[bytes=11727802,reads=231870,travel=74913452810,range=37893113,size=46254392]
+Analysis duration: 3851 ms
+Heap dump file path: /data/user/0/com.example.app/cache/leakcanary/2025-11-18_10-12-04_118.hprof
+Heap dump timestamp: 1763460728772
+Heap dump duration: 1288 ms
+====================================
+
+[      1763460741.522 10234:17020:17031 D/StrictMode ]
+StrictMode policy violation: android.os.strictmode.LeakedClosableViolation: A resource was acquired at attached stack trace but never released. See java.io.Closeable for information on avoiding resource leaks.
+	at android.os.StrictMode$AndroidCloseGuardReporter.report(StrictMode.java:1994)
+	at dalvik.system.CloseGuard.warnIfOpen(CloseGuard.java:338)
+	at java.io.FileInputStream.finalize(FileInputStream.java:518)
+	at java.lang.Daemons$FinalizerDaemon.doFinalize(Daemons.java:319)
+	at java.lang.Daemons$FinalizerDaemon.runInternal(Daemons.java:306)
+	at java.lang.Daemons$Daemon.run(Daemons.java:140)
+	at java.lang.Thread.run(Thread.java:1012)
+Caused by: java.lang.Throwable: Explicit termination method 'close' not called
+	at dalvik.system.CloseGuard.openWithCallSite(CloseGuard.java:288)
+	at dalvik.system.CloseGuard.open(CloseGuard.java:257)
+	at java.io.FileInputStream.<init>(FileInputStream.java:185)
+	at com.example.app.settings.SettingsStore.load(SettingsStore.kt:31)
+	at com.example.app.MainActivity.onResume(MainActivity.kt:88)
+	at android.app.Instrumentation.callActivityOnResume(Instrumentation.java:1531)
+	at android.app.Activity.performResume(Activity.java:8735)
+	at android.app.ActivityThread.performResumeActivity(ActivityThread.java:4983)
+
+[      1763460752.660 10234:17020:17020 E/WindowManager ]
+
+android.view.WindowLeaked: Activity com.example.app.MainActivity has leaked window DecorView@8b6f2a1[MainActivity] that was originally added here
+	at android.view.ViewRootImpl.<init>(ViewRootImpl.java:1158)
+	at android.view.ViewRootImpl.<init>(ViewRootImpl.java:1111)
+	at android.view.WindowManagerGlobal.addView(WindowManagerGlobal.java:439)
+	at android.view.WindowManagerImpl.addView(WindowManagerImpl.java:158)
+	at android.app.Dialog.show(Dialog.java:352)
+	at com.example.app.MainActivity.showRatingPrompt(MainActivity.kt:131)
+	at com.example.app.MainActivity.onResume(MainActivity.kt:91)
+	at android.app.Instrumentation.callActivityOnResume(Instrumentation.java:1531)
+	at android.app.Activity.performResume(Activity.java:8735)
+
+[      1763460752.671 10234:17020:17020 E/ActivityThread ]
+Activity com.example.app.MainActivity has leaked IntentReceiver com.example.app.MainActivity$networkReceiver$1@5c1d0e2 that was originally registered here. Are you missing a call to unregisterReceiver()?
+android.app.IntentReceiverLeaked: Activity com.example.app.MainActivity has leaked IntentReceiver com.example.app.MainActivity$networkReceiver$1@5c1d0e2 that was originally registered here. Are you missing a call to unregisterReceiver()?
+	at android.app.LoadedApk$ReceiverDispatcher.<init>(LoadedApk.java:1857)
+	at android.app.LoadedApk.getReceiverDispatcher(LoadedApk.java:1585)
+	at android.app.ContextImpl.registerReceiverInternal(ContextImpl.java:1867)
+	at android.app.ContextImpl.registerReceiver(ContextImpl.java:1810)
+	at android.content.ContextWrapper.registerReceiver(ContextWrapper.java:774)
+	at com.example.app.MainActivity.onStart(MainActivity.kt:64)
+	at android.app.Instrumentation.callActivityOnStart(Instrumentation.java:1543)
+	at android.app.Activity.performStart(Activity.java:8361)
+

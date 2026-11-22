@@ -59,4 +59,9 @@ public enum LogcatTime {
         guard includeDate else { return time }
         return String(format: "%04d-%02d-%02d ", c.year ?? 0, c.month ?? 0, c.day ?? 0) + time
     }
+
+    /// `MM-DD HH:MM:SS.mmm`, the only `-T` form pre-Nougat logcat accepts.
+    public static func formatMonthDay(_ timestamp: Double, timeZone: TimeZone = .current) -> String {
+        String(format(timestamp, includeDate: true, timeZone: timeZone).dropFirst(5))
+    }
 }
