@@ -23,7 +23,8 @@ scripts/next-version.sh [--bump auto|patch|minor|major]   # the version the next
 ```
 
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions; `LOGCATNIP_FIND='text'` opens the find bar
+`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, overriding the default filter. The debug output includes the ignore lists and each session's `ignored=` count.
+ `LOGCATNIP_FIND='text'` opens the find bar
 with that query (the debug output then includes `find=... check=ok|MISMATCH`, a recount from scratch);
 `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. `LOGCATNIP_PERF_TESTS=1 swift test
 --filter FindPerformance` runs the opt-in find timings on 500,000 rows. `LOGCATNIP_WIFI_SHEET=qr|code|ip`,
@@ -73,6 +74,8 @@ an ad-hoc signed release once signed ones exist.
   - `FilterSyntax.swift`: highlighting spans for the filter field (from a lexer that keeps going past errors) and
     `FilterTextOffsets`, which maps `Character` offsets to the UTF-16 offsets AppKit uses.
   - `FilterCompletion.swift`: `completionContext(query:cursor:)` and the suggestions for keys, values and history.
+  - `IgnoreList.swift`: `IgnoreList` (global ignored tags and packages), `FilterOutcome` (shown, ignored or filtered
+    out, so the status bar can count what the lists hide) and `DefaultFilter` (the query new sessions start with).
   - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
     events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace

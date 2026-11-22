@@ -100,6 +100,8 @@ final class AppModel {
     private(set) var simulators: [SimulatorDevice] = []
     private(set) var sessions: [LogSession] = []
     var selectedSessionID: LogSession.ID?
+    /// Tags and packages hidden in every session. Exposed with their order so exports can describe what was hidden.
+    private(set) var ignoreList = Defaults.ignoreList
     let wireless = WirelessModel()
 
     @ObservationIgnored private var trackingTask: Task<Void, Never>?
@@ -160,12 +162,13 @@ final class AppModel {
         let completeQuery = ProcessInfo.processInfo.environment["LOGCATNIP_COMPLETE"]
         Task { [weak self] in
             while let self {
+                let ignored = "ignoredTags=\(self.ignoreList.tags) ignoredPackages=\(self.ignoreList.packages)"
                 let devices = self.devices.map {
                     "\($0.serial)[\($0.descriptor.state.description),\($0.transport.rawValue),\($0.identity?.description ?? "?")]"
                 }.joined(separator: ",")
                 let simulators = self.simulators.map(\.name).joined(separator: ",")
                 let header = "[logcatnip] devices=\(devices) groups=\(self.deviceGroups.count) simulators=\(simulators) "
-                    + "sessions=\(self.sessions.count)\n"
+                    + "sessions=\(self.sessions.count) \(ignored)\n"
                 FileHandle.standardError.write(Data(header.utf8))
                 FileHandle.standardError.write(Data("[logcatnip] \(self.wireless.debugSummary)\n".utf8))
                 for session in self.sessions {
@@ -173,7 +176,7 @@ final class AppModel {
                     let markers = session.entries.filter { $0.kind == .marker }
                     let line = "[logcatnip]   \(session.title): status=\(session.status.label) format=\(session.streamsModernFormat ? "modern" : "legacy") paused=\(session.isPaused) "
                         + "follow=\(session.autoScroll) total=\(session.totalCount) visible=\(session.visibleCount) "
-                        + "rows=\(session.rows.count) processes=\(stats.running) pending=\(stats.pending) "
+                        + "ignored=\(session.ignoredCount) showIgnored=\(session.showIgnored) rows=\(session.rows.count) processes=\(stats.running) pending=\(stats.pending) "
                         + "unresolved=\(stats.unresolvable) "
                         + "filter=\"\(session.filterQuery)\" error=\(session.filterError?.message ?? "-") "
                         + "serial=\(session.serial ?? "-") identity=\(session.identity?.description ?? "-") "
@@ -405,6 +408,38 @@ final class AppModel {
         }
     }
 
+    // MARK: Ignore lists
+
+    func ignoreTag(_ tag: String) { updateIgnoreList(ignoreList.addingTag(tag)) }
+    func ignorePackage(_ package: String) { updateIgnoreList(ignoreList.addingPackage(package)) }
+    func unignoreTag(_ tag: String) { updateIgnoreList(ignoreList.removingTag(tag)) }
+    func unignorePackage(_ package: String) { updateIgnoreList(ignoreList.removingPackage(package)) }
+
+    func setIgnoredTags(_ tags: [String]) {
+        updateIgnoreList(IgnoreList(tags: tags, packages: ignoreList.packages))
+    }
+
+    func setIgnoredPackages(_ packages: [String]) {
+        updateIgnoreList(IgnoreList(tags: ignoreList.tags, packages: packages))
+    }
+
+    /// Saves the lists and refilters every open session, like Android Studio reloading all Logcat tabs.
+    private func updateIgnoreList(_ list: IgnoreList) {
+        guard list != ignoreList else { return }
+        ignoreList = list
+        let defaults = UserDefaults.standard
+        for (key, values) in [(SettingsKey.ignoredTags, list.tags), (SettingsKey.ignoredPackages, list.packages)] {
+            if values.isEmpty {
+                defaults.removeObject(forKey: key)
+            } else {
+                defaults.set(values, forKey: key)
+            }
+        }
+        for session in sessions {
+            session.ignoreListDidChange()
+        }
+    }
+
     /// The simulator counterpart of `autoOpenIfNeeded(serial:)`. A UDID is stable, so it is the identity.
     private func autoOpenIfNeeded(simulator udid: String) {
         guard autoOpenEnabled,
@@ -447,7 +482,9 @@ final class AppModel {
         sessions.append(session)
         selectedSessionID = session.id
         refreshTitles()
-        if let initialFilter = ProcessInfo.processInfo.environment["LOGCATNIP_FILTER"] {
+        // The environment variable still wins, so scripted runs and tests do not depend on the saved default.
+        let initialFilter = ProcessInfo.processInfo.environment["LOGCATNIP_FILTER"] ?? Defaults.newSessionFilter
+        if !initialFilter.isEmpty {
             session.filterQuery = initialFilter
             session.applyFilterNow()
         }

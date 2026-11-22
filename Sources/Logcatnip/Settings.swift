@@ -16,6 +16,12 @@ enum SettingsKey {
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
     static let filterHistoryAutocomplete = "filterHistoryAutocomplete"
+    static let ignoredTags = "ignoredTags"
+    static let ignoredPackages = "ignoredPackages"
+    /// Absent until the user edits it, so the default can follow "my packages".
+    static let defaultFilter = "defaultFilter"
+    static let mostRecentlyUsedFilterIsDefault = "mostRecentlyUsedFilterIsDefault"
+    static let mostRecentlyUsedFilter = "mostRecentlyUsedFilter"
     /// Owned by `UpdateController`, which also reads when it last checked and which version was skipped.
     static let checkForUpdates = UpdateController.Keys.automaticChecks
 }
@@ -35,6 +41,7 @@ enum Defaults {
             SettingsKey.recentWifiHosts: [String](),
             SettingsKey.filterPrecedenceChecked: false,
             SettingsKey.filterHistoryAutocomplete: false,
+            SettingsKey.mostRecentlyUsedFilterIsDefault: false,
             SettingsKey.checkForUpdates: true,
         ])
     }
@@ -51,6 +58,25 @@ enum Defaults {
 
     static var maxEntriesValue: Int {
         max(10_000, UserDefaults.standard.integer(forKey: SettingsKey.maxEntries))
+    }
+
+    /// The saved ignore lists, for code that has no `AppModel` (and for the `.logcat` metadata to read).
+    static var ignoreList: IgnoreList {
+        let defaults = UserDefaults.standard
+        return IgnoreList(
+            tags: defaults.stringArray(forKey: SettingsKey.ignoredTags) ?? [],
+            packages: defaults.stringArray(forKey: SettingsKey.ignoredPackages) ?? []
+        )
+    }
+
+    /// The query a new device session starts with.
+    static var newSessionFilter: String {
+        DefaultFilter.initialQuery(
+            configured: UserDefaults.standard.string(forKey: SettingsKey.defaultFilter),
+            mostRecentlyUsed: FilterLibrary.mostRecentlyUsed,
+            useMostRecent: UserDefaults.standard.bool(forKey: SettingsKey.mostRecentlyUsedFilterIsDefault),
+            myPackages: myPackages
+        )
     }
 }
 
@@ -88,6 +114,16 @@ enum FilterLibrary {
             items.append(trimmed)
         }
         UserDefaults.standard.set(items, forKey: SettingsKey.favoriteFilters)
+    }
+
+    /// The last query applied in any session, for "use the most recently used filter". Nil until one is applied.
+    static var mostRecentlyUsed: String? {
+        UserDefaults.standard.string(forKey: SettingsKey.mostRecentlyUsedFilter)
+    }
+
+    static func noteMostRecentlyUsed(_ query: String) {
+        guard mostRecentlyUsed != query else { return }
+        UserDefaults.standard.set(query, forKey: SettingsKey.mostRecentlyUsedFilter)
     }
 
     static func clearHistory() {
