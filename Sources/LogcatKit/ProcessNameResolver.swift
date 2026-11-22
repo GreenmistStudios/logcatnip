@@ -109,6 +109,9 @@ public struct ProcessNameResolver: Sendable {
         self.retryDelays = retryDelays
     }
 
+    /// Names from the current bindings, for filter suggestions without scanning the log buffer.
+    public var runningNames: Set<String> { Set(running.values.map(\.name)) }
+
     public var stats: Stats { Stats(running: running.count, pending: pending.count, unresolvable: dead.count) }
 
     /// Whether another `ps` could name a waiting entry: one arrived after the last lookup started, or a

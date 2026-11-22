@@ -761,9 +761,6 @@ final class LogSession: Identifiable {
         return entries[index]
     }
 
-    /// Process names from the latest `ps`. The only place completion reads `processNames`.
-    private var runningProcessNames: [String] { Array(Set(processNames.values)) }
-
     /// Distinct tags seen, for the debug output.
     var distinctTagCount: Int { tagCounts.count }
 
@@ -779,7 +776,7 @@ final class LogSession: Identifiable {
         return FilterCompletionSource(
             tagCounts: tagCounts,
             processCounts: processCounts,
-            runningProcesses: runningProcessNames,
+            runningProcesses: Array(processResolver.runningNames),
             pids: pids,
             myPackages: Defaults.myPackages.sorted(),
             history: UserDefaults.standard.bool(forKey: SettingsKey.filterHistoryAutocomplete)
