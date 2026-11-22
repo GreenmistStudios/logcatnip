@@ -15,6 +15,7 @@ enum SettingsKey {
     static let recentWifiHosts = "recentWifiHosts"
     static let filterPrecedenceChecked = "filterPrecedenceChecked"
     static let precedenceChangedFilters = "precedenceChangedFilters"
+    static let filterHistoryAutocomplete = "filterHistoryAutocomplete"
     /// Owned by `UpdateController`, which also reads when it last checked and which version was skipped.
     static let checkForUpdates = UpdateController.Keys.automaticChecks
 }
@@ -33,6 +34,7 @@ enum Defaults {
             SettingsKey.logcatBuffers: "",
             SettingsKey.recentWifiHosts: [String](),
             SettingsKey.filterPrecedenceChecked: false,
+            SettingsKey.filterHistoryAutocomplete: false,
             SettingsKey.checkForUpdates: true,
         ])
     }

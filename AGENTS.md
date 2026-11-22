@@ -32,6 +32,8 @@ Connect over Wi-Fi flows without clicking; the debug report has a `wireless:` li
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch and `LOGCATNIP_UPDATE_INSTALL=1` installs what it finds
 without clicking; `LOGCATNIP_UPDATE_FEED=/path/release.json|URL` and `LOGCATNIP_UPDATE_VERSION=0.1.0` point it at a
 local feed and fake the running version. With `LOGCATNIP_DEBUG=1` each step logs an `update:` line.
+`LOGCATNIP_COMPLETE='tag:Net'` (with
+`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`, and uploads the zipped app as an artifact. Run all three before you call a change done.
@@ -68,6 +70,9 @@ an ad-hoc signed release once signed ones exist.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
   - `FilterQueryEditor.swift`: structural edits for the context menu and level picker (a new term ANDs with the
     whole query), and `LogFilter.levelSelection`, the picker's value read from the parsed filter.
+  - `FilterSyntax.swift`: highlighting spans for the filter field (from a lexer that keeps going past errors) and
+    `FilterTextOffsets`, which maps `Character` offsets to the UTF-16 offsets AppKit uses.
+  - `FilterCompletion.swift`: `completionContext(query:cursor:)` and the suggestions for keys, values and history.
   - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
     events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
@@ -87,6 +92,8 @@ an ad-hoc signed release once signed ones exist.
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
+  - `FilterField.swift`: the filter field, a single-line `NSTextView` (TextKit 1) that colors the query, underlines
+    the failing token and drives completion from the keyboard. `CompletionPanel.swift` is its suggestion popup.
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
     because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
   - `FindController.swift`, `FindBar.swift`: the find bar, its state, and incremental off-main scans.
