@@ -3,13 +3,16 @@ import Foundation
 import LogcatKit
 import Observation
 
-/// One log view: a live logcat stream from a device, or an imported file. Owns the entry buffer, the
-/// filter, and the filtered rows the table shows.
+/// One log view: a live logcat stream from a device, a simulator's `log stream`, or an imported file. Owns
+/// the entry buffer, the filter, and the filtered rows the table shows.
 @MainActor
 @Observable
 final class LogSession: Identifiable {
     enum Source: Equatable {
-        case device(serial: String)
+        /// `serial` is the adb transport now in use; it changes when the device reconnects on a new port or
+        /// switches between USB and Wi-Fi. `identity` stays with the session.
+        case device(serial: String, identity: DeviceIdentity)
+        case simulator(udid: String)
         case file(URL)
     }
 
@@ -52,7 +55,9 @@ final class LogSession: Identifiable {
     }
 
     let id = UUID()
-    let source: Source
+    private(set) var source: Source
+    /// Find-in-results for this session's rows.
+    let find = FindController()
     private(set) var baseTitle = ""
     var title = ""
     private(set) var status: Status = .starting
@@ -72,17 +77,30 @@ final class LogSession: Identifiable {
     private(set) var visibleCount = 0
     /// Incremented to ask the filter field to take focus.
     var focusFilterRequest = 0
+    /// Counts and groups of `signals`, reassigned only when the index changes so views aren't invalidated
+    /// on every flush.
+    private(set) var signalSummary = SignalSummary()
 
     @ObservationIgnored private(set) var entries: [LogEntry] = []
     @ObservationIgnored private(set) var rows: [Row] = []
+    /// Crashes, ANRs, leaks and warnings in `entries`. Keyed by entry, so refilters leave it alone.
+    @ObservationIgnored private(set) var signals = SignalIndex()
     @ObservationIgnored var onRowsChanged: ((RowsChange) -> Void)?
 
     @ObservationIgnored private let adb: ADB?
+    @ObservationIgnored private let simctl: Simctl?
     @ObservationIgnored private weak var model: AppModel?
     @ObservationIgnored private var firstID = 0
     @ObservationIgnored private var nextID = 0
     @ObservationIgnored private var lastFilteredID = -1
     @ObservationIgnored private var filterGeneration = 0
+    /// Bumped whenever `rows` changes, for caches of row indexes.
+    @ObservationIgnored private var rowsGeneration = 0
+    @ObservationIgnored private var signalRowsCache: (key: SignalRowsKey, rows: [Int])?
+    @ObservationIgnored private var signalDebugCheck: (key: [Int], verdict: String)?
+    /// The `signals.generation` that `signalSummary` was built from, so flushes without signal changes
+    /// don't rebuild and compare it.
+    @ObservationIgnored private var signalSummaryGeneration = -1
     @ObservationIgnored private var refilterInFlight = false
     @ObservationIgnored private var flushScheduled = false
     @ObservationIgnored private var filterDebounce: Task<Void, Never>?
@@ -92,7 +110,10 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var streamToken: UUID?
     @ObservationIgnored private var lastTimestamp: Double?
     @ObservationIgnored private var resumeAfter: Double?
-    @ObservationIgnored private var useLegacyFormat = false
+    /// Set when logcat itself reported that it has no `-v epoch` / `-v uid`; a transient failure never sets it.
+    @ObservationIgnored private var legacyFormatDetected = false
+    /// Whether the current stream passes `-v epoch -v uid`; read by the debug report.
+    @ObservationIgnored private(set) var streamsModernFormat = true
     @ObservationIgnored private var restartAttempts = 0
 
     @ObservationIgnored private var processRefreshInFlight = false
@@ -106,6 +127,8 @@ final class LogSession: Identifiable {
     @ObservationIgnored private var packageTracker = PackageUIDTracker()
     @ObservationIgnored private var packageRefreshInFlight = false
     @ObservationIgnored private var packageRefreshQueued = false
+    @ObservationIgnored private var packageRefreshForced = false
+    @ObservationIgnored private var packageRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var lastPackageRefresh = Date.distantPast
     /// How many `pm list packages` reads this session ran. For debug output.
     @ObservationIgnored private(set) var packageLookupCount = 0
@@ -119,22 +142,60 @@ final class LogSession: Identifiable {
     /// processes announced in the stream never cost a `ps`.
     private static let processStartGrace = 0.3
 
-    init(source: Source, adb: ADB?, model: AppModel) {
+    init(source: Source, adb: ADB? = nil, simctl: Simctl? = nil, model: AppModel) {
         self.source = source
         self.adb = adb
+        self.simctl = simctl
         self.model = model
+        find.session = self
     }
 
+    /// The adb serial of an Android device session.
     var serial: String? {
-        if case let .device(serial) = source { serial } else { nil }
+        if case let .device(serial, _) = source { serial } else { nil }
+    }
+
+    var identity: DeviceIdentity? {
+        if case let .device(_, identity) = source { identity } else { nil }
+    }
+
+    /// The UDID of a simulator session.
+    var udid: String? {
+        if case let .simulator(udid) = source { udid } else { nil }
+    }
+
+    /// Whether logs stream from a device or simulator, as opposed to a file.
+    var isStreamSource: Bool { serial != nil || udid != nil }
+
+    /// The command that produces the logs, for menus and markers.
+    var streamName: String { udid != nil ? "log stream" : "logcat" }
+
+    private var isSourceOnline: Bool {
+        switch source {
+        case let .device(serial, _): model?.device(serial: serial)?.isOnline ?? false
+        case let .simulator(udid): model?.simulator(udid: udid) != nil
+        case .file: false
+        }
     }
 
     var isLive: Bool { status == .streaming || status == .starting }
 
     func refreshBaseTitle() {
         switch source {
-        case let .device(serial):
-            baseTitle = model?.device(serial: serial)?.displayName ?? serial
+        case let .device(serial, _):
+            // A device that went away keeps its name while the session waits for it to come back.
+            if let device = model?.device(serial: serial) {
+                baseTitle = device.displayName
+            } else if baseTitle.isEmpty {
+                baseTitle = serial
+            }
+        case let .simulator(udid):
+            if let simulator = model?.simulator(udid: udid) {
+                baseTitle = simulator.name
+            } else if baseTitle.isEmpty {
+                // Keep the name once the simulator shuts down.
+                baseTitle = udid
+            }
         case let .file(url):
             baseTitle = url.lastPathComponent
         }
@@ -146,6 +207,16 @@ final class LogSession: Identifiable {
         let index = row.entryID - firstID
         guard index >= 0, index < entries.count else { return nil }
         return entries[index]
+    }
+
+    /// Id of the oldest entry still in the buffer. Entries are indexed by `id - firstEntryID`.
+    var firstEntryID: Int { firstID }
+
+    /// Index of `row` in `rows`, or nil when it is gone (trimmed, or filtered out).
+    func rowIndex(of row: Row) -> Int? {
+        let index = firstRowIndex(atOrAfter: row.entryID) + Int(row.line)
+        guard index < rows.count, rows[index] == row else { return nil }
+        return index
     }
 
     /// Names are stamped on entries at ingestion or when a `ps` snapshot resolves them. There is no
@@ -164,7 +235,7 @@ final class LogSession: Identifiable {
 
     /// The owners of the entry's uid, without building a `ResolvedPackage`, for the table's per-row path.
     func packageOwner(for entry: LogEntry) -> PackageUIDMap.Owner? {
-        packageTracker.map.owner(forUID: entry.uid)
+        packageTracker.map.owner(for: entry)
     }
 
     /// How many app ids have a known owner. For debug output.
@@ -173,22 +244,34 @@ final class LogSession: Identifiable {
     // MARK: Streaming
 
     func start() {
-        guard case let .device(serial) = source, let adb else { return }
+        let stream: AsyncStream<LogStreamEvent>
+        switch source {
+        case let .device(serial, _):
+            guard let adb else { return }
+            let api = model?.device(serial: serial)?.properties?.apiLevel
+            let modern = !legacyFormatDetected && ADB.LogcatOptions.modernFormatSupported(apiLevel: api)
+            streamsModernFormat = modern
+            let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
+            stream = adb.logcat(serial: serial, options: options)
+        case let .simulator(udid):
+            guard let simctl else { return }
+            stream = simctl.logStream(udid: udid)
+        case .file:
+            return
+        }
         streamTask?.cancel()
         status = .starting
-        let api = model?.device(serial: serial)?.properties?.apiLevel
-        let modern = !useLegacyFormat && (api ?? 99) >= 24
-        let options = ADB.LogcatOptions(buffers: Defaults.logcatBuffers, since: resumeAfter, modernFormat: modern)
         let token = UUID()
         streamToken = token
         requestProcessNames(force: true)
+        cancelScheduledPackageRefresh()
         packageTracker.reset()
         requestPackages(force: true)
 
         streamTask = Task { [weak self] in
             var receivedAny = false
             self?.status = .streaming
-            for await event in adb.logcat(serial: serial, options: options) {
+            for await event in stream {
                 guard let self, self.streamToken == token else { return }
                 switch event {
                 case let .entries(batch):
@@ -197,8 +280,8 @@ final class LogSession: Identifiable {
                         self.restartAttempts = 0
                     }
                     self.ingest(batch)
-                case let .ended(status, error):
-                    self.logcatEnded(status: status, error: error, receivedAny: receivedAny, modernFormat: modern)
+                case let .ended(exit):
+                    self.logcatEnded(exit)
                 }
             }
         }
@@ -206,13 +289,15 @@ final class LogSession: Identifiable {
 
     func stop() {
         streamToken = nil
+        cancelScheduledPackageRefresh()
         streamTask?.cancel()
         streamTask = nil
         ageRefresh?.cancel()
         if isLive { status = .stopped }
     }
 
-    /// Clears the view and starts logcat again from the start of the device buffer.
+    /// Clears the view and starts the stream again: logcat from the start of the device buffer, a simulator's
+    /// `log stream` from now.
     func restart() {
         stop()
         clear()
@@ -221,51 +306,80 @@ final class LogSession: Identifiable {
         // The buffer is replayed from the start, so the tracker must not remember the previous replay.
         markerTracker = ProcessMarkerTracker()
         processMarkerCount = 0
+        legacyFormatDetected = false
+        restartAttempts = 0
         start()
     }
 
     func deviceWentOffline() {
-        guard serial != nil, status != .disconnected, status != .stopped else { return }
+        guard isStreamSource, status != .disconnected, status != .stopped else { return }
         streamToken = nil
+        cancelScheduledPackageRefresh()
         streamTask?.cancel()
         status = .disconnected
-        appendMarker("Device disconnected")
+        appendMarker(disconnectedText)
     }
 
-    func deviceCameOnline() {
-        guard status == .disconnected else { return }
-        appendMarker("Device reconnected")
+    /// Replaces the identity once it is known, for a session opened before getprop answered.
+    func adopt(identity: DeviceIdentity) {
+        guard case let .device(serial, _) = source else { return }
+        source = .device(serial: serial, identity: identity)
+    }
+
+    /// Streams from `newSerial` from now on: the device came back, maybe on a new port or transport, or a
+    /// better transport of the same device appeared. Resumes after the last entry, so nothing repeats or
+    /// goes missing beyond what the device's buffer has already dropped.
+    func reattach(serial newSerial: String, transport: DeviceTransport) {
+        guard case let .device(_, identity) = source, status != .stopped else { return }
+        let reconnected = status == .disconnected
+        streamToken = nil
+        streamTask?.cancel()
+        streamTask = nil
+        source = .device(serial: newSerial, identity: identity)
+        let via = transport == .emulator ? newSerial : transport.label
+        appendMarker(reconnected ? "Device reconnected (\(via))" : "Switched to \(via)")
         resumeAfter = lastTimestamp
+        restartAttempts = 0
         start()
     }
 
-    private func logcatEnded(status exitStatus: Int32, error: String, receivedAny: Bool, modernFormat: Bool) {
+    /// Resumes a simulator session after the simulator boots again. Its UDID never changes, so unlike
+    /// `reattach` there is no transport to switch to.
+    func simulatorBooted() {
+        guard udid != nil, status == .disconnected else { return }
+        appendMarker("Simulator booted")
+        resumeAfter = lastTimestamp
+        restartAttempts = 0
+        start()
+    }
+
+    private func logcatEnded(_ exit: LogcatExit) {
         streamToken = nil
-        let message = error.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !receivedAny, modernFormat, exitStatus != 0, !useLegacyFormat {
-            // Pre-Nougat logcat rejects -v epoch / -v uid.
-            useLegacyFormat = true
+        switch exit.recovery(restartAttempts: restartAttempts, deviceOnline: isSourceOnline) {
+        case .useLegacyFormat:
+            legacyFormatDetected = true
+            appendMarker("logcat doesn't support -v epoch or -v uid; using the legacy format")
             start()
-            return
-        }
-        let online = serial.flatMap { model?.device(serial: $0)?.isOnline } ?? false
-        if online, restartAttempts < 3 {
+        case .restart:
             restartAttempts += 1
-            appendMarker("logcat exited\(message.isEmpty ? "" : ": \(message)"); restarting")
+            appendMarker("\(streamName) exited\(exit.detail.map { ": \($0)" } ?? " (\(exit.status))"); restarting")
             resumeAfter = lastTimestamp
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(1))
-                guard let self, self.streamToken == nil, self.status != .stopped else { return }
+                guard let self, self.streamToken == nil, self.isLive else { return }
                 self.start()
             }
-            return
-        }
-        if online {
-            status = .failed(message.isEmpty ? "logcat exited (\(exitStatus))" : message)
-        } else {
+        case .waitForDevice:
             status = .disconnected
-            appendMarker("Device disconnected")
+            appendMarker(disconnectedText)
+        case let .fail(message):
+            status = .failed(message)
+            appendMarker("\(streamName) failed: \(message)")
         }
+    }
+
+    private var disconnectedText: String {
+        udid != nil ? "Simulator shut down" : "Device disconnected"
     }
 
     func loadFile() {
@@ -293,8 +407,17 @@ final class LogSession: Identifiable {
 
     // MARK: Ingestion
 
+    /// Shows a fixed set of entries, as if loaded from a file, and filters them right away instead of on
+    /// the next flush. Screenshot tests use it to render the table without adb.
+    func show(_ batch: [LogEntry], status: Status = .loaded) {
+        ingest(batch)
+        self.status = status
+        flushRows()
+    }
+
     private func ingest(_ batch: [LogEntry]) {
         let now = ProcessInfo.processInfo.systemUptime
+        let start = entries.count
         var named = ProcessNameResolver.Update()
         var events: [Int: ProcessEvent] = [:]
         for index in batch.indices {
@@ -317,6 +440,7 @@ final class LogSession: Identifiable {
             entry.id = nextID
             nextID += 1
             processResolver.stamp(&entry, now: now)
+            packageTracker.map.stamp(&entry)
             if entry.processName == nil, let uid = PackageUIDMap.uid(fromLogcat: entry.uid) {
                 packageTracker.note(uid: uid)
             }
@@ -326,7 +450,9 @@ final class LogSession: Identifiable {
             if let event = events[index] { apply(event, entry: entry, to: &named) }
         }
         if !named.isEmpty { applyNameUpdate(named) }
+        signals.ingest(entries[start...])
         trimIfNeeded()
+        updateSignalSummary()
         if processResolver.needsLookup { requestProcessNames() }
         if packageTracker.needsRefresh { requestPackages() }
         scheduleFlush()
@@ -339,7 +465,7 @@ final class LogSession: Identifiable {
         switch event {
         case let .started(pid, process, uid):
             update.merge(processResolver.processStarted(pid: pid, name: process, seq: entry.id))
-            if let uid { packageTracker.note(uid: uid) }
+            if let uid { packageTracker.processStarted(uid: uid, process: process) }
             // Empty when the marker was already placed above the pid's first lines.
             appendProcessMarkers(
                 markerTracker.started(pid: pid, process: process, uid: uid, seq: entry.id), at: entry.timestamp)
@@ -397,6 +523,7 @@ final class LogSession: Identifiable {
         let drop = entries.count - limit * 9 / 10
         entries.removeFirst(drop)
         firstID += drop
+        signals.removeEntries(before: firstID, remaining: entries)
         let removedRows = firstRowIndex(atOrAfter: firstID)
         guard removedRows > 0 else { return }
         var removedEntries = 0
@@ -407,6 +534,8 @@ final class LogSession: Identifiable {
         }
         visibleCount = max(0, visibleCount - removedEntries)
         rows.removeFirst(removedRows)
+        rowsGeneration += 1
+        find.rowsRemovedFront(removedRows)
         onRowsChanged?(.reloaded(removedFront: removedRows))
     }
 
@@ -450,7 +579,9 @@ final class LogSession: Identifiable {
         guard !newRows.isEmpty else { return }
         let start = rows.count
         rows.append(contentsOf: newRows)
+        rowsGeneration += 1
         visibleCount += matched
+        find.rowsAppended()
         onRowsChanged?(.appended(start..<rows.count))
     }
 
@@ -462,6 +593,61 @@ final class LogSession: Identifiable {
         for line in 0..<lines {
             rows.append(Row(entryID: entry.id, line: line))
         }
+    }
+
+    // MARK: Signals
+
+    private struct SignalRowsKey: Equatable {
+        let signals: Int
+        let rows: Int
+        let firstID: Int
+        let kinds: Set<SignalKind>
+    }
+
+    private func updateSignalSummary() {
+        guard signals.generation != signalSummaryGeneration else { return }
+        signalSummaryGeneration = signals.generation
+        let summary = SignalSummary(signals)
+        if summary != signalSummary { signalSummary = summary }
+    }
+
+    /// Ascending row indexes of the first line of each occurrence of `kinds` that the filter shows.
+    /// Cached, since scroller ticks ask on every redraw.
+    func visibleSignalRows(kinds: Set<SignalKind>) -> [Int] {
+        let key = SignalRowsKey(signals: signals.generation, rows: rowsGeneration, firstID: firstID, kinds: kinds)
+        if let cache = signalRowsCache, cache.key == key { return cache.rows }
+        var result: [Int] = []
+        for occurrence in signals.occurrences where kinds.contains(occurrence.kind) {
+            if let index = rowIndex(of: Row(entryID: occurrence.id, line: 0)) { result.append(index) }
+        }
+        signalRowsCache = (key, result)
+        return result
+    }
+
+    /// Whether the filter shows the occurrence's anchor entry.
+    func occurrenceIsVisible(_ occurrence: SignalOccurrence) -> Bool {
+        rowIndex(of: Row(entryID: occurrence.id, line: 0)) != nil
+    }
+
+    /// One line for `LOGCATNIP_DEBUG`. Rebuilds the index from the buffer and compares occurrence and anchor
+    /// ids, so it shows whether incremental ingest and trims kept it exact (see ``SignalIndex`` for when a trim
+    /// through a burst can't). Rebuilt once per state.
+    func signalDebugSummary() -> String {
+        let key = [signals.generation, firstID, entries.count]
+        if signalDebugCheck?.key != key {
+            var expected = SignalIndex()
+            expected.ingest(entries)
+            let actualIDs = signals.occurrences.map(\.anchorEntryIDs)
+            let expectedIDs = expected.occurrences.map(\.anchorEntryIDs)
+            let verdict = actualIDs == expectedIDs ? "ok" : "MISMATCH(\(expectedIDs.count) vs \(actualIDs.count))"
+            signalDebugCheck = (key, verdict)
+        }
+        let counts: [(String, SignalKind)] = [
+            ("crash", .crash), ("native", .nativeCrash), ("anr", .anr), ("leak", .leak), ("oom", .outOfMemory),
+            ("jank", .performance),
+        ]
+        let text = counts.map { "\($0.0)=\(signals.count(of: $0.1))" }.joined(separator: " ")
+        return "signals: \(text) groups=\(signals.groups.count) check=\(signalDebugCheck?.verdict ?? "-")"
     }
 
     // MARK: Filtering
@@ -520,8 +706,10 @@ final class LogSession: Identifiable {
             // Entries may have been trimmed while filtering.
             let firstValid = rows.firstIndex { $0.entryID >= self.firstID } ?? rows.count
             self.rows = firstValid == 0 ? rows : Array(rows[firstValid...])
+            self.rowsGeneration += 1
             self.visibleCount = firstValid == 0 ? visible : Set(self.rows.map(\.entryID)).count
             self.lastFilteredID = lastID
+            self.find.rowsReplaced()
             self.onRowsChanged?(.reloaded(removedFront: 0))
             self.flushRows()
         }
@@ -543,12 +731,16 @@ final class LogSession: Identifiable {
     func clear() {
         entries.removeAll(keepingCapacity: true)
         rows.removeAll(keepingCapacity: true)
+        rowsGeneration += 1
+        signals.reset()
+        updateSignalSummary()
         firstID = nextID
         lastFilteredID = nextID - 1
         filterGeneration += 1
         refilterInFlight = false
         totalCount = 0
         visibleCount = 0
+        find.rowsReplaced()
         onRowsChanged?(.reloaded(removedFront: 0))
     }
 
@@ -629,8 +821,11 @@ final class LogSession: Identifiable {
     private func applyNameUpdate(_ update: ProcessNameResolver.Update) {
         // Cells only change when entries got a name, so skip the refresh otherwise.
         guard update.apply(to: &entries) > 0 else { return }
-        // Entries the filter has not seen yet are filtered with their names at the next flush.
-        guard update.assignments.values.contains(where: { $0.firstSeq <= lastFilteredID }) else { return }
+        // An in-flight snapshot may already contain these entries even though lastFilteredID has not
+        // advanced. Restart it so its stale names cannot become the final filtering result.
+        guard refilterInFlight || update.assignments.values.contains(where: { $0.firstSeq <= lastFilteredID }) else {
+            return
+        }
         if filter.dependsOnProcessNames {
             refilter()
         } else {
@@ -640,14 +835,22 @@ final class LogSession: Identifiable {
 
     // MARK: Packages by uid
 
-    /// Reads `pm list packages -U` when the stream starts and when an entry carries an app uid the map lacks
-    /// (each app id at most once, see `PackageUIDTracker`). Entries whose process was never seen can then
+    private func cancelScheduledPackageRefresh() {
+        packageRefreshTask?.cancel()
+        packageRefreshTask = nil
+        packageRefreshQueued = false
+        packageRefreshForced = false
+    }
+
+    /// Reads `pm list packages -U` at stream start, for missing uids and conflicting start identities
+    /// (see `PackageUIDTracker`). Entries whose process was never seen can then
     /// still be attributed to their app. Lookups are at least 2 s apart.
     private func requestPackages(force: Bool = false) {
-        guard let serial, adb != nil else { return }
+        guard let serial, adb != nil, let token = streamToken else { return }
         // `pm list packages -U` needs Android 8.0. Start proc events cover older releases.
         if let api = model?.device(serial: serial)?.properties?.apiLevel, api < 26 { return }
-        guard force || packageTracker.needsRefresh else { return }
+        if force { packageRefreshForced = true }
+        guard packageRefreshForced || packageTracker.needsRefresh else { return }
         if packageRefreshInFlight {
             packageRefreshQueued = true
             return
@@ -659,16 +862,18 @@ final class LogSession: Identifiable {
             return
         }
         packageRefreshQueued = true
-        Task { [weak self] in
+        packageRefreshTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(wait))
-            guard let self else { return }
+            guard !Task.isCancelled, let self, self.streamToken == token else { return }
             self.packageRefreshQueued = false
-            if force || self.packageTracker.needsRefresh { self.runPackageLookup() }
+            self.packageRefreshTask = nil
+            if self.packageRefreshForced || self.packageTracker.needsRefresh { self.runPackageLookup() }
         }
     }
 
     private func runPackageLookup() {
-        guard let serial, let adb, !packageRefreshInFlight else { return }
+        guard let serial, let adb, let token = streamToken, !packageRefreshInFlight else { return }
+        packageRefreshForced = false
         packageRefreshInFlight = true
         lastPackageRefresh = Date()
         packageLookupCount += 1
@@ -677,13 +882,21 @@ final class LogSession: Identifiable {
             let map = try? await adb.packagesByUID(serial: serial)
             guard let self else { return }
             self.packageRefreshInFlight = false
+            guard self.streamToken == token else {
+                self.packageRefreshQueued = false
+                if self.streamToken != nil { self.requestPackages(force: true) }
+                return
+            }
             // A device with apps never lists none, so an empty list is an error message, not an answer.
             if let map, map.count > 0 {
-                if self.packageTracker.finishRefresh(refresh, with: map) { self.packagesChanged() }
+                self.packageTracker.map.stamp(&self.entries)
+                let changed = self.packageTracker.finishRefresh(refresh, with: map)
+                self.packageTracker.map.stamp(&self.entries)
+                if changed { self.packagesChanged() }
             } else {
                 self.packageTracker.failRefresh(refresh)
             }
-            if self.packageRefreshQueued {
+            if self.packageRefreshQueued || self.packageTracker.needsRefresh {
                 self.packageRefreshQueued = false
                 self.requestPackages()
             }
@@ -701,41 +914,23 @@ final class LogSession: Identifiable {
 
     // MARK: Query editing
 
-    static func quoted(_ value: String) -> String {
-        let needsQuotes = value.isEmpty || value.contains { $0.isWhitespace || "\"'()&|\\".contains($0) }
-        guard needsQuotes else { return value }
-        let escaped = value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        return "\"\(escaped)\""
-    }
+    /// Kept so the table's context menu keeps building its terms the same way.
+    static func quoted(_ value: String) -> String { FilterQueryEditor.quoted(value) }
 
-    /// Appends a term such as `tag=:Foo` to the query and applies it immediately.
+    /// Adds a term such as `tag=:Foo` or `-tag=:Foo` to the whole query and applies it immediately.
     func addTerm(_ term: String) {
-        let base = filterQuery.trimmingCharacters(in: .whitespaces)
-        filterQuery = base.isEmpty ? term : "\(base) \(term)"
+        filterQuery = FilterQueryEditor.adding(term, to: filterQuery)
         applyFilterNow()
         FilterLibrary.remember(filterQuery)
     }
 
-    private static let levelTermPattern = try! NSRegularExpression(pattern: #"(^|\s)level:(\S+)"#, options: [.caseInsensitive])
+    /// What the level picker shows, from the applied filter rather than the query text. While the field holds an
+    /// invalid query this is the level of the filter that is actually applied.
+    var levelSelection: LevelSelection { filter.levelSelection }
 
-    /// The level of a `level:` term in the query, if there is exactly one.
-    var minimumLevel: LogLevel? {
-        let range = NSRange(filterQuery.startIndex..., in: filterQuery)
-        let matches = Self.levelTermPattern.matches(in: filterQuery, range: range)
-        guard matches.count == 1, let valueRange = Range(matches[0].range(at: 2), in: filterQuery) else { return nil }
-        return LogLevel(name: String(filterQuery[valueRange]))
-    }
-
-    /// Replaces any `level:` terms in the query.
+    /// Replaces the query's top-level level terms, or removes them for `nil`.
     func setMinimumLevel(_ level: LogLevel?) {
-        let range = NSRange(filterQuery.startIndex..., in: filterQuery)
-        var query = Self.levelTermPattern.stringByReplacingMatches(in: filterQuery, range: range, withTemplate: "$1")
-            .trimmingCharacters(in: .whitespaces)
-        query = query.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
-        if let level {
-            query = query.isEmpty ? "level:\(level.name)" : "\(query) level:\(level.name)"
-        }
-        filterQuery = query
+        filterQuery = FilterQueryEditor.settingMinimumLevel(level, in: filterQuery)
         applyFilterNow()
     }
 

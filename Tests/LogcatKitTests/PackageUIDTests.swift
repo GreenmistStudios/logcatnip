@@ -161,6 +161,33 @@ private func logEntry(process: String? = nil, uid: String? = nil) -> LogEntry {
         #expect(try !matches("package:greenmist", e, packages: map))
         #expect(try matches("process=:com.foo:remote", e, packages: map))
     }
+
+    @Test func stampedOwnerSurvivesReuseAndRemoval() throws {
+        let oldMap = PackageUIDMap(owners: [10233: ["com.old"]])
+        let newMap = PackageUIDMap(owners: [10233: ["com.new"]])
+        var oldEntry = logEntry(uid: "10233")
+        oldMap.stamp(&oldEntry)
+        newMap.stamp(&oldEntry)
+        var newEntry = logEntry(uid: "10233")
+        newMap.stamp(&newEntry)
+
+        for map in [newMap, PackageUIDMap()] {
+            #expect(map.resolvedPackage(for: oldEntry)?.label == "com.old")
+            #expect(map.owner(for: oldEntry)?.label == "com.old")
+            #expect(try matches("package=:com.old", oldEntry, packages: map))
+            #expect(try !matches("package=:com.new", oldEntry, packages: map))
+            #expect(try matches("package:mine", oldEntry, mine: ["com.old"], packages: map))
+            #expect(try matches("-package:com.new", oldEntry, packages: map))
+        }
+        #expect(newMap.resolvedPackage(for: newEntry)?.label == "com.new")
+        #expect(try matches("package=:com.new", newEntry, packages: newMap))
+
+        oldEntry.processName = "com.process:remote"
+        #expect(newMap.resolvedPackage(for: oldEntry)?.label == "com.process")
+        #expect(newMap.resolvedPackage(for: oldEntry)?.viaUID == false)
+        #expect(try matches("package=:com.process", oldEntry, packages: newMap))
+        #expect(try !matches("package=:com.old", oldEntry, packages: newMap))
+    }
 }
 
 @Suite struct PackageUIDTrackerTests {
@@ -190,12 +217,34 @@ private func logEntry(process: String? = nil, uid: String? = nil) -> LogEntry {
         #expect(tracker.needsRefresh)
     }
 
-    @Test func uidsNotedDuringRefreshAreCovered() {
+    @Test func missingUIDNotedDuringRefreshNeedsFollowup() {
         var tracker = PackageUIDTracker(map: emulatorMap)
         tracker.note(uid: 10300)
         let refresh = tracker.beginRefresh()
         tracker.note(uid: 10302)
         #expect(tracker.needsRefresh)
+        tracker.finishRefresh(refresh, with: emulatorMap)
+        #expect(tracker.needsRefresh)
+        let followup = tracker.beginRefresh()
+        #expect(followup.covering == [10302])
+        tracker.finishRefresh(followup, with: PackageUIDMap(owners: [10302: ["com.installed"]]))
+        #expect(tracker.map.owner(forUID: 10302)?.label == "com.installed")
+        #expect(!tracker.needsRefresh)
+    }
+
+    @Test func renotingCoveredUIDDuringRefreshDoesNotRetry() {
+        var tracker = PackageUIDTracker()
+        tracker.note(uid: 10300)
+        let refresh = tracker.beginRefresh()
+        tracker.note(uid: 10300)
+        tracker.finishRefresh(refresh, with: emulatorMap)
+        #expect(!tracker.needsRefresh)
+    }
+
+    @Test func newUIDFoundInInflightResponseNeedsNoFollowup() {
+        var tracker = PackageUIDTracker()
+        let refresh = tracker.beginRefresh()
+        tracker.note(uid: 10233)
         tracker.finishRefresh(refresh, with: emulatorMap)
         #expect(!tracker.needsRefresh)
     }
@@ -213,7 +262,7 @@ private func logEntry(process: String? = nil, uid: String? = nil) -> LogEntry {
         #expect(!tracker.isUnavailable)
         tracker.note(uid: 10400)
         #expect(tracker.needsRefresh)
-        #expect(tracker.map == emulatorMap)
+        #expect(tracker.map.count == 0)
     }
 
     @Test func finishReportsWhetherMapChanged() {
@@ -231,15 +280,63 @@ private func logEntry(process: String? = nil, uid: String? = nil) -> LogEntry {
 
     /// A reinstall gets a new uid and the old one drops out of `pm list packages`; the entries the old
     /// install logged must keep their package.
-    @Test func refreshKeepsOwnersOfAppsThatWentAway() {
+    @Test func refreshReplacesOwnersOfAppsThatWentAway() {
         var tracker = PackageUIDTracker(map: PackageUIDMap(owners: [10234: ["com.a"], 10240: ["com.b"]]))
+        var entries = [logEntry(uid: "10234"), logEntry(uid: "10240")]
+        tracker.map.stamp(&entries)
         tracker.note(uid: 10235)
         let refresh = tracker.beginRefresh()
         let changed = tracker.finishRefresh(refresh, with: PackageUIDMap(owners: [10235: ["com.a"], 10240: ["com.b2"]]))
         #expect(changed)
-        #expect(tracker.map.owner(forUID: 10234)?.packages == ["com.a"])
+        tracker.map.stamp(&entries)
+        #expect(tracker.map.owner(forUID: 10234) == nil)
+        #expect(tracker.map.resolvedPackage(for: entries[0])?.label == "com.a")
+        #expect(tracker.map.resolvedPackage(for: entries[1])?.label == "com.b")
         #expect(tracker.map.owner(forUID: 10235)?.packages == ["com.a"])
         #expect(tracker.map.owner(forUID: 10240)?.packages == ["com.b2"])
-        #expect(tracker.map.count == 3)
+        #expect(tracker.map.count == 2)
+    }
+
+    @Test func reconnectWaitsForFreshOwners() {
+        var tracker = PackageUIDTracker(map: emulatorMap)
+        var oldEntry = logEntry(uid: "10233")
+        tracker.map.stamp(&oldEntry)
+        tracker.reset()
+        var newEntry = logEntry(uid: "10233")
+        tracker.map.stamp(&newEntry)
+        #expect(newEntry.uidOwner == nil)
+        let refresh = tracker.beginRefresh()
+        tracker.finishRefresh(refresh, with: PackageUIDMap(owners: [10233: ["com.replacement"]]))
+        tracker.map.stamp(&newEntry)
+        #expect(tracker.map.resolvedPackage(for: oldEntry)?.label == "studio.greenmist.test.lane2")
+        #expect(tracker.map.resolvedPackage(for: newEntry)?.label == "com.replacement")
+    }
+
+    @Test func conflictingStartInvalidatesKnownOwner() {
+        var tracker = PackageUIDTracker(map: emulatorMap)
+        tracker.processStarted(uid: 10233, process: "studio.greenmist.test.lane2:remote")
+        #expect(!tracker.needsRefresh)
+        tracker.processStarted(uid: 10233, process: "com.replacement:remote")
+        #expect(tracker.needsRefresh)
+        #expect(tracker.map.owner(forUID: 10233) == nil)
+        let refresh = tracker.beginRefresh()
+        tracker.finishRefresh(refresh, with: PackageUIDMap(owners: [10233: ["com.replacement"]]))
+        #expect(!tracker.needsRefresh)
+        #expect(tracker.map.owner(forUID: 10233)?.label == "com.replacement")
+    }
+
+    @Test func conflictingStartDuringLookupRequiresFreshSnapshot() {
+        var tracker = PackageUIDTracker(map: emulatorMap)
+        let refresh = tracker.beginRefresh()
+        tracker.processStarted(uid: 10233, process: "com.replacement")
+        tracker.finishRefresh(refresh, with: emulatorMap)
+        #expect(tracker.map.owner(forUID: 10233) == nil)
+        #expect(tracker.needsRefresh)
+        let followup = tracker.beginRefresh()
+        tracker.finishRefresh(followup, with: emulatorMap)
+        #expect(!tracker.needsRefresh)
+        // A legitimate custom process identity must not poll pm on every start.
+        tracker.processStarted(uid: 10233, process: "com.replacement:remote")
+        #expect(!tracker.needsRefresh)
     }
 }

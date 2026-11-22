@@ -3,7 +3,7 @@ import Foundation
 /// Which packages own each app uid, from `pm list packages -U`. Keyed by app id (`uid % 100000`), so the
 /// uid of a package in any user resolves. Several packages can share one uid.
 public struct PackageUIDMap: Sendable, Equatable {
-    public struct Owner: Sendable, Equatable {
+    public struct Owner: Sendable, Hashable {
         /// Sorted, so the label does not change between refreshes.
         public let packages: [String]
         /// The packages joined with `" | "`, for display.
@@ -21,13 +21,10 @@ public struct PackageUIDMap: Sendable, Equatable {
         }
     }
 
-    /// This map with the app ids of `newer` replaced. Apps that left the list stay: their uid dropped out of
-    /// `pm list packages` (uninstalled, or reinstalled under a new uid), but the entries they logged are
-    /// still in the buffer.
-    public func merging(_ newer: PackageUIDMap) -> PackageUIDMap {
-        var merged = self
-        merged.byAppID.merge(newer.byAppID) { _, new in new }
-        return merged
+    fileprivate func removing(_ appIDs: Set<Int>) -> PackageUIDMap {
+        var result = self
+        for appID in appIDs { result.byAppID[appID] = nil }
+        return result
     }
 
     /// The number of app ids with an owner.
@@ -78,6 +75,21 @@ public struct PackageUIDMap: Sendable, Equatable {
         Self.uid(fromLogcat: text).flatMap { owner(forUID: $0) }
     }
 
+    /// Prefer the captured attribution when this uid has since changed owners.
+    public func owner(for entry: LogEntry) -> Owner? {
+        entry.uidOwner ?? owner(forUID: entry.uid)
+    }
+
+    public func stamp(_ entry: inout LogEntry) {
+        guard entry.kind == .log, entry.uidOwner == nil else { return }
+        entry.uidOwner = owner(forUID: entry.uid)
+    }
+
+    /// Called only on snapshot changes, not for each displayed row.
+    public func stamp(_ entries: inout [LogEntry]) {
+        for index in entries.indices { stamp(&entries[index]) }
+    }
+
     /// The package to show for an entry: its process name's package, else the owners of its uid. A process
     /// name wins even when it is not a package (`android.process.acore`), because it is what the process
     /// really was; the uid only fills in for processes that were never seen.
@@ -87,7 +99,7 @@ public struct PackageUIDMap: Sendable, Equatable {
             let package = LogEntry.packageName(forProcess: process)
             return ResolvedPackage(packages: [package], label: package, viaUID: false)
         }
-        guard let owner = owner(forUID: entry.uid) else { return nil }
+        guard let owner = owner(for: entry) else { return nil }
         return ResolvedPackage(packages: owner.packages, label: owner.label, viaUID: true)
     }
 }
@@ -106,12 +118,12 @@ public struct ResolvedPackage: Sendable, Equatable {
     }
 }
 
-/// Decides when to read `pm list packages -U` again: when the session starts, then only for app uids the map
-/// lacks, each asked about at most once, so a session whose processes all resolve makes no extra calls.
+/// Refreshes missing app uids once and known owners when a process-start identity contradicts them.
 public struct PackageUIDTracker: Sendable {
     /// A refresh in progress and the app ids it answers for.
     public struct Refresh: Sendable, Equatable {
         let covering: Set<Int>
+        let revision: Int
     }
 
     public private(set) var map: PackageUIDMap
@@ -119,6 +131,9 @@ public struct PackageUIDTracker: Sendable {
     public private(set) var isUnavailable = false
     private var wanted: Set<Int> = []
     private var asked: Set<Int> = []
+    private var revision = 0
+    private var invalidated: [Int: Int] = [:]
+    private var checkedIdentities: [Int: Set<String>] = [:]
 
     public init(map: PackageUIDMap = PackageUIDMap()) {
         self.map = map
@@ -134,22 +149,40 @@ public struct PackageUIDTracker: Sendable {
         wanted.insert(appID)
     }
 
-    public mutating func beginRefresh() -> Refresh {
-        defer { wanted = [] }
-        return Refresh(covering: wanted)
+    /// A custom/shared-uid process name may legitimately differ from the package list. Check each
+    /// conflicting identity once per stream, rather than repeatedly refreshing on every start event.
+    public mutating func processStarted(uid: Int, process: String) {
+        guard !isUnavailable, let appID = PackageUIDMap.appID(forUID: uid) else { return }
+        guard let owner = map.owner(forAppID: appID) else {
+            note(uid: uid)
+            return
+        }
+        let package = LogEntry.packageName(forProcess: process)
+        guard !owner.packages.contains(package),
+              checkedIdentities[appID, default: []].insert(package).inserted else { return }
+        revision += 1
+        invalidated[appID] = revision
+        map = map.removing([appID])
+        asked.remove(appID)
+        wanted.insert(appID)
     }
 
-    /// Merges the list into the map and returns whether the map changed. App ids noted up to now count as
-    /// asked even if `newMap` lacks them, because an app that is not installed will not be installed by
-    /// asking again.
+    public mutating func beginRefresh() -> Refresh {
+        defer { wanted = [] }
+        return Refresh(covering: wanted, revision: revision)
+    }
+
+    /// Only ids covered at request start count as asked. Missing ids first seen during the read still
+    /// need a follow-up; re-noting a covered id must not cause endless retries.
     @discardableResult
     public mutating func finishRefresh(_ refresh: Refresh, with newMap: PackageUIDMap) -> Bool {
-        let merged = map.merging(newMap)
-        let changed = merged != map
-        map = merged
-        asked.formUnion(refresh.covering)
-        asked.formUnion(wanted)
-        wanted = []
+        invalidated = invalidated.filter { $0.value > refresh.revision }
+        let pendingInvalidation = Set(invalidated.keys)
+        let snapshot = newMap.removing(pendingInvalidation)
+        let changed = snapshot != map
+        map = snapshot
+        asked.formUnion(refresh.covering.subtracting(pendingInvalidation))
+        wanted = wanted.filter { !asked.contains($0) && map.owner(forAppID: $0) == nil }
         return changed
     }
 
@@ -159,11 +192,14 @@ public struct PackageUIDTracker: Sendable {
     }
 
     /// A new logcat stream (the first one, or after a reconnect) may see apps installed in between, so it
-    /// asks again. The map is kept: it is still right for the uids it knows.
+    /// asks again. Buffered entries keep their stamped owners; new entries wait for a fresh snapshot.
     public mutating func reset() {
         isUnavailable = false
         wanted = []
         asked = []
+        map = PackageUIDMap()
+        invalidated = [:]
+        checkedIdentities = [:]
     }
 }
 

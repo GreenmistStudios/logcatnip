@@ -8,15 +8,32 @@ struct SessionView: View {
     @AppStorage(SettingsKey.wrapLines) private var wrapLines = false
 
     var body: some View {
+        SessionContent(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
+            .focusedSceneValue(\.session, session)
+            .toolbar { SessionToolbar(session: session, showDate: $showDate, wrapLines: $wrapLines) }
+    }
+}
+
+/// The filter bar, table and status bar. Takes the display settings as values rather than reading
+/// them from user defaults, so screenshot tests can render it with fixed settings.
+struct SessionContent: View {
+    let session: LogSession
+    var fontSize: Double
+    var showDate: Bool
+    var wrapLines: Bool
+
+    var body: some View {
         VStack(spacing: 0) {
             FilterBar(session: session)
             Divider()
+            if session.find.isVisible {
+                FindBar(find: session.find)
+                Divider()
+            }
             LogTableView(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
             Divider()
             StatusBar(session: session)
         }
-        .focusedSceneValue(\.session, session)
-        .toolbar { SessionToolbar(session: session, showDate: $showDate, wrapLines: $wrapLines) }
     }
 }
 
@@ -58,13 +75,13 @@ private struct SessionToolbar: ToolbarContent {
             }
             .help("Clear the view (⌘K). Hold for more options.")
 
-            if session.serial != nil {
+            if session.isStreamSource {
                 Button {
                     session.restart()
                 } label: {
                     Label("Restart", systemImage: "arrow.clockwise")
                 }
-                .help("Restart logcat (⌘R)")
+                .help("Restart \(session.streamName) (⌘R)")
             }
 
             Menu {
@@ -145,15 +162,20 @@ struct FilterBar: View {
             .help("Match case")
 
             Picker("Level", selection: levelBinding) {
-                Text("Any Level").tag(LogLevel?.none)
+                Text("Any Level").tag(LevelSelection.any)
                 Divider()
                 ForEach(LogLevel.allCases, id: \.self) { level in
-                    Text(level.name.capitalized).tag(LogLevel?.some(level))
+                    Text(level.name.capitalized).tag(LevelSelection.minimum(level))
+                }
+                // Without a matching tag the pop-up would show nothing for a level the picker cannot express.
+                if session.levelSelection == .mixed {
+                    Divider()
+                    Text("Mixed").tag(LevelSelection.mixed)
                 }
             }
             .labelsHidden()
             .fixedSize()
-            .help("Minimum log level (edits the level: term)")
+            .help("Minimum log level (edits the top-level level: term; Mixed when the level comes from is: or a group)")
 
             Button {
                 showingHelp.toggle()
@@ -175,10 +197,16 @@ struct FilterBar: View {
         return FilterLibrary.isFavorite(session.filterQuery)
     }
 
-    private var levelBinding: Binding<LogLevel?> {
+    private var levelBinding: Binding<LevelSelection> {
         Binding(
-            get: { session.minimumLevel },
-            set: { session.setMinimumLevel($0) }
+            get: { session.levelSelection },
+            set: { selection in
+                switch selection {
+                case .any: session.setMinimumLevel(nil)
+                case let .minimum(level): session.setMinimumLevel(level)
+                case .mixed: break
+                }
+            }
         )
     }
 
@@ -187,17 +215,18 @@ struct FilterBar: View {
         let _ = libraryVersion
         let favorites = FilterLibrary.favorites
         let history = FilterLibrary.history
+        let flagged = FilterLibrary.precedenceChanged
         if !favorites.isEmpty {
             Section("Favorites") {
                 ForEach(favorites, id: \.self) { query in
-                    Button(query) { use(query) }
+                    Button(flagged.contains(query) ? "⚠︎ \(query)" : query) { use(query) }
                 }
             }
         }
         if !history.isEmpty {
             Section("Recent") {
                 ForEach(history, id: \.self) { query in
-                    Button(query) { use(query) }
+                    Button(flagged.contains(query) ? "⚠︎ \(query)" : query) { use(query) }
                 }
             }
             Divider()
@@ -208,6 +237,14 @@ struct FilterBar: View {
         }
         if favorites.isEmpty && history.isEmpty {
             Text("No saved filters")
+        }
+        if !flagged.isEmpty {
+            Divider()
+            Text("⚠︎ Meaning changed: spaces now bind looser than & and |")
+            Button("Dismiss ⚠︎ Warnings") {
+                FilterLibrary.dismissPrecedenceWarnings()
+                libraryVersion += 1
+            }
         }
         Divider()
         Section("Examples") {
@@ -285,10 +322,12 @@ struct FilterHelpView: View {
         Example(query: "level:WARN", description: "warnings and above"),
         Example(query: "is:crash", description: "crashes and ANRs"),
         Example(query: "is:stacktrace", description: "entries with stack traces"),
+        Example(query: "is:anr is:leak", description: "ANRs and leaks"),
         Example(query: "tag:Activity -tag=:ActivityTaskManager", description: "tag contains / not equal"),
         Example(query: "tag~:^(Okhttp|Retrofit)", description: "tag regex"),
         Example(query: "age:5m", description: "logged in the last 5 minutes"),
         Example(query: "(tag:Net | tag:Http) & level:ERROR", description: "operators and grouping"),
+        Example(query: "level:ERROR tag:Net | tag:Http", description: "errors from either tag"),
     ]
 
     private let rows: [(String, String)] = [
@@ -302,10 +341,12 @@ struct FilterHelpView: View {
         ("level:WARN", "WARN and above (V, D, I, W, E, A also work)"),
         ("age:30s age:5m age:2h age:1d", "Recent entries only"),
         ("is:crash  is:stacktrace", "Crashes / entries containing stack traces"),
+        ("is:anr  is:leak  is:jank", "ANRs / leaks / skipped frames and slow work"),
+        ("is:error  is:firebase", "Exactly one level / Firebase SDK tags"),
         ("pid:123  tid:456", "Process or thread id"),
         ("name:\"My filter\"", "Names the filter"),
         ("foo bar  \"foo bar\"", "Free text anywhere in the line"),
-        ("&  |  ( )", "AND, OR and grouping; & binds tighter than |"),
+        ("&  |  ( )", "AND, OR and grouping; & binds tighter than |, spaces loosest"),
     ]
 
     var body: some View {
@@ -320,7 +361,7 @@ struct FilterHelpView: View {
                     }
                 }
             }
-            Text("Without operators, terms with the same key are ORed and everything else is ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to filter by its tag, package or process.")
+            Text("Spaces separate terms with the lowest precedence: `foo bar tag:a | tag:b` means `\"foo bar\" & (tag:a | tag:b)`. Among them, terms with the same key are ORed and the rest ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`. Quote values that contain spaces, & or |. Right-click a log line to show only or hide its tag, package or process; the new term applies to the whole query.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

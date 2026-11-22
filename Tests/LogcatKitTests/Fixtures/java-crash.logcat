@@ -1,0 +1,107 @@
+--------- beginning of main
+[      1763460118.552 10234:14211:14211 I/com.example.app ]
+Late-enabling -Xcheck:jni
+
+[      1763460118.951 10234:14211:14211 D/ProfileInstaller ]
+Installing profile for com.example.app
+
+[      1763460121.398 10234:14211:14211 E/AndroidRuntime ]
+Unable to report crash to Firebase: no default app
+
+[      1763460121.402 10234:14211:14211 D/AndroidRuntime ]
+Shutting down VM
+
+[      1763460121.405 10234:14211:14211 E/AndroidRuntime ]
+FATAL EXCEPTION: main
+Process: com.example.app, PID: 14211
+java.lang.RuntimeException: Unable to start activity ComponentInfo{com.example.app/com.example.app.MainActivity}: java.lang.IllegalStateException: Profile must be loaded before rendering
+	at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3782)
+	at android.app.ActivityThread.handleLaunchActivity(ActivityThread.java:3922)
+	at android.app.servertransaction.LaunchActivityItem.execute(LaunchActivityItem.java:103)
+	at android.app.servertransaction.TransactionExecutor.executeCallbacks(TransactionExecutor.java:139)
+	at android.app.servertransaction.TransactionExecutor.execute(TransactionExecutor.java:96)
+	at android.app.ActivityThread$H.handleMessage(ActivityThread.java:2443)
+	at android.os.Handler.dispatchMessage(Handler.java:106)
+	at android.os.Looper.loopOnce(Looper.java:205)
+	at android.os.Looper.loop(Looper.java:294)
+	at android.app.ActivityThread.main(ActivityThread.java:8177)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:552)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:971)
+Caused by: java.lang.IllegalStateException: Profile must be loaded before rendering
+	at com.example.app.profile.ProfileRepository.requireProfile(ProfileRepository.kt:58)
+	at com.example.app.MainActivity.onCreate(MainActivity.kt:42)
+	at android.app.Activity.performCreate(Activity.java:8595)
+	at android.app.Activity.performCreate(Activity.java:8573)
+	at android.app.Instrumentation.callActivityOnCreate(Instrumentation.java:1456)
+	at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3764)
+	... 12 more
+
+[      1763460121.414 10234:14211:14211 I/Process  ]
+Sending signal. PID: 14211 SIG: 9
+
+[      1763460121.433 system: 1523: 4410 W/ActivityTaskManager ]
+  Force finishing activity com.example.app/.MainActivity
+
+[      1763460121.497 system: 1523: 1688 I/ActivityManager ]
+Process com.example.app (pid 14211) has died: fg  TOP 
+
+[      1763460130.204 10234:14388:14388 I/com.example.app ]
+Using CollectorTypeCC GC.
+
+[      1763460131.877 10234:14388:14388 D/AndroidRuntime ]
+Shutting down VM
+
+[      1763460131.880 10234:14388:14388 E/AndroidRuntime ]
+FATAL EXCEPTION: main
+Process: com.example.app, PID: 14388
+java.lang.RuntimeException: Unable to start activity ComponentInfo{com.example.app/com.example.app.MainActivity}: java.lang.IllegalStateException: Profile must be loaded before rendering
+	at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3782)
+	at android.app.ActivityThread.handleLaunchActivity(ActivityThread.java:3922)
+	at android.app.servertransaction.LaunchActivityItem.execute(LaunchActivityItem.java:103)
+	at android.app.servertransaction.TransactionExecutor.executeCallbacks(TransactionExecutor.java:139)
+	at android.app.servertransaction.TransactionExecutor.execute(TransactionExecutor.java:96)
+	at android.app.ActivityThread$H.handleMessage(ActivityThread.java:2443)
+	at android.os.Handler.dispatchMessage(Handler.java:106)
+	at android.os.Looper.loopOnce(Looper.java:205)
+	at android.os.Looper.loop(Looper.java:294)
+	at android.app.ActivityThread.main(ActivityThread.java:8177)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:552)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:971)
+Caused by: java.lang.IllegalStateException: Profile must be loaded before rendering
+	at com.example.app.profile.ProfileRepository.requireProfile(ProfileRepository.kt:58)
+	at com.example.app.MainActivity.onCreate(MainActivity.kt:42)
+	at android.app.Activity.performCreate(Activity.java:8595)
+	at android.app.Activity.performCreate(Activity.java:8573)
+	at android.app.Instrumentation.callActivityOnCreate(Instrumentation.java:1456)
+	at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3764)
+	... 12 more
+
+[      1763460131.889 10234:14388:14388 I/Process  ]
+Sending signal. PID: 14388 SIG: 9
+
+[      1763460131.908 system: 1523: 4410 W/ActivityTaskManager ]
+  Force finishing activity com.example.app/.MainActivity
+
+[      1763460131.972 system: 1523: 1688 I/ActivityManager ]
+Process com.example.app (pid 14388) has died: fg  TOP 
+
+[      1763460142.016 10234:14502:14533 E/AndroidRuntime ]
+FATAL EXCEPTION: DefaultDispatcher-worker-2
+Process: com.example.app, PID: 14502
+java.lang.NullPointerException: Attempt to invoke virtual method 'int java.lang.String.length()' on a null object reference
+	at com.example.app.sync.SyncWorker$doWork$2.invokeSuspend(SyncWorker.kt:77)
+	at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+	at kotlinx.coroutines.DispatchedTask.run(DispatchedTask.kt:108)
+	at kotlinx.coroutines.internal.LimitedDispatcher$Worker.run(LimitedDispatcher.kt:115)
+	at kotlinx.coroutines.scheduling.TaskImpl.run(Tasks.kt:103)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler.runSafely(CoroutineScheduler.kt:584)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.executeTask(CoroutineScheduler.kt:793)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.runWorker(CoroutineScheduler.kt:697)
+	at kotlinx.coroutines.scheduling.CoroutineScheduler$Worker.run(CoroutineScheduler.kt:684)
+	Suppressed: kotlinx.coroutines.internal.DiagnosticCoroutineContextException: [StandaloneCoroutine{Cancelling}@b3f0c1a, Dispatchers.Default]
+
+[      1763460142.024 10234:14502:14533 I/Process  ]
+Sending signal. PID: 14502 SIG: 9
+

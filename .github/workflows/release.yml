@@ -1,0 +1,135 @@
+name: Release
+
+# Every merge to main that carries a feat, fix, perf, refactor, revert or breaking commit is tested, built,
+# tagged vX.Y.Z and published as a GitHub release with Logcatnip-X.Y.Z.zip. The app's updater reads that feed.
+# See scripts/next-version.sh for how the version is chosen. Run it by hand to force a bump.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump (auto reads the commit messages since the last tag)
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      dry_run:
+        description: Build, sign and notarize, but skip the tests and upload the DMG and zip as an artifact instead of releasing
+        type: boolean
+        default: false
+
+# One release at a time, in push order, so each run sees the tag the previous one made.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: |
+          set -o pipefail
+          scripts/next-version.sh --bump "$BUMP" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Nothing to release
+        if: steps.version.outputs.release != 'true'
+        run: echo "No feat, fix, perf, refactor, revert or breaking commits since v${{ steps.version.outputs.previous }}."
+
+      - name: Select Xcode
+        if: steps.version.outputs.release == 'true'
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app || true
+
+      - name: Test
+        if: steps.version.outputs.release == 'true' && !inputs.dry_run
+        run: swift test
+
+      # Secrets (see "Signing releases" in README.md):
+      #   DEVELOPER_ID_P12, DEVELOPER_ID_P12_PASSWORD   the Developer ID Application certificate and key, base64
+      #   NOTARY_KEY_P8, NOTARY_KEY_ID, NOTARY_ISSUER   an App Store Connect API key, the .p8 base64
+      # Signed apps only accept updates signed by the same team, so a release never falls back to ad-hoc signing.
+      - name: Import the Developer ID certificate
+        id: signing
+        if: steps.version.outputs.release == 'true'
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          [ -n "$P12" ] && [ -n "$NOTARY_KEY_P8" ] || { echo "Signing secrets are missing; see README.md" >&2; exit 1; }
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/Developer ID Application/ { print $2; exit }')"
+          [ -n "$identity" ] || { echo "No Developer ID Application identity in DEVELOPER_ID_P12" >&2; exit 1; }
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+
+      - name: Build app bundle
+        if: steps.version.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          # Intel Macs get the same zip; the updater refuses an app without the running architecture.
+          UNIVERSAL: "1"
+          SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+        run: scripts/build-app.sh
+
+      - name: Package and notarize
+        if: steps.version.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: NOTARY_KEY="$RUNNER_TEMP/notary.p8" scripts/package-release.sh
+
+      - name: Upload dry run
+        if: steps.version.outputs.release == 'true' && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: Logcatnip-${{ steps.version.outputs.version }}-dry-run
+          path: |
+            build/Logcatnip-*.dmg
+            build/Logcatnip-*.zip
+            build/Logcatnip-*.sha256
+          retention-days: 7
+
+      - name: Publish release
+        if: steps.version.outputs.release == 'true' && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            "build/Logcatnip-$VERSION.dmg" "build/Logcatnip-$VERSION.dmg.sha256" \
+            "build/Logcatnip-$VERSION.zip" "build/Logcatnip-$VERSION.zip.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "Logcatnip $VERSION" \
+            --generate-notes \
+            --latest
+          echo "Released [$TAG]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/developer-id.p12"

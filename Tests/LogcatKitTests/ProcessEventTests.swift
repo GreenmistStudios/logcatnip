@@ -40,6 +40,47 @@ private func activityManager(_ message: String, tag: String = "ActivityManager")
         #expect(ProcessEvent.uid(formatted: "") == nil)
     }
 
+    @Test func rejectsOverflowingFormattedUIDsWithoutLosingProcessName() {
+        let excessiveUser = Int.max / 100_000 + 1
+        let largestUser = Int.max / 100_000
+        for uid in [
+            "u\(excessiveUser)a0",
+            "u\(Int.max)a0",
+            "u\(Int.max)i0",
+            "u\(Int.max)ai0",
+            "u\(Int.max)s0",
+            "u0a\(Int.max)",
+            "u0i\(Int.max)",
+            "u0ai\(Int.max)",
+            "u1s\(Int.max)",
+            "u\(largestUser)a100000",
+            "u\(largestUser)i0",
+            "u\(largestUser)ai0",
+            "u\(largestUser)s100000",
+            "u0a\(Int.max)0",
+            "u0i\(Int.max)0",
+            "u0ai\(Int.max)0",
+            "u0s\(Int.max)0",
+        ] {
+            #expect(ProcessEvent.uid(formatted: Substring(uid)) == nil, "\(uid)")
+            let entry = activityManager("Start proc 1234:com.example.app:remote/\(uid) for service {a/b}")
+            #expect(ProcessEvent(entry) == .started(pid: 1234, process: "com.example.app:remote", uid: nil), "\(uid)")
+        }
+    }
+
+    @Test func parsesFormattedUIDsAtIntegerBoundary() {
+        for uid in [
+            "\(Int.max)",
+            "u0s\(Int.max)",
+            "u0a\(Int.max - 10_000)",
+            "u0i\(Int.max - 99_000)",
+            "u0ai\(Int.max - 90_000)",
+            "u\(Int.max / 100_000)s\(Int.max % 100_000)",
+        ] {
+            #expect(ProcessEvent.uid(formatted: Substring(uid)) == Int.max, "\(uid)")
+        }
+    }
+
     @Test func parsesEntryPointBeforeFor() {
         let loader = activityManager(
             "Start proc 935:WebViewLoader-arm64-v8a/1037 [android.webkit.WebViewLibraryLoader$RelroFileCreator] for ")
