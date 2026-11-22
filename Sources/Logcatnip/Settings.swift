@@ -10,9 +10,14 @@ enum SettingsKey {
     static let filterHistory = "filterHistory"
     static let favoriteFilters = "favoriteFilters"
     static let autoOpenSessions = "autoOpenSessions"
+    static let showSimulators = "showSimulators"
     /// Soft wrap for sessions opened from now on: each session wraps on its own, and the last value chosen
     /// with View > Soft Wrap (or the toolbar button) becomes the next session's starting point.
     static let wrapLines = "wrapLines"
+    static let filterPrecedenceChecked = "filterPrecedenceChecked"
+    static let precedenceChangedFilters = "precedenceChangedFilters"
+    /// Owned by `UpdateController`, which also reads when it last checked and which version was skipped.
+    static let checkForUpdates = UpdateController.Keys.automaticChecks
 }
 
 enum Defaults {
@@ -24,8 +29,11 @@ enum Defaults {
             SettingsKey.maxEntries: maxEntries,
             SettingsKey.fontSize: fontSize,
             SettingsKey.autoOpenSessions: true,
+            SettingsKey.showSimulators: true,
             SettingsKey.wrapLines: false,
             SettingsKey.logcatBuffers: "",
+            SettingsKey.filterPrecedenceChecked: false,
+            SettingsKey.checkForUpdates: true,
         ])
     }
 
@@ -82,5 +90,28 @@ enum FilterLibrary {
 
     static func clearHistory() {
         UserDefaults.standard.removeObject(forKey: SettingsKey.filterHistory)
+    }
+
+    /// Marks saved queries whose meaning changed when whitespace got the lowest precedence (0.2). It runs once,
+    /// so queries typed after the upgrade are never flagged.
+    static func flagPrecedenceChangesOnce() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: SettingsKey.filterPrecedenceChecked) else { return }
+        defaults.set(true, forKey: SettingsKey.filterPrecedenceChecked)
+        let changed = Set(favorites + history).filter(LogFilter.meaningChangedByPrecedence).sorted()
+        if !changed.isEmpty {
+            defaults.set(changed, forKey: SettingsKey.precedenceChangedFilters)
+        }
+    }
+
+    /// The flagged queries that are still saved, so removing a favorite or clearing recents drops its flag.
+    static var precedenceChanged: Set<String> {
+        let flagged = UserDefaults.standard.stringArray(forKey: SettingsKey.precedenceChangedFilters) ?? []
+        guard !flagged.isEmpty else { return [] }
+        return Set(flagged).intersection(favorites + history)
+    }
+
+    static func dismissPrecedenceWarnings() {
+        UserDefaults.standard.removeObject(forKey: SettingsKey.precedenceChangedFilters)
     }
 }
