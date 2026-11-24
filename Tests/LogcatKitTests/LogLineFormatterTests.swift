@@ -230,4 +230,76 @@ private func hiding(tags: Bool = false, packages: Bool = false, processes: Bool 
         let previous = entry(timestamp: t - 0.003)
         #expect(copy(formatter(options), entry(), previous: previous, columns: [.time, .tag, .message]) == "Δ 3 ms MyTag hello")
     }
+
+    // MARK: Cards
+
+    private func card(
+        _ options: LogViewOptions, _ e: LogEntry, previous: LogEntry? = nil, start: Double? = nil
+    ) -> LogCardText {
+        formatter(options).card(for: e, previous: previous, sessionStart: start, processName: { $0.processName })
+    }
+
+    private func withProcess(_ options: LogViewOptions = .standard) -> LogViewOptions {
+        var options = options
+        options.setVisible(.process, true)
+        return options
+    }
+
+    @Test func cardStandard() {
+        #expect(card(.standard, entry(level: .warn)) == LogCardText(
+            level: "W", tag: "MyTag", time: "2026-11-09 18:15:32.663",
+            footer: "PID 1234 · TID 5678 · com.example.app"
+        ))
+    }
+
+    @Test func cardCompact() {
+        #expect(card(.compact, entry()) == LogCardText(level: "I", tag: "MyTag", time: "18:15:32.663", footer: ""))
+    }
+
+    @Test func cardPidOnly() {
+        var options = LogViewOptions.standard
+        options.pidStyle = .pid
+        #expect(card(options, entry()).footer == "PID 1234 · com.example.app")
+    }
+
+    @Test func cardProcess() {
+        #expect(card(withProcess(), entry(process: "com.example.app:remote")).footer
+            == "PID 1234 · TID 5678 · com.example.app · com.example.app:remote")
+        // The process is left out when it only repeats the package.
+        #expect(card(withProcess(), entry(process: "com.example.app")).footer
+            == "PID 1234 · TID 5678 · com.example.app")
+        var processOnly = withProcess()
+        processOnly.setVisible(.package, false)
+        #expect(card(processOnly, entry(process: "com.example.app")).footer
+            == "PID 1234 · TID 5678 · com.example.app")
+    }
+
+    @Test func cardUnknownProcess() {
+        #expect(card(.standard, entry(process: nil)).footer == "PID 1234 · TID 5678 · pid-1234")
+        #expect(card(withProcess(), entry(process: nil)).footer == "PID 1234 · TID 5678 · pid-1234")
+    }
+
+    @Test func cardIgnoresHideRepeated() {
+        let f = hiding(tags: true, packages: true, processes: true)
+        let text = card(f, entry(), previous: entry())
+        #expect(text.tag == "MyTag")
+        #expect(text.footer == "PID 1234 · TID 5678 · com.example.app")
+    }
+
+    @Test func cardDeltaUsesPrevious() {
+        var options = LogViewOptions.standard
+        options.timestampStyle = .delta
+        #expect(card(options, entry(), previous: entry(timestamp: t - 0.003)).time == "Δ 3 ms")
+        #expect(card(options, entry(), previous: nil).time == "Δ —")
+    }
+
+    @Test func cardHiddenColumns() {
+        let messageOnly = LogViewOptions(visibleColumns: [.message], timestampStyle: .time)
+        #expect(card(messageOnly, entry()) == LogCardText(level: nil, tag: nil, time: nil, footer: ""))
+    }
+
+    @Test func cardMarker() {
+        let marker = LogEntry.marker("Device disconnected", at: t)
+        #expect(card(.standard, marker) == LogCardText(level: nil, tag: nil, time: "2026-11-09 18:15:32.663", footer: ""))
+    }
 }

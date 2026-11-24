@@ -45,8 +45,15 @@ public enum PidStyle: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// How a session lays out its entries: the column table, or one card per entry (Wirecat's layout).
+public enum LogLayout: String, Codable, CaseIterable, Sendable {
+    case table, cards
+}
+
 /// How a session's table shows its entries, after Android Studio's `FormattingOptions`. Two presets are
 /// defined; any option that differs from both makes the view Custom, and picking a preset copies it back.
+/// The layout is the exception: it is not part of a preset, so Standard and Compact choose the fields and
+/// the layout chooses how they are drawn.
 public struct LogViewOptions: Codable, Sendable, Hashable {
     public enum Preset: String, CaseIterable, Sendable {
         case standard, compact
@@ -74,6 +81,7 @@ public struct LogViewOptions: Codable, Sendable, Hashable {
     public var hideRepeatedPackages: Bool
     public var hideRepeatedProcesses: Bool
     public var colorTags: Bool
+    public var layout: LogLayout
 
     public init(
         visibleColumns: Set<LogColumn>,
@@ -86,7 +94,8 @@ public struct LogViewOptions: Codable, Sendable, Hashable {
         hideRepeatedTags: Bool = false,
         hideRepeatedPackages: Bool = false,
         hideRepeatedProcesses: Bool = false,
-        colorTags: Bool = true
+        colorTags: Bool = true,
+        layout: LogLayout = .table
     ) {
         self.visibleColumns = visibleColumns.union([.message])
         self.timestampStyle = timestampStyle
@@ -99,6 +108,7 @@ public struct LogViewOptions: Codable, Sendable, Hashable {
         self.hideRepeatedPackages = hideRepeatedPackages
         self.hideRepeatedProcesses = hideRepeatedProcesses
         self.colorTags = colorTags
+        self.layout = layout
     }
 
     /// Date and time, PID-TID, tag, package, level and message, like Android Studio's Standard view.
@@ -113,11 +123,31 @@ public struct LogViewOptions: Codable, Sendable, Hashable {
         timestampStyle: .time
     )
 
-    /// The preset these options equal, or nil for a Custom view.
+    /// The preset these options equal, or nil for a Custom view. The layout is ignored: a card view with
+    /// Compact's fields is still Compact.
     public var preset: Preset? {
-        if self == .standard { return .standard }
-        if self == .compact { return .compact }
+        var copy = self
+        copy.layout = .table
+        if copy == .standard { return .standard }
+        if copy == .compact { return .compact }
         return nil
+    }
+
+    /// Switches to a preset's fields and keeps the layout, so picking Compact while in cards stays in cards.
+    public mutating func apply(_ preset: Preset) {
+        let layout = self.layout
+        self = preset.options
+        self.layout = layout
+    }
+
+    /// Whether a card has a first line: it holds the level badge, tag and time, so it exists when any shows.
+    public var cardHasHeader: Bool {
+        isVisible(.level) || isVisible(.tag) || isVisible(.time)
+    }
+
+    /// Whether a card has a last line: it holds the PID/TID, package and process.
+    public var cardHasFooter: Bool {
+        isVisible(.pid) || isVisible(.package) || isVisible(.process)
     }
 
     public func isVisible(_ column: LogColumn) -> Bool {
@@ -178,14 +208,15 @@ public struct LogViewOptions: Codable, Sendable, Hashable {
         ].joined(separator: "/")
         return "preset=\(preset?.rawValue ?? "custom") columns=\(columns) "
             + "time=\(timestampStyle.rawValue)/\(timeZone.rawValue) pid=\(pidStyle.rawValue) "
-            + "widths=\(tagWidth)/\(packageWidth)/\(processWidth) hide=\(hide) colors=\(colorTags ? "on" : "off")"
+            + "widths=\(tagWidth)/\(packageWidth)/\(processWidth) hide=\(hide) colors=\(colorTags ? "on" : "off") "
+            + "layout=\(layout.rawValue)"
     }
 
     // MARK: Codable
 
     private enum CodingKeys: String, CodingKey {
         case visibleColumns, timestampStyle, timeZone, pidStyle, tagWidth, packageWidth, processWidth
-        case hideRepeatedTags, hideRepeatedPackages, hideRepeatedProcesses, colorTags
+        case hideRepeatedTags, hideRepeatedPackages, hideRepeatedProcesses, colorTags, layout
     }
 
     /// Lenient on purpose: the options are saved as a Settings value that a newer or older build may have
@@ -209,7 +240,8 @@ public struct LogViewOptions: Codable, Sendable, Hashable {
             hideRepeatedTags: value(.hideRepeatedTags) ?? standard.hideRepeatedTags,
             hideRepeatedPackages: value(.hideRepeatedPackages) ?? standard.hideRepeatedPackages,
             hideRepeatedProcesses: value(.hideRepeatedProcesses) ?? standard.hideRepeatedProcesses,
-            colorTags: value(.colorTags) ?? standard.colorTags
+            colorTags: value(.colorTags) ?? standard.colorTags,
+            layout: value(.layout) ?? standard.layout
         )
     }
 
@@ -227,5 +259,6 @@ public struct LogViewOptions: Codable, Sendable, Hashable {
         try container.encode(hideRepeatedPackages, forKey: .hideRepeatedPackages)
         try container.encode(hideRepeatedProcesses, forKey: .hideRepeatedProcesses)
         try container.encode(colorTags, forKey: .colorTags)
+        try container.encode(layout, forKey: .layout)
     }
 }

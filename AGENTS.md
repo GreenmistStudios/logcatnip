@@ -29,10 +29,13 @@ column, the selection, `clipped` and `truncated` counts); `LOGCATNIP_WRAP_TOGGLE
 four times and prints it after each (`LOGCATNIP_WRAP_SELECT=middle|end|none|<row>`, `LOGCATNIP_WRAP_RESIZE=<points>`
 and `LOGCATNIP_WRAP_KEYS=1` add a selection, a window resize and the arrow keys), and
 `LOGCATNIP_SCROLL_BENCH=<pages>` times scrolling in each mode. Use them to check wrapping from a terminal,
-since screenshots of the Mac are off limits. `LOGCATNIP_VIEW=standard|compact|<json>` sets the view options of
-new sessions and `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every style; with
-`LOGCATNIP_DEBUG=1` each session prints its options and the table a `view:` line (column order, on-screen
-cells, and `check=ok`, a recount of every visible cell against the formatter). JSON launch arguments must be
+since screenshots of the Mac are off limits. `LOGCATNIP_VIEW=standard|compact|cards|<json>` sets the view options
+of new sessions and `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session through every style (the card
+layout included); `LOGCATNIP_LAYOUT_TOGGLE=1` makes `LOGCATNIP_WRAP_TOGGLE` switch between table and cards;
+`LOGCATNIP_CARD_KEYS=1` sends the arrow keys to the table in each layout and prints `card-keys ... check=ok`. With
+`LOGCATNIP_DEBUG=1` each session prints its options and the table a `view:` line (column order, `header=`,
+on-screen cells or `cards=[...]`, and `check=ok`, a recount of every visible cell, and in cards every row's
+height, against the formatter). JSON launch arguments must be
 quoted as plist strings: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
 `LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch and `LOGCATNIP_UPDATE_INSTALL=1` installs what it finds
 without clicking; `LOGCATNIP_UPDATE_FEED=/path/release.json|URL` and `LOGCATNIP_UPDATE_VERSION=0.1.0` point it at a
@@ -77,10 +80,12 @@ record; nothing is committed back. The commit type you choose therefore decides 
     table sizes wrapped rows and the Message column without touching the text.
   - `ViewportAnchor.swift`: which row to hold still, and where to scroll, when row heights change.
   - `LogViewOptions.swift`: a session's view (columns, timestamp and PID style, widths, hide repeated, tag
-    colors), the Standard and Compact presets, and lenient JSON for the saved default. `LogcatTime` formats
-    the timestamp styles.
-  - `LogLineFormatter.swift`: the text of every cell and of a copied line for a set of view options, so the
-    table, Copy and any future layout agree.
+    colors, table or card layout), the Standard and Compact presets (which ignore the layout), and lenient
+    JSON for the saved default. `LogcatTime` formats the timestamp styles.
+  - `LogLineFormatter.swift`: the text of every cell, of a copied line and of a card for a set of view
+    options, so the table, Copy and the card layout agree.
+  - `LogCardLayout.swift`: card geometry (row heights, wrap width) as plain arithmetic.
+  - `CardNavigation.swift`: which rows ↑/↓ select in the card layout (whole entries).
   - `SoftwareUpdate.swift`: `SemanticVersion`, the GitHub Releases feed, and the updater's download, SHA-256 and
     bundle checks, and the shell that swaps the app after it quits.
   - `UpdateController.swift`: the update flow (check, skip, daily schedule, download, install) as a
@@ -89,7 +94,10 @@ record; nothing is committed back. The commit type you choose therefore decides 
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
   - `LogTableView.swift`: `NSViewRepresentable` around `NSTableView`. The table is AppKit on purpose,
-    because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows.
+    because SwiftUI lists do not scroll smoothly with hundreds of thousands of rows. Its card layout code
+    sits in the `// MARK: Cards` section.
+  - `LogCardViews.swift`: the card layout's cell view (header, message, footer) and row view (the card
+    background across the rows of one entry).
   - `FindController.swift`, `FindBar.swift`: the find bar, its state, and incremental off-main scans.
   - `ScrollMarkers.swift`: the tick marks drawn over the table's vertical scroller, one layer per kind of
     mark.
