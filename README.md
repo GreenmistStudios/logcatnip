@@ -4,15 +4,21 @@ A native macOS app for reading Android logcat. It follows every connected device
 per device (or several per device, each with its own filter), and filters with the same query language as
 Android Studio's Logcat window.
 
+![Logcatnip showing a live logcat session from a Samsung device, filtered with -message:setFrame](docs/screenshot.png)
+
 ## Features
 
-- **Devices and sessions.** Devices appear in the sidebar as adb reports them. Open one or more logcat
-  sessions per device; each has its own filter, pause state and buffer. When a device disconnects, its
-  sessions keep their logs and resume where they left off when it comes back.
+- **Devices and sessions.** Each physical device gets one sidebar row, with icons for how it is connected
+  (USB, Wi-Fi, emulator). Open one or more logcat sessions per device; each has its own filter, pause state
+  and buffer. Sessions follow the device rather than the adb serial: when it disconnects they keep their
+  logs and resume where they left off when it comes back, even on a new Wi-Fi port, as an emulator on
+  another port, or over Wi-Fi after you unplug USB. When both USB and Wi-Fi are connected, logs stream over
+  USB.
 - **Android Studio filter syntax.** `tag:`, `package:`, `process:`, `message:`, `line:`, `level:`, `age:`,
-  `is:crash`, `is:stacktrace`, `name:`, plus `pid:` and `tid:`. Every text key supports contains (`key:`),
-  exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with `&`, `|` and parentheses.
-  Without operators, same-key terms are ORed and everything else is ANDed, as in Android Studio.
+  `is:crash`, `is:stacktrace`, `is:firebase`, `is:<level>`, `name:`, plus `pid:` and `tid:`. Every text key
+  supports contains (`key:`), exact (`key=:`), regex (`key~:`) and negation (`-key:`). Combine terms with
+  `&`, `|` and parentheses. Spaces have the lowest precedence, and same-key terms are ORed, as in Android
+  Studio.
 - **package:mine.** List your app's packages in Settings.
 - **Fast table.** Hundreds of thousands of entries, level colors, stable per-tag colors, multi-line stack
   traces, column hiding (right-click the header, or View > Modify View…), and follow mode that stops when you
@@ -52,6 +58,22 @@ Android Studio's Logcat window.
 - **Import and export.** Export in `logcat -v long` format. Open long or threadtime (`adb logcat` default,
   bug report) files, or drop them on the window.
 - Pause, clear the view, clear the device buffer (`logcat -c`), and restart logcat.
+- **iOS simulators.** Booted simulators (iOS, watchOS, tvOS, visionOS) appear in the sidebar next to Android
+  devices. A simulator session streams its unified log with `simctl spawn <udid> log stream`, and uses the
+  same table, filters and export. See [iOS simulator logs](#ios-simulator-logs).
+
+## Install and update
+
+Download `Logcatnip-X.Y.Z.zip` from the [releases page](https://github.com/GreenmistStudios/logcatnip/releases),
+unzip it and move `Logcatnip.app` to Applications. The app is ad-hoc signed, not notarized, so the first time
+macOS blocks it: Control-click the app, choose Open, then Open again (or run
+`xattr -dr com.apple.quarantine /Applications/Logcatnip.app`).
+
+Logcatnip checks GitHub Releases once a day (Settings › Updates; Logcatnip › Check for Updates… at any time).
+When there is a newer release it shows the release notes and offers to download it. The download is checked
+against the release's SHA-256, the bundle identifier, the version and the code signature before Install and
+Relaunch swaps it in. Updating in place needs the app in a folder you can write to; when it isn't, the window
+links to the release page instead.
 
 ## Requirements
 
@@ -59,6 +81,8 @@ Android Studio's Logcat window.
 - Xcode 16 / Swift 6 toolchain to build
 - `adb` from the Android SDK platform-tools. Logcatnip looks in `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`,
   `~/Library/Android/sdk`, Homebrew and `PATH`, or you can set the path in Settings.
+- Xcode, only for iOS simulator logs. Logcatnip uses `simctl` from the developer directory that
+  `xcode-select -p` reports (or `$DEVELOPER_DIR`). Without Xcode, simulators are hidden and Settings says why.
 
 ## Build and run
 
@@ -73,9 +97,17 @@ You can also open `Package.swift` in Xcode and run the `Logcatnip` scheme.
 ## Tests
 
 ```sh
-swift test                                   # parser and filter tests
+swift test                                   # parser, filter and screenshot tests
 LOGCATNIP_DEVICE_TESTS=1 swift test          # also run against an attached device
+LOGCATNIP_SIMULATOR_TESTS=1 swift test       # also stream from a booted simulator
+LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 ```
+
+Screenshot tests render the session view offscreen and compare it with PNGs in
+`Tests/LogcatnipTests/__Snapshots__/macOS-<major>/`. Text renders differently between macOS releases, so
+each major version has its own references. A missing reference is recorded and the test fails until you
+check the image and run again; on CI (`CI` set) it is only recorded. A mismatch writes the actual image
+and a diff to `.build/snapshot-failures/`.
 
 `LOGCATNIP_DEBUG=1 swift run Logcatnip` prints device and session state to stderr every few seconds.
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, `LOGCATNIP_FIND='text'` opens the find bar
@@ -101,6 +133,28 @@ session prints its options, and its table a `view:` line with the column order, 
 comparison of every visible cell with a fresh run of the formatter, and in cards of every row's height too
 (`MISMATCH` means a cell was not reloaded after an option change, a filter or a trim). To pass JSON as a launch
 argument, quote it as a property-list string: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
+`LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch, and `LOGCATNIP_UPDATE_INSTALL=1` with it downloads and
+installs what it finds without clicking. `LOGCATNIP_UPDATE_FEED=/path/release.json` (or a URL) reads releases from
+a copy of the GitHub API response instead, and `LOGCATNIP_UPDATE_VERSION=0.1.0` pretends to be that version. With
+`LOGCATNIP_DEBUG=1` each update step is logged as `update:`.
+
+## Releases
+
+Every merge to `main` runs `.github/workflows/release.yml`. `scripts/next-version.sh` reads the conventional
+commits since the last `vX.Y.Z` tag and picks the bump:
+
+| Commits since the last tag | Bump |
+| --- | --- |
+| `type!:` subject or a `BREAKING CHANGE:` footer | major (minor while the version is 0.x) |
+| `feat:` | minor |
+| `fix:`, `perf:`, `refactor:`, `revert:` | patch |
+| only `docs:`, `chore:`, `ci:`, `test:`, `style:`, `build:` | no release |
+
+The workflow then runs the tests, builds the app with that version, and publishes a GitHub release tagged
+`vX.Y.Z` with `Logcatnip-X.Y.Z.zip`, its `.sha256` and notes generated from the merged pull requests. The tag
+is the only record of the version: nothing is committed back. To force a release, or to cut 1.0, run the
+Release workflow by hand and choose the bump. Local builds take the newest tag as their version (`0.0.0`
+before the first release); set `VERSION=` to override it.
 
 ## Filter reference
 
@@ -116,6 +170,8 @@ argument, quote it as a property-list string: `-defaultViewOptions '"{\"timestam
 | `level:WARN` | WARN and above (`V D I W E A` work too) |
 | `age:30s`, `age:5m`, `age:2h`, `age:1d` | recent entries only |
 | `is:crash`, `is:stacktrace` | crashes and ANRs; entries containing stack frames |
+| `is:error` (any level name) | exactly that level (`level:` is that level and above) |
+| `is:firebase` | Firebase SDK tags (`FA`, `FirebaseMessaging`, …) |
 | `pid:1234`, `tid:5678` | process or thread id |
 | `name:"My filter"` | names the filter |
 | `(tag:a \| tag:b) & level:E` | explicit operators; `&` binds tighter than `\|` |
@@ -123,12 +179,45 @@ argument, quote it as a property-list string: `-defaultViewOptions '"{\"timestam
 Unquoted values end at whitespace, `&` or `|` (regex values only at whitespace). Quote values that contain
 them.
 
+### Precedence
+
+Spaces separate terms with the lowest precedence, as in Android Studio, so `foo bar tag:a | tag:b` means
+`"foo bar" & (tag:a | tag:b)`. Among the space-separated terms, non-negated terms with the same key are
+ORed and the rest are ANDed: `tag:a tag:b level:W` means `(tag:a | tag:b) & level:W`, and negated terms
+are always ANDed. `package:mine` is never ORed, so `package:mine package:foo` needs both. Parentheses may
+hold a whole sequence, and `()` matches everything.
+
+Before 0.2, spaces bound tighter than `&` and `|`. Saved favorites and recent filters whose meaning changed
+are marked ⚠︎ in the filter menu once, until you remove them or choose Dismiss ⚠︎ Warnings.
+
+## iOS simulator logs
+
+Unified log fields map onto logcat's columns, so every filter works on simulator logs:
+
+| Logcatnip | Unified log |
+| --- | --- |
+| level | `Debug` → D, `Info` and `Default` → I, `Error` → E, `Fault` → A |
+| tag | `subsystem:category`, or the subsystem alone. Without a subsystem (`NSLog`, most system frameworks), the library that logged, such as `UIKitCore` |
+| package, process | the executable name, such as `Catnip` or `SpringBoard` |
+| PID, TID | `processID`, `threadID` |
+| message | `eventMessage` |
+
+`log stream` starts at the moment the session opens and has no backlog, so Restart clears the view and continues from now.
+Clear Device Log Buffer is not available for simulators. Swift `print()` writes to the app's stdout, not the
+unified log, so it doesn't appear; use `Logger` or `NSLog`.
+
+Physical iPhones and iPads aren't supported yet: Xcode has no public command that streams a connected
+device's unified log.
+
 ## Layout
 
-- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime), the filter language, find, and adb
-  (device tracking, logcat streaming, process names). No UI dependencies.
+- `Sources/LogcatKit`: parsing (`logcat -v long`, threadtime, unified log NDJSON), the filter language,
+  find, adb (device tracking, logcat streaming, process names) and simctl (simulators, `log stream`). No UI
+  dependencies.
 - `Sources/Logcatnip`: the SwiftUI + AppKit app.
+- `scripts/`: `build-app.sh` builds the app bundle; `next-version.sh` picks the next release version.
 - `Tests/LogcatKitTests`: unit tests, plus opt-in device tests.
+- `Tests/LogcatnipTests`: screenshot tests of the app's views.
 
-Long-running adb commands run under a small `sh` watchdog that stops them when the app exits, even if it
+Long-running adb and simctl commands run under a small `sh` watchdog that stops them when the app exits, even if it
 crashes.
