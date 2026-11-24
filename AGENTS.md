@@ -8,10 +8,15 @@ logcat. Read `README.md` for user-facing features and the filter reference.
 ```sh
 swift build                                  # debug build
 swift run Logcatnip                          # run from the terminal
-swift test                                   # parser and filter tests (what CI runs)
+swift test                                   # parser, filter and screenshot tests (what CI runs)
 LOGCATNIP_DEVICE_TESTS=1 swift test          # also run device tests; needs adb and an online device
+LOGCATNIP_SIMULATOR_TESTS=1 swift test       # also run simulator tests; needs Xcode and a booted simulator
+LOGCATNIP_RECORD_SNAPSHOTS=1 swift test      # rewrite the screenshot references
 scripts/build-app.sh                         # build build/Logcatnip.app (release, ad-hoc signed)
 CONFIG=debug scripts/build-app.sh            # debug app bundle
+VERSION=1.2.3 scripts/build-app.sh           # set the bundle version (default: newest vX.Y.Z tag, else 0.0.0)
+UNIVERSAL=1 scripts/build-app.sh             # arm64 + x86_64, as the release workflow builds it
+scripts/next-version.sh [--bump auto|patch|minor|major]   # the version the next release would get
 ```
 
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
@@ -29,9 +34,18 @@ new sessions and `LOGCATNIP_VIEW_CYCLE=<seconds>` steps the selected session thr
 `LOGCATNIP_DEBUG=1` each session prints its options and the table a `view:` line (column order, on-screen
 cells, and `check=ok`, a recount of every visible cell against the formatter). JSON launch arguments must be
 quoted as plist strings: `-defaultViewOptions '"{\"timestampStyle\":\"time\"}"'`.
+`LOGCATNIP_UPDATE_CHECK=1` runs Check for Updates… at launch and `LOGCATNIP_UPDATE_INSTALL=1` installs what it finds
+without clicking; `LOGCATNIP_UPDATE_FEED=/path/release.json|URL` and `LOGCATNIP_UPDATE_VERSION=0.1.0` point it at a
+local feed and fake the running version. With `LOGCATNIP_DEBUG=1` each step logs an `update:` line.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
-`scripts/build-app.sh`. Run all three before you call a change done.
+`scripts/build-app.sh`, and uploads the zipped app as an artifact. Run all three before you call a change done.
+
+Releases (`.github/workflows/release.yml`) run on every push to `main`: `scripts/next-version.sh` picks the bump
+from the conventional commits since the last `vX.Y.Z` tag (breaking → major, minor before 1.0; `feat` → minor;
+`fix`/`perf`/`refactor`/`revert` → patch; anything else → no release), then the workflow tests, builds with
+`VERSION`, and publishes a GitHub release with `Logcatnip-X.Y.Z.zip` and its `.sha256`. Tags are the only version
+record; nothing is committed back. The commit type you choose therefore decides the release, so pick it with care.
 
 ## Requirements
 
@@ -44,8 +58,15 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `ADB.swift`: locating adb, `StreamingProcess` (child processes under an `sh` watchdog so they die
     with the app), device tracking, logcat streaming.
   - `Devices.swift`: `adb track-devices` decoding and device properties.
+  - `DeviceIdentity.swift`: device identity (serial number, AVD name, mDNS serial), transport kind, and
+    matching sessions to transports.
+  - `Simctl.swift`, `Simulators.swift`: finding `simctl` without triggering the Xcode install prompt, polling
+    booted simulators, and streaming `log stream` from one.
+  - `UnifiedLogParser.swift`: `log stream --style ndjson` parsing into `LogEntry`.
   - `LogcatParser.swift`, `LogcatTime.swift`: `logcat -v long` and threadtime parsing.
   - `LogFilter.swift`: the Android Studio filter language (tokenizer, parser, compiled predicates).
+  - `ProcessNameResolver.swift`: pid -> process name from `ps` snapshots (and later process start/death
+    events), keyed by ingestion order so reused pids and processes that start mid-lookup resolve correctly.
   - `LogEntry.swift`, `LogLevel.swift`, `LogClassifier.swift`: the model, levels, crash and stack trace
     detection.
   - `LogFinder.swift`: find-in-results queries (plain, regex, whole word) and the rows they match.
@@ -60,6 +81,10 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
     the timestamp styles.
   - `LogLineFormatter.swift`: the text of every cell and of a copied line for a set of view options, so the
     table, Copy and any future layout agree.
+  - `SoftwareUpdate.swift`: `SemanticVersion`, the GitHub Releases feed, and the updater's download, SHA-256 and
+    bundle checks, and the shell that swaps the app after it quits.
+  - `UpdateController.swift`: the update flow (check, skip, daily schedule, download, install) as a
+    `@MainActor @Observable` state machine over `UpdateServices`, so tests drive it with fakes.
 - `Sources/Logcatnip/`: the app.
   - `AppModel.swift`: `@MainActor @Observable` root state: adb, devices, sessions.
   - `LogSession.swift`: one logcat stream per session: buffer, filter, pause state.
@@ -71,8 +96,16 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
   - `LogColors.swift`: level and per-tag colors, close to Android Studio's, for light and dark mode.
   - `Settings.swift`, `SettingsView.swift`: `SettingsKey` / `Defaults` (UserDefaults) and the settings UI.
   - `ViewOptionsView.swift`: the Modify View form and sheet, the preset picker and menu items.
+  - `Updater.swift`: wires `UpdateController` to the bundle and the `LOGCATNIP_UPDATE_*` hooks, the Software Update
+    window and the Check for Updates… command.
 - `Tests/LogcatKitTests/`: Swift Testing (`import Testing`, `@Suite`, `@Test`, `#expect`). Device tests
-  are gated on `LOGCATNIP_DEVICE_TESTS=1`.
+  are gated on `LOGCATNIP_DEVICE_TESTS=1`. Update tests never touch the network: `UpdateTestSupport.swift` has a
+  `MockURLProtocol` (one host per test, so parallel suites don't collide) and builds signed fake app bundles.
+- `Tests/LogcatnipTests/`: screenshot tests of the app (it `@testable import`s the executable target).
+  `Snapshot.swift` renders a SwiftUI view in an offscreen window at 2x and compares it with
+  `__Snapshots__/macOS-<major>/<name>.png`; mismatches write `.actual.png` and `.diff.png` files to
+  `.build/snapshot-failures/`. `SessionScreenshotTests.swift` holds the fixture log.
+- `scripts/next-version.sh`: the next release version from conventional commits, for the release workflow.
 - `scripts/build-app.sh`: assembles the `.app` bundle and writes `Info.plist` inline (bundle id
   `studio.greenmist.logcatnip`). Add new bundle resources, such as an app icon, here.
 - `design/`: the app icon. `render-icons.swift` draws the concepts into `icons/` and the chosen one into
@@ -81,8 +114,14 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
 
 ## Conventions
 
-- Parsing, filtering and adb logic go in `LogcatKit` with unit tests. The app target has no test target,
-  so keep logic out of views where you can.
+- Parsing, filtering and adb logic go in `LogcatKit` with unit tests. The app target only has screenshot
+  tests, so keep logic out of views where you can.
+- For a visible UI change, add or update a screenshot test, open the recorded PNG and check it before you
+  commit it. References are per macOS major version: a missing one is recorded and fails the test once
+  (CI only records). Re-record intended changes with `LOGCATNIP_RECORD_SNAPSHOTS=1` and review the PNG diff.
+  Views rendered in tests take settings as values (see `SessionContent`) rather than reading
+  `@AppStorage`. Blur materials, such as the table header's, are not captured, so size views so the
+  table does not scroll.
 - Use Swift Testing for new tests, not XCTest. Write a failing test first for parser and filter bugs.
 - Mark public `LogcatKit` types `Sendable`. Use `@unchecked Sendable` only for lock-guarded boxes, and
   explain the locking in a comment.
@@ -101,7 +140,10 @@ CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swi
 
 ## Git
 
-- Default branch: `master`. Remote: `GreenmistStudios/logcatnip`; use the `geoff-powell` gh account.
+- Default branch: `main`. Remote: `GreenmistStudios/logcatnip`; use the `geoff-powell` gh account.
 - Commit subjects use conventional commits: `feat: ...`, `fix: ...`, lowercase and imperative. Reference
   issues in the body (`Fixes #8.`).
 - Other agents may have uncommitted work in the tree. Stage only your own files.
+- Pull requests that change visible UI include screenshots in the description, before and after when
+  something existing changed. The screenshot test PNGs in `Tests/LogcatnipTests/__Snapshots__/` work for
+  this. Skip it for changes with nothing to see.
