@@ -44,6 +44,8 @@ Android Studio's Logcat window.
   app's installed version, the device and build, and the crashing process's preceding lines (50 by default,
   set in Settings) with the full stack trace or tombstone in a code block. Leaks, out of memory and jank have
   the same report as **Copy Report** in their right-click menus.
+- **Open in editor.** Right-click a stack frame line to open its file at that line in Android Studio or
+  another editor, or use Open Top Frame on a crash in the list. See [Open in editor](#open-in-editor).
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or to show its
   level and above. The new term applies to the whole query: Show Only replaces the query's top-level terms
   for that key instead of ORing with them, and a query with a top-level `|` is wrapped in parentheses first.
@@ -212,6 +214,32 @@ hold a whole sequence, and `()` matches everything.
 
 Before 0.2, spaces bound tighter than `&` and `|`. Saved favorites and recent filters whose meaning changed
 are marked ⚠︎ in the filter menu once, until you remove them or choose Dismiss ⚠︎ Warnings.
+
+## Open in editor
+
+Add your project folders under Settings › Source Code › Source folders. Right-click a Java, Kotlin or native
+frame line (`at com.example.app.MainActivity.onCreate(MainActivity.kt:42)`) and choose Open
+`MainActivity.kt:42` in the editor you picked. In the crash list, right-click a crash, native crash or leak for
+Open Top Frame, the first frame in the app's package.
+
+Logcatnip indexes the folders in the background, skipping `build`, `.gradle`, `.git`, `.idea`, `.build` and
+`node_modules`, and picks the file whose folders match the frame's package, so `com/example/app/MainActivity.kt`
+wins over another `MainActivity.kt`. A file name that appears only once matches wherever it is. Android, Java and
+Kotlin library frames open only when a folder, such as an AOSP checkout, has them at their package path. Native
+frames open when the tombstone line names a source file, as in `(crashMe+20) (native-lib.cpp:42)`.
+
+| Editor | Opens with |
+| --- | --- |
+| Android Studio | `open -na "Android Studio.app" --args --line N <file>`, or Studio's `studio` launcher when it is running |
+| IntelliJ IDEA | `idea://open?file=<file>&line=N` |
+| Visual Studio Code | `vscode://file/<file>:N` |
+| Cursor | `cursor://file/<file>:N` |
+| Custom | your template, with `{file}` and `{line}` replaced |
+
+A custom template is either a URL, such as `subl://open?url=file://{file}&line={line}`, or a command line, such as
+`zed {file}:{line}` or `'/Applications/My Editor.app/Contents/MacOS/edit' --goto {file}:{line}`. Command lines are
+split into arguments (single and double quotes work) and run without a shell; a bare command name is looked up on
+`PATH`.
 
 ## iOS simulator logs
 

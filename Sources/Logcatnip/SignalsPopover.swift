@@ -173,10 +173,11 @@ struct SignalsPopover: View {
 }
 
 /// The actions on one occurrence, shown when it's right-clicked in the popover (and on a group, for its
-/// newest occurrence). Open Top Frame… goes here.
+/// newest occurrence).
 struct SignalOccurrenceMenu: View {
     let session: LogSession
     let occurrence: SignalOccurrence
+    @AppStorage(SettingsKey.editor) private var editor = Editor.androidStudio
 
     var body: some View {
         if session.occurrenceIsVisible(occurrence) {
@@ -186,6 +187,22 @@ struct SignalOccurrenceMenu: View {
         Button("Copy Signature") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(occurrence.signature.displayText, forType: .string)
+        }
+        // The frame is found on click: building the menu only reads settings, since SwiftUI may build it
+        // for every row.
+        if LogSession.hasTopFrame(occurrence.kind), let opener = session.sourceOpener {
+            Divider()
+            if opener.hasRoots {
+                Button("Open Top Frame in \(editor.menuName)") {
+                    if let reference = session.topFrameReference(for: occurrence) {
+                        opener.open(reference)
+                    } else {
+                        NSSound.beep()
+                    }
+                }
+            } else {
+                Button("Set Source Folder…") { opener.showSettings() }
+            }
         }
     }
 }
