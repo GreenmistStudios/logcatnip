@@ -173,7 +173,7 @@ struct SignalsPopover: View {
 }
 
 /// The actions on one occurrence, shown when it's right-clicked in the popover (and on a group, for its
-/// newest occurrence). Copy Crash Report and Open Top Frame… go here.
+/// newest occurrence). Open Top Frame… goes here.
 struct SignalOccurrenceMenu: View {
     let session: LogSession
     let occurrence: SignalOccurrence
@@ -182,6 +182,7 @@ struct SignalOccurrenceMenu: View {
         if session.occurrenceIsVisible(occurrence) {
             Button("Show in Log") { session.revealOccurrence(id: occurrence.id) }
         }
+        Button(occurrence.kind.copyReportTitle) { session.copyCrashReport(for: occurrence.id) }
         Button("Copy Signature") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(occurrence.signature.displayText, forType: .string)
@@ -280,5 +281,12 @@ private struct SignalOccurrenceRow: View {
         .onHover { hovering = $0 }
         .onTapGesture { if !isHidden { select() } }
         .help(isHidden ? "The filter hides this occurrence" : "Show in the log")
+    }
+}
+
+extension SignalKind {
+    /// "Crash report" would oversell a leak or a dropped frame, so only fatal kinds get it.
+    var copyReportTitle: String {
+        isFatal ? "Copy Crash Report" : "Copy Report"
     }
 }

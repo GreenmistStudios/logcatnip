@@ -40,6 +40,10 @@ Android Studio's Logcat window.
   scroller marks crashes and ANRs in red, warnings in orange and every error line faintly, and crash rows are
   tinted. ⌘' and ⇧⌘' go to the next and previous crash or ANR, ⌘] and ⌘[ to the next and previous error.
   None of these change the filter; occurrences it hides are greyed out in the list.
+- **Copy Crash Report** (⌥⌘C, or right-click a crash line or a list entry) copies Markdown for an issue: the
+  app's installed version, the device and build, and the crashing process's preceding lines (50 by default,
+  set in Settings) with the full stack trace or tombstone in a code block. Leaks, out of memory and jank have
+  the same report as **Copy Report** in their right-click menus.
 - **Filter from a line.** Right-click a line to show only or hide its tag, package, PID or TID, or to show its
   level and above. The new term applies to the whole query: Show Only replaces the query's top-level terms
   for that key instead of ORing with them, and a query with a top-level `|` is wrapped in parentheses first.

@@ -62,3 +62,15 @@ extension LogEntry {
         return process
     }
 }
+
+extension LogEntry {
+    /// The line Copy puts on the pasteboard, Android Studio style: `time pid-tid tag process level  message`.
+    /// Crash reports reuse it so pasted logs look the same wherever they came from.
+    public func formattedLine(timeZone: TimeZone = .current) -> String {
+        if kind == .marker {
+            return "--------- \(message)"
+        }
+        let time = LogcatTime.format(timestamp, timeZone: timeZone)
+        return "\(time) \(pid)-\(tid) \(tag) \(processName ?? "?") \(level.letter)  \(message)"
+    }
+}

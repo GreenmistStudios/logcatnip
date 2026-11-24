@@ -76,6 +76,9 @@ an ad-hoc signed release once signed ones exist.
     jank) as data, and the signatures that group identical occurrences.
   - `SignalIndex.swift`: a session's signal occurrences and groups, kept across appends and front trims, with
     native crash and ANR bursts collapsed into one occurrence.
+  - `CrashReport.swift`: the Markdown report Copy Crash Report writes (heading, app and device table, log
+    context), and which entries lead up to an occurrence.
+  - `AppVersion.swift`: `dumpsys package` parsing for the report's version, target SDK and installer.
   - `LogFinder.swift`: find-in-results queries (plain, regex, whole word) and the rows they match.
   - `FindResults.swift`: matching row indexes kept across appends, front trims and resets, and the
     next/previous jump targets.
