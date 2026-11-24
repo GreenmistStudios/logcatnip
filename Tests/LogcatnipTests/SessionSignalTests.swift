@@ -50,7 +50,6 @@ import Testing
         #expect(session.signalSummary.isEmpty)
         #expect(session.visibleSignalRows(kinds: Set(SignalKind.allCases)).isEmpty)
     }
-
     @Test func navigationRevealsFatalRowsAndErrorsAndFollowsTheFilter() async throws {
         let session = LogSession(source: .file(URL(fileURLWithPath: "/tmp/signals.logcat")), adb: nil, model: AppModel())
         let table = FakeTable()
