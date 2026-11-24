@@ -60,3 +60,43 @@ public enum LogcatTime {
         return String(format: "%04d-%02d-%02d ", c.year ?? 0, c.month ?? 0, c.day ?? 0) + time
     }
 }
+
+extension LogcatTime {
+    /// Formats a timestamp in one of the table's styles. `previous` is the timestamp of the previous visible
+    /// entry (for `.delta`) and `sessionStart` the session's first (for `.sinceStart`); `timeZone` only
+    /// matters for the two clock styles. Everything is computed on whole milliseconds, because
+    /// `0.663 - 0.660` is not exactly `0.003` in floating point and a delta of 3 ms must print as 3 ms.
+    public static func format(
+        _ timestamp: Double,
+        style: TimestampStyle,
+        timeZone: TimeZone = .current,
+        sessionStart: Double? = nil,
+        previous: Double? = nil
+    ) -> String {
+        switch style {
+        case .dateTime:
+            return format(timestamp, includeDate: true, timeZone: timeZone)
+        case .time:
+            return format(timestamp, includeDate: false, timeZone: timeZone)
+        case .epoch:
+            return seconds(millis(timestamp))
+        case .sinceStart:
+            let elapsed = millis(timestamp) - (sessionStart.map(millis) ?? millis(timestamp))
+            return (elapsed >= 0 ? "+" : "") + seconds(elapsed) + "s"
+        case .delta:
+            guard let previous else { return "Δ —" }
+            let elapsed = millis(timestamp) - millis(previous)
+            return elapsed > -1000 && elapsed < 1000 ? "Δ \(elapsed) ms" : "Δ \(seconds(elapsed)) s"
+        }
+    }
+
+    private static func millis(_ timestamp: Double) -> Int {
+        Int((timestamp * 1000).rounded())
+    }
+
+    /// `12.345`, or `-0.004` for a negative count of milliseconds.
+    private static func seconds(_ millis: Int) -> String {
+        let magnitude = abs(millis)
+        return (millis < 0 ? "-" : "") + String(format: "%ld.%03ld", magnitude / 1000, magnitude % 1000)
+    }
+}

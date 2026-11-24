@@ -2,14 +2,14 @@ import LogcatKit
 import SwiftUI
 
 struct SessionView: View {
-    let session: LogSession
+    @Bindable var session: LogSession
     @AppStorage(SettingsKey.fontSize) private var fontSize = Defaults.fontSize
-    @AppStorage("showDate") private var showDate = false
 
     var body: some View {
-        SessionContent(session: session, fontSize: fontSize, showDate: showDate, wrapLines: session.softWrap)
+        SessionContent(session: session, fontSize: fontSize, viewOptions: session.viewOptions, wrapLines: session.softWrap)
             .focusedSceneValue(\.session, session)
-            .toolbar { SessionToolbar(session: session, showDate: $showDate) }
+            .toolbar { SessionToolbar(session: session) }
+            .sheet(isPresented: $session.isModifyingView) { ModifyViewSheet(session: session) }
     }
 }
 
@@ -18,7 +18,7 @@ struct SessionView: View {
 struct SessionContent: View {
     let session: LogSession
     var fontSize: Double
-    var showDate: Bool
+    var viewOptions: LogViewOptions
     var wrapLines: Bool
 
     var body: some View {
@@ -29,7 +29,7 @@ struct SessionContent: View {
                 FindBar(find: session.find)
                 Divider()
             }
-            LogTableView(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
+            LogTableView(session: session, fontSize: fontSize, viewOptions: viewOptions, wrapLines: wrapLines)
             Divider()
             StatusBar(session: session)
         }
@@ -38,7 +38,6 @@ struct SessionContent: View {
 
 private struct SessionToolbar: ToolbarContent {
     @Bindable var session: LogSession
-    @Binding var showDate: Bool
 
     var body: some ToolbarContent {
         ToolbarItemGroup {
@@ -83,7 +82,10 @@ private struct SessionToolbar: ToolbarContent {
             }
 
             Menu {
-                Toggle("Show Date", isOn: $showDate)
+                Section("View") {
+                    ViewPresetMenuItems(session: session)
+                    Button("Modify View…") { session.isModifyingView = true }
+                }
                 Divider()
                 Button("Export Visible Logs…") { FilePanels.export(session, visibleOnly: true) }
                 Button("Export All Logs…") { FilePanels.export(session, visibleOnly: false) }

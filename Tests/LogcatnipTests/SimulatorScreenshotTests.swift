@@ -18,8 +18,10 @@ struct SimulatorScreenshotTests {
     @Test func simulatorSession() async throws {
         let session = LogSession(source: .simulator(udid: SimulatorFixtures.simulator.udid), model: AppModel())
         session.show(SimulatorFixtures.entries, status: .streaming)
+        var options = LogViewOptions.standard
+        options.timestampStyle = .time
         try await Snapshot.assertSnapshot(
-            of: SessionContent(session: session, fontSize: 12, showDate: false, wrapLines: false),
+            of: SessionContent(session: session, fontSize: 12, viewOptions: options, wrapLines: false),
             named: "session-simulator",
             size: CGSize(width: 1000, height: 300)
         )

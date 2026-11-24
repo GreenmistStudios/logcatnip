@@ -81,7 +81,9 @@ struct SessionScreenshotTests {
         showDate: Bool = false,
         wrapLines: Bool = false
     ) -> some View {
-        SessionContent(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
+        var options = LogViewOptions.standard
+        options.timestampStyle = showDate ? .dateTime : .time
+        return SessionContent(session: session, fontSize: fontSize, viewOptions: options, wrapLines: wrapLines)
     }
 
     private func makeSession(status: LogSession.Status = .loaded) -> LogSession {
