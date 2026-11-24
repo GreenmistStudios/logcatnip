@@ -23,16 +23,8 @@ scripts/next-version.sh [--bump auto|patch|minor|major]   # the version the next
 ```
 
 Debug helpers: `LOGCATNIP_DEBUG=1` prints device and session state to stderr every few seconds;
-<<<<<<< HEAD
-`LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, overriding the default filter. The debug
-output includes the ignore lists and each session's `ignored=` count. `LOGCATNIP_COMPLETE='tag:Net'` (with
-`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query. With `LOGCATNIP_DEBUG=1`,
-`LOGCATNIP_RESTART_AFTER=<seconds>` restarts every device session once and `LOGCATNIP_CLOSE_AFTER=<seconds>`
-closes every session (both counted from launch); each session line shows `ageRefresh=`, and an
-`age refresh ended (<reason>)` line is printed when a session's `age:` refresh stops.
-=======
 `LOGCATNIP_FILTER='level:WARN'` sets the filter of new sessions, overriding the default filter. The debug output includes the ignore lists and each session's `ignored=` count.
- `LOGCATNIP_FIND='text'` opens the find bar
+`LOGCATNIP_FIND='text'` opens the find bar
 with that query (the debug output then includes `find=... check=ok|MISMATCH`, a recount from scratch);
 `LOGCATNIP_OPEN=/path/a.txt:/path/b.txt` opens log files at launch. `LOGCATNIP_PERF_TESTS=1 swift test
 --filter FindPerformance` runs the opt-in find timings on 500,000 rows. `LOGCATNIP_WIFI_SHEET=qr|code|ip`,
@@ -42,8 +34,10 @@ Connect over Wi-Fi flows without clicking; the debug report has a `wireless:` li
 without clicking; `LOGCATNIP_UPDATE_FEED=/path/release.json|URL` and `LOGCATNIP_UPDATE_VERSION=0.1.0` point it at a
 local feed and fake the running version. With `LOGCATNIP_DEBUG=1` each step logs an `update:` line.
 `LOGCATNIP_COMPLETE='tag:Net'` (with
-`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query.
->>>>>>> origin/gpowel46/issue-18-ignore-lists
+`LOGCATNIP_DEBUG=1`) also prints the suggestions for that query. With `LOGCATNIP_DEBUG=1`,
+`LOGCATNIP_RESTART_AFTER=<seconds>` restarts every device session once and `LOGCATNIP_CLOSE_AFTER=<seconds>`
+closes every session (both counted from launch); each session line shows `ageRefresh=`, and an
+`age refresh ended (<reason>)` line is printed when a session's `age:` refresh stops.
 
 CI (`.github/workflows/ci.yml`, `macos-15`, Xcode 16.4) runs `swift build`, `swift test` and
 `scripts/build-app.sh`, and uploads the zipped app as an artifact. Run all three before you call a change done.
