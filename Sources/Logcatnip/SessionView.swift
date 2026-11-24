@@ -8,15 +8,32 @@ struct SessionView: View {
     @AppStorage(SettingsKey.wrapLines) private var wrapLines = false
 
     var body: some View {
+        SessionContent(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
+            .focusedSceneValue(\.session, session)
+            .toolbar { SessionToolbar(session: session, showDate: $showDate, wrapLines: $wrapLines) }
+    }
+}
+
+/// The filter bar, table and status bar. Takes the display settings as values rather than reading
+/// them from user defaults, so screenshot tests can render it with fixed settings.
+struct SessionContent: View {
+    let session: LogSession
+    var fontSize: Double
+    var showDate: Bool
+    var wrapLines: Bool
+
+    var body: some View {
         VStack(spacing: 0) {
             FilterBar(session: session)
             Divider()
+            if session.find.isVisible {
+                FindBar(find: session.find)
+                Divider()
+            }
             LogTableView(session: session, fontSize: fontSize, showDate: showDate, wrapLines: wrapLines)
             Divider()
             StatusBar(session: session)
         }
-        .focusedSceneValue(\.session, session)
-        .toolbar { SessionToolbar(session: session, showDate: $showDate, wrapLines: $wrapLines) }
     }
 }
 
@@ -58,13 +75,13 @@ private struct SessionToolbar: ToolbarContent {
             }
             .help("Clear the view (⌘K). Hold for more options.")
 
-            if session.serial != nil {
+            if session.isStreamSource {
                 Button {
                     session.restart()
                 } label: {
                     Label("Restart", systemImage: "arrow.clockwise")
                 }
-                .help("Restart logcat (⌘R)")
+                .help("Restart \(session.streamName) (⌘R)")
             }
 
             Menu {
@@ -326,6 +343,7 @@ struct FilterHelpView: View {
         Example(query: "level:WARN", description: "warnings and above"),
         Example(query: "is:crash", description: "crashes and ANRs"),
         Example(query: "is:stacktrace", description: "entries with stack traces"),
+        Example(query: "is:anr is:leak", description: "ANRs and leaks"),
         Example(query: "tag:Activity -tag=:ActivityTaskManager", description: "tag contains / not equal"),
         Example(query: "tag~:^(Okhttp|Retrofit)", description: "tag regex"),
         Example(query: "age:5m", description: "logged in the last 5 minutes"),
@@ -344,6 +362,7 @@ struct FilterHelpView: View {
         ("level:WARN", "WARN and above (V, D, I, W, E, A also work)"),
         ("age:30s age:5m age:2h age:1d", "Recent entries only"),
         ("is:crash  is:stacktrace", "Crashes / entries containing stack traces"),
+        ("is:anr  is:leak  is:jank", "ANRs / leaks / skipped frames and slow work"),
         ("is:error  is:firebase", "Exactly one level / Firebase SDK tags"),
         ("pid:123  tid:456", "Process or thread id"),
         ("name:\"My filter\"", "Names the filter"),

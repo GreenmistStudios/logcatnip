@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct LogcatnipApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
+    @State private var updater = UpdateController.forApp()
 
     init() {
         Defaults.register()
@@ -18,18 +19,29 @@ struct LogcatnipApp: App {
             ContentView()
                 .environment(model)
                 .frame(minWidth: 900, minHeight: 500)
+                .modifier(UpdatePresenter(updater: updater))
                 .task {
                     appDelegate.model = model
                     model.start()
+                    updater.startSchedule()
                 }
         }
         .commands {
             LogcatCommands(model: model)
+            UpdateCommands(updater: updater)
         }
+
+        Window("Software Update", id: UpdateView.windowID) {
+            UpdateView()
+                .environment(updater)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
 
         Settings {
             SettingsView()
                 .environment(model)
+                .environment(updater)
         }
     }
 }
@@ -72,13 +84,20 @@ struct LogcatCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Menu("New Session") {
-                ForEach(model.devices.filter(\.isOnline)) { device in
-                    Button(device.displayName) { model.openSession(serial: device.serial) }
+                let online = model.deviceGroups.filter(\.isOnline)
+                ForEach(online) { group in
+                    Button(group.displayName) { model.openSession(serial: group.primary.serial) }
                 }
-                if model.devices.filter(\.isOnline).isEmpty {
+                ForEach(model.simulators) { simulator in
+                    Button("\(simulator.name) (\(simulator.runtimeName) Simulator)") { model.openSession(simulator: simulator.udid) }
+                }
+                if online.isEmpty && model.simulators.isEmpty {
                     Text("No devices connected")
                 }
             }
+            Button("Connect over Wi-Fi…") { model.wireless.presentSheet(tab: .qrCode) }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(model.adb == nil)
             Button("Open Log File…") { FilePanels.openLogFile(model: model) }
                 .keyboardShortcut("o")
             Divider()
@@ -110,12 +129,24 @@ struct LogcatCommands: Commands {
             Button("Clear Device Log Buffer") { session?.clearDeviceBuffer() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(session?.serial == nil)
-            Button("Restart Logcat") { session?.restart() }
+            Button(session?.udid != nil ? "Restart Log Stream" : "Restart Logcat") { session?.restart() }
                 .keyboardShortcut("r")
-                .disabled(session?.serial == nil)
+                .disabled(session?.isStreamSource != true)
             Divider()
-            Button("Find / Filter") { session?.focusFilterRequest += 1 }
+            Button("Filter…") { session?.focusFilterRequest += 1 }
+                .keyboardShortcut("l")
+                .disabled(session == nil)
+            Button("Find…") { session?.find.show() }
                 .keyboardShortcut("f")
+                .disabled(session == nil)
+            Button("Find Next") { session?.find.navigate(.next) }
+                .keyboardShortcut("g")
+                .disabled(session?.find.query.isEmpty ?? true)
+            Button("Find Previous") { session?.find.navigate(.previous) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(session?.find.query.isEmpty ?? true)
+            Button("Use Selection for Find") { session?.find.useSelectionForFind() }
+                .keyboardShortcut("e")
                 .disabled(session == nil)
             Button("Scroll to End") { session?.autoScroll = true }
                 .keyboardShortcut(.downArrow, modifiers: [.command])

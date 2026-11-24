@@ -183,7 +183,7 @@ private func spans(_ query: String) -> [String] {
     @Test func levelIsAgeAndPidValues() {
         #expect(labels("level:") == ["verbose", "debug", "info", "warn", "error", "assert"])
         #expect(labels("level:W") == ["WARN"])
-        #expect(labels("is:") == ["crash", "firebase", "stacktrace", "verbose", "debug", "info", "warn", "error", "assert"])
+        #expect(labels("is:") == ["crash", "anr", "leak", "jank", "firebase", "stacktrace", "verbose", "debug", "info", "warn", "error", "assert"])
         #expect(labels("is:st") == ["stacktrace"])
         #expect(labels("age:") == ["30s", "5m", "3h", "1d"])
 

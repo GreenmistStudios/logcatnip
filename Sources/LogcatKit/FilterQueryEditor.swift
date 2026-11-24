@@ -16,8 +16,8 @@ extension LogFilter {
     /// for a `level:` term the picker could edit.
     ///
     /// The floor is the highest top-level `level:` conjunct: other conjuncts only narrow the result further.
-    /// A `level:` inside an `&` chain (`level:W & tag:a`) counts as that floor too, but the editor never edits
-    /// inside such a chain, so picking another level appends a term instead.
+    /// A `level:` inside an `&` chain (`level:W & tag:a`) counts as that floor too, but the editor only edits
+    /// lone top-level terms, so picking another level there appends a term instead.
     public var levelSelection: LevelSelection {
         guard let root else { return .any }
         var conjuncts: [FilterNode] = []
@@ -167,9 +167,11 @@ public enum FilterQueryEditor {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsed = ParsedQuery(query) else {
             // Appending to an invalid query could make it valid with another meaning (`tag:a |` plus a term
-            // would read as an OR), so keep it invalid and let the user see their own error.
+            // would read as an OR), so keep it invalid and let the user see their own error. Wrapping can
+            // also fix the error (`tag:a) | (tag:b`), so only a wrapped text that still fails is returned.
             guard let term else { return query }
-            return wrapped(trimmed, term)
+            let fallback = wrapped(trimmed, term)
+            return (try? LogFilter(fallback)) == nil ? fallback : query
         }
 
         let removed = parsed.elements.map { element in parsed.loneTerm(of: element).map(removes) ?? false }
@@ -189,14 +191,20 @@ public enum FilterQueryEditor {
         if let term { expected.append(term.element) }
         // The stand-in for a removed element is a name, which `combine` skips after flushing pending phrase
         // words, so words that were apart before the edit stay apart.
-        let expectedTree = parsed.parser.combine(expected)?.canonical
+        // `LogFilter.parse` drops a root that matches everything, so the expectation has to as well.
+        let expectedTree = parsed.parser.combine(expected).flatMap(parsed.parser.simplify)?.canonical
 
         guard let filter = try? LogFilter(candidate), filter.root?.canonical == expectedTree else {
             // Only pathological input gets here, such as a query ending in a lone `\` that escapes the space
-            // before the new term. Over-narrowing is better than a term that silently ORs.
+            // before the new term. Over-narrowing is better than a term that silently ORs, but wrapping can
+            // also change how the query lexes (`tag:x) | tag:y` reads `)` as part of a value), so the
+            // fallback must mean exactly what the edit says or the query stays as it is.
             guard let term else { return query }
             let fallback = wrapped(trimmed, term)
-            return (try? LogFilter(fallback)) == nil ? query : fallback
+            guard let fallbackFilter = try? LogFilter(fallback), fallbackFilter.root?.canonical == expectedTree else {
+                return query
+            }
+            return fallback
         }
         // Keep the user's spelling when the edit changes nothing (`level:w` + Warn, Hide Tag twice).
         if let original = try? LogFilter(query), original.root?.canonical == filter.root?.canonical {
@@ -250,9 +258,10 @@ public enum FilterQueryEditor {
         return pieces.joined(separator: " ")
     }
 
-    /// `(<query>) & <term>`: the term applies to the whole query, whatever its top-level structure.
+    /// `(<query>) <term>`: the term applies to the whole query, whatever its top-level structure. It is joined
+    /// by a space rather than `&` so it stays a lone top-level element that later edits can find and replace.
     private static func wrapped(_ trimmedQuery: String, _ term: ParsedTerm) -> String {
-        trimmedQuery.isEmpty ? term.text : "(\(trimmedQuery)) & \(term.text)"
+        trimmedQuery.isEmpty ? term.text : "(\(trimmedQuery)) \(term.text)"
     }
 
     private static func plainAppend(_ query: String, _ term: String) -> String {
